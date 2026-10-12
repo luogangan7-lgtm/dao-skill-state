@@ -27,7 +27,8 @@ const PROMPT_CHARS: usize = 2500;
 const DESC_CHARS: usize = 400;
 const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 const JEV_TIMEOUT_SECS: u32 = 4;
-const NONE: &str = "none";
+/// Abstain option sent to Jev; double underscores keep it out of the skill-name namespace.
+const NONE: &str = "__skill_hub_no_skill__";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
@@ -50,13 +51,20 @@ pub enum Decision {
     Nothing(&'static str),
 }
 
+/// Absolute score floor for a registry of `n` skills. BM25 IDF grows with corpus size, so the
+/// floor (calibrated at ~2,000+ skills) shrinks in proportion to the largest possible IDF.
+fn floor_for(n: usize) -> f64 {
+    let max_idf = |n: f64| ((n - 1.0 + 0.5) / 1.5 + 1.0).ln();
+    FLOOR * (max_idf(n.max(1) as f64) / max_idf(2000.0)).min(1.0)
+}
+
 /// Lexical rule used without Jev or when Jev fails: top-3 above an absolute and relative floor.
-pub fn lexical(cands: &[Candidate]) -> Vec<Candidate> {
+pub fn lexical(cands: &[Candidate], n_skills: usize) -> Vec<Candidate> {
     let top = cands.first().map_or(0.0, |c| c.score);
     cands
         .iter()
         .take(3)
-        .filter(|c| c.score >= FLOOR.max(REL * top))
+        .filter(|c| c.score >= floor_for(n_skills).max(REL * top))
         .cloned()
         .collect()
 }
@@ -142,7 +150,7 @@ fn call_jev(jev: &Jev, body: &str) -> Result<String, String> {
 }
 
 /// Choose what to show the model. Jev failures fall back to the lexical rule.
-pub fn decide(cands: &[Candidate], prompt: &str, jev: Option<&Jev>) -> Decision {
+pub fn decide(cands: &[Candidate], prompt: &str, jev: Option<&Jev>, n_skills: usize) -> Decision {
     if cands.is_empty() {
         return Decision::Nothing("no-match");
     }
@@ -163,7 +171,7 @@ pub fn decide(cands: &[Candidate], prompt: &str, jev: Option<&Jev>) -> Decision 
             }
         }
     }
-    let keep = lexical(cands);
+    let keep = lexical(cands, n_skills);
     if keep.is_empty() {
         Decision::Nothing("below-floor")
     } else {
@@ -226,7 +234,7 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
             model: std::env::var("SKILL_HUB_JEV_MODEL").unwrap_or_else(|_| "jev-latest".into()),
             curl: std::env::var("SKILL_HUB_CURL").unwrap_or_else(|_| "curl".into()),
         });
-    let decision = decide(&cands, &prompt, jev.as_ref());
+    let decision = decide(&cands, &prompt, jev.as_ref(), reg.skills.len());
     if let Ok(log) = std::env::var("SKILL_HUB_HOOK_LOG") {
         // decisions only; the prompt text is never logged
         let (via, picked) = match &decision {
@@ -266,6 +274,48 @@ mod tests {
     }
 
     #[test]
+    fn floor_scales_with_registry_size_and_sentinel_is_not_a_name() {
+        assert!((floor_for(5000) - FLOOR).abs() < 1e-9);
+        assert!(floor_for(1) < 0.3);
+        // a one-skill registry: an exact single-term match must still be shown
+        let root =
+            std::env::temp_dir().join(format!("skill-hub-hook-small-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("netlify")).unwrap();
+        std::fs::write(
+            root.join("netlify/SKILL.md"),
+            "---\nname: netlify-deploy\ndescription: Deploy sites\n---\n",
+        )
+        .unwrap();
+        let roots = crate::normalize_roots(vec![crate::Root {
+            label: "t".into(),
+            path: root.to_string_lossy().into(),
+        }])
+        .unwrap();
+        let reg = crate::Registry {
+            schema: crate::SCHEMA,
+            skills: crate::scan(&roots).unwrap().skills,
+            roots,
+        };
+        let cands: Vec<Candidate> = crate::search(&reg, "netlify", 10)
+            .into_iter()
+            .map(|(score, s)| Candidate {
+                id: s.id.clone(),
+                description: s.description.clone(),
+                score,
+            })
+            .collect();
+        assert_eq!(lexical(&cands, reg.skills.len()).len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+        // a skill literally named "none" is an ordinary candidate
+        let c = [cand("none", 1.0)];
+        assert_eq!(
+            parse_jev(r#"{"answers":{"skill":{"answer":"none"}}}"#, &c),
+            Ok(Some("none".into()))
+        );
+    }
+
+    #[test]
     fn lexical_rule_keeps_top3_above_floors() {
         let c = [
             cand("a", 20.0),
@@ -273,9 +323,9 @@ mod tests {
             cand("c", 9.0),
             cand("d", 8.0),
         ];
-        let ids: Vec<_> = lexical(&c).into_iter().map(|c| c.id).collect();
+        let ids: Vec<_> = lexical(&c, 3000).into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["a", "b"]);
-        assert!(lexical(&[cand("x", 5.0)]).is_empty());
+        assert!(lexical(&[cand("x", 5.0)], 3000).is_empty());
     }
 
     #[test]
@@ -299,7 +349,10 @@ mod tests {
             Ok(Some("a".into()))
         );
         assert_eq!(
-            parse_jev(r#"{"answers":{"skill":{"label":"none"}}}"#, &c),
+            parse_jev(
+                r#"{"answers":{"skill":{"label":"__skill_hub_no_skill__"}}}"#,
+                &c
+            ),
             Ok(None)
         );
         assert!(parse_jev(r#"{"answers":{"skill":{"answer":"evil"}}}"#, &c).is_err());
@@ -337,7 +390,7 @@ mod tests {
         };
         let c = [cand("a", 20.0), cand("b", 10.0)];
         assert_eq!(
-            decide(&c, "do b", Some(&jev)),
+            decide(&c, "do b", Some(&jev), 3000),
             Decision::Skills(vec![cand("b", 10.0)], "jev")
         );
         let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
@@ -352,14 +405,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn jev_none_injects_nothing_and_failure_falls_back() {
-        let (curl, d1) = fake_curl("none", r#"echo '{"answers":{"skill":{"answer":"none"}}}'"#);
+        let (curl, d1) = fake_curl(
+            "none",
+            r#"echo '{"answers":{"skill":{"answer":"__skill_hub_no_skill__"}}}'"#,
+        );
         let jev = Jev {
             key: "k".into(),
             model: "m".into(),
             curl,
         };
         let c = [cand("a", 20.0)];
-        assert_eq!(decide(&c, "hi", Some(&jev)), Decision::Nothing("jev-none"));
+        assert_eq!(
+            decide(&c, "hi", Some(&jev), 3000),
+            Decision::Nothing("jev-none")
+        );
         let (curl, d2) = fake_curl("fail", "exit 22");
         let jev = Jev {
             key: "k".into(),
@@ -367,10 +426,13 @@ mod tests {
             curl,
         };
         assert_eq!(
-            decide(&c, "hi", Some(&jev)),
+            decide(&c, "hi", Some(&jev), 3000),
             Decision::Skills(vec![cand("a", 20.0)], "lexical-fallback")
         );
-        assert_eq!(decide(&[], "hi", Some(&jev)), Decision::Nothing("no-match"));
+        assert_eq!(
+            decide(&[], "hi", Some(&jev), 3000),
+            Decision::Nothing("no-match")
+        );
         let _ = (std::fs::remove_dir_all(d1), std::fs::remove_dir_all(d2));
     }
 
