@@ -9,9 +9,10 @@
 //! Invariants:
 //! - Never blocks or fails the prompt: every error path prints nothing to stdout and the
 //!   process exits 0 (Codex treats exit code 2 as "block this prompt").
-//! - The API key is passed to curl on stdin (`-K -`), never in argv or a file.
-//! - Only the prompt (truncated to `PROMPT_CHARS`) and candidate names/descriptions leave the
-//!   machine, and only when `TYPESAFE_API_KEY` is set. Without it, retrieval is fully local.
+//! - The API key is passed to curl on stdin (`-q -K -`: user curlrc ignored), never in argv or a file.
+//! - Only the prompt (cut to its first and last ~1,250 characters, see `bound_prompt`) and
+//!   candidate names/descriptions leave the machine, and only when `TYPESAFE_API_KEY` is set.
+//!   Without it, retrieval is fully local.
 //! - Jev may only answer with a retrieved candidate or the no-skill sentinel; anything else
 //!   falls back to the lexical rule.
 

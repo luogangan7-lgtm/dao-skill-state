@@ -34,7 +34,7 @@ The registry path comes only from `SKILL_HUB_REGISTRY`. Never pass a `--registry
 
 `skill-hub hook` runs as a `UserPromptSubmit` hook: it retrieves the top 10 skills for each prompt and, before the model answers, adds a short note naming the skill Jev picked (with a key) or up to 3 lexical matches (without one), so the model no longer has to decide to search. With `TYPESAFE_API_KEY` set, the Jev decision model picks one candidate or "none"; without it, or if the call fails, a local lexical rule is used. It always exits 0 and never blocks a prompt.
 
-Privacy: with a key set, the prompt (first 2,500 characters) and the candidates' names and descriptions are sent to the TypeSafe API. Without a key nothing leaves the machine. `SKILL_HUB_HOOK_LOG=<file>` records decisions (never prompt text).
+Privacy: with a key set, the prompt and the candidates' names and descriptions are sent to the TypeSafe API. A prompt longer than 2,500 characters is cut to its **first ~1,250 and last ~1,250 characters**, so text pasted at the end of a long prompt is sent too — don't rely on a long paste to keep later secrets local. Without a key nothing leaves the machine. `SKILL_HUB_HOOK_LOG=<file>` records decisions (never prompt text).
 
 Claude Code (`~/.claude/settings.json`):
 ```json
