@@ -22,9 +22,10 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        crate: [skill-hub, dao]
     defaults:
       run:
-        working-directory: crates/skill-hub
+        working-directory: crates/${{ matrix.crate }}
     steps:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
