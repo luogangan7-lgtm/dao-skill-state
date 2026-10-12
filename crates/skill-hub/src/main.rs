@@ -66,9 +66,6 @@ struct Skill {
     locations: Vec<String>,
     /// First `BODY_CHARS` characters of SKILL.md after the frontmatter (retrieval only).
     body: String,
-    /// True when at least two other skills are named `<name>-...` or mention `<name>`:
-    /// a catalogue-level "umbrella" that should not outrank its specific children.
-    umbrella: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -326,7 +323,6 @@ fn scan(roots: &[Root]) -> Result<Scan, String> {
                     entry_sha256: hex(&Sha256::digest(&bytes)),
                     locations: vec![location],
                     body: body_excerpt(&String::from_utf8_lossy(&bytes)),
-                    umbrella: false,
                 },
             );
         }
@@ -356,7 +352,6 @@ fn scan(roots: &[Root]) -> Result<Scan, String> {
             s.locations[0].clone()
         };
     }
-    mark_umbrellas(&mut merged);
     merged.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(Scan {
         skills: merged,
@@ -385,15 +380,18 @@ fn normalize_roots(roots: Vec<Root>) -> Result<Vec<Root>, String> {
 
 fn load(path: &str) -> Result<Registry, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("cannot read registry {path}: {e}"))?;
-    let reg: Registry =
+    // Check the version before the full decode so an older registry gets the migration
+    // hint instead of a "missing field" error for fields that version never had.
+    let raw: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("bad registry {path}: {e}"))?;
-    if reg.schema != SCHEMA {
+    let schema = raw.get("schema").and_then(serde_json::Value::as_u64);
+    if schema != Some(u64::from(SCHEMA)) {
         return Err(format!(
             "registry schema {} != {SCHEMA}; run index",
-            reg.schema
+            schema.map_or("missing".to_string(), |s| s.to_string())
         ));
     }
-    Ok(reg)
+    serde_json::from_value(raw).map_err(|e| format!("bad registry {path}: {e}"))
 }
 
 /// Differences between the registry and the disk; empty means in sync.
@@ -431,60 +429,61 @@ fn body_excerpt(text: &str) -> String {
     body.chars().take(BODY_CHARS).collect()
 }
 
-/// Is `child` a more specific skill under `parent` (named `parent-...` or mentions it)?
-fn is_child_of(child: &Skill, parent: &Skill) -> bool {
-    child.id != parent.id
-        && (child.name.starts_with(&format!("{}-", parent.name))
-            || child.description.to_lowercase().contains(&parent.name))
-}
-
-fn mark_umbrellas(skills: &mut [Skill]) {
-    let lower: Vec<String> = skills
-        .iter()
-        .map(|s| s.description.to_lowercase())
-        .collect();
-    let flags: Vec<bool> = skills
-        .iter()
-        .map(|u| {
-            let prefix = format!("{}-", u.name);
-            u.name.len() >= 4
-                && skills
-                    .iter()
-                    .zip(&lower)
-                    .filter(|(c, d)| {
-                        c.id != u.id && (c.name.starts_with(&prefix) || d.contains(&u.name))
-                    })
-                    .take(2)
-                    .count()
-                    == 2
-        })
-        .collect();
-    for (s, f) in skills.iter_mut().zip(flags) {
-        s.umbrella = f;
-    }
-}
-
 /// Query-side synonyms so "TypeScript service" reaches `*-ts` skills and so on.
-const SYNONYMS: [(&str, &[&str]); 9] = [
+const SYNONYMS: [(&str, &[&str]); 8] = [
     ("typescript", &["ts"]),
     ("javascript", &["js"]),
     ("nodejs", &["ts", "js"]),
     ("python", &["py"]),
-    ("net", &["dotnet"]),
     ("csharp", &["dotnet"]),
     ("golang", &["go"]),
     ("kotlin", &["kt"]),
     ("postgresql", &["postgres"]),
 ];
 
-/// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
-/// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
 /// Name suffixes that mark per-language SDK variants (`azure-foo-ts`, `azure-foo-py`, ...).
 const LANG_SUFFIXES: [&str; 8] = ["ts", "js", "py", "java", "dotnet", "rust", "go", "kt"];
 
+/// Unambiguous ways a query names a language, mapped to the variant suffix. Short forms
+/// such as "go", "net", "ts" or "py" are ordinary words or too ambiguous to count.
+const LANGUAGE_NAMES: [(&str, &str); 10] = [
+    ("typescript", "ts"),
+    ("javascript", "js"),
+    ("python", "py"),
+    ("java", "java"),
+    ("csharp", "dotnet"),
+    ("dotnet", "dotnet"),
+    ("rust", "rust"),
+    ("golang", "go"),
+    ("kotlin", "kt"),
+    ("nodejs", "js"),
+];
+
+/// Languages the query names explicitly (including the spellings ".NET" and "C#").
+fn named_languages(query: &str) -> Vec<&'static str> {
+    let lower = query.to_lowercase();
+    let tokens = tokenize(query);
+    let mut langs: Vec<&str> = LANGUAGE_NAMES
+        .iter()
+        .filter(|(n, _)| tokens.iter().any(|t| t == n))
+        .map(|(_, s)| *s)
+        .collect();
+    if lower.contains(".net") || lower.contains("c#") {
+        langs.push("dotnet");
+    }
+    langs.sort();
+    langs.dedup();
+    langs
+}
+
+/// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
+/// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
 fn expand_query(query: &str) -> Vec<(String, f64)> {
     let base = tokenize(query);
     let mut q: Vec<(String, f64)> = base.iter().map(|t| (t.clone(), 1.0)).collect();
+    if named_languages(query).contains(&"dotnet") {
+        q.push(("dotnet".to_string(), 0.5));
+    }
     for t in &base {
         for (_, v) in SYNONYMS.iter().filter(|(k, _)| k == t) {
             q.extend(v.iter().map(|s| (s.to_string(), 0.5)));
@@ -554,32 +553,13 @@ fn search<'a>(reg: &'a Registry, query: &str, top_k: usize) -> Vec<(f64, &'a Ski
         .filter(|(score, _)| *score > 0.0)
         .collect();
     // A query naming one language demotes SDK variants for a different language.
-    let langs: Vec<&str> = LANG_SUFFIXES
-        .iter()
-        .copied()
-        .filter(|l| q.iter().any(|(t, _)| t == l))
-        .collect();
+    let langs = named_languages(query);
     if !langs.is_empty() {
         for (score, s) in scored.iter_mut() {
             let suffix = s.name.rsplit('-').next().unwrap_or("");
             if LANG_SUFFIXES.contains(&suffix) && !langs.contains(&suffix) {
                 *score *= 0.5;
             }
-        }
-    }
-    // An umbrella skill yields to a specific child that also matches reasonably well.
-    let demote: Vec<bool> = scored
-        .iter()
-        .map(|(su, u)| {
-            u.umbrella
-                && scored
-                    .iter()
-                    .any(|(sc, c)| is_child_of(c, u) && *sc >= 0.4 * su)
-        })
-        .collect();
-    for ((score, _), d) in scored.iter_mut().zip(demote) {
-        if d {
-            *score *= 0.5;
         }
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
@@ -862,43 +842,6 @@ mod tests {
     }
 
     #[test]
-    fn umbrella_yields_to_matching_child() {
-        let root = tmp("umbrella");
-        put(
-            &root,
-            "beatra",
-            "beatra",
-            "Beatra media generator: music, voice, images, avatar video",
-        );
-        put(
-            &root,
-            "music",
-            "beatra-music",
-            "Generate background music tracks with the Beatra package",
-        );
-        put(
-            &root,
-            "dub",
-            "beatra-dubbing",
-            "Dub videos into other languages with the Beatra package",
-        );
-        let reg = reg_for(&root);
-        assert!(
-            reg.skills
-                .iter()
-                .find(|s| s.name == "beatra")
-                .unwrap()
-                .umbrella
-        );
-        assert_eq!(
-            search(&reg, "beatra music track", 1)[0].1.name,
-            "beatra-music"
-        );
-        // without a matching child the umbrella keeps its rank
-        assert_eq!(search(&reg, "beatra avatar video", 1)[0].1.name, "beatra");
-    }
-
-    #[test]
     fn language_synonyms_and_body_reach_variants() {
         let root = tmp("synonyms");
         put(&root, "ts", "azure-blob-ts", "Azure Blob Storage SDK");
@@ -940,6 +883,41 @@ mod tests {
             .name,
             "azure-appconfiguration-ts"
         );
+    }
+
+    #[test]
+    fn only_unambiguous_language_names_constrain_variants() {
+        assert_eq!(named_languages("go upload this file"), Vec::<&str>::new());
+        assert_eq!(named_languages("net revenue report"), Vec::<&str>::new());
+        assert_eq!(named_languages("our .NET service"), vec!["dotnet"]);
+        assert_eq!(
+            named_languages("a C# client and Python worker"),
+            vec!["dotnet", "py"]
+        );
+        let root = tmp("lang-words");
+        put(&root, "a", "upload-ts", "Upload files to storage");
+        put(&root, "b", "upload-py", "Upload files to storage quickly");
+        let reg = reg_for(&root);
+        // "go" is not a language here, so the better-matching -py variant is not halved
+        assert_eq!(
+            search(&reg, "go upload files to storage quickly", 1)[0]
+                .1
+                .name,
+            "upload-py"
+        );
+    }
+
+    #[test]
+    fn older_registry_gets_migration_hint() {
+        let dir = tmp("schema2");
+        let p = dir.join("r.json");
+        fs::write(
+            &p,
+            r#"{"schema":2,"roots":[],"skills":[{"id":"x","name":"x"}]}"#,
+        )
+        .unwrap();
+        let err = load(p.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("schema 2 != 3; run index"), "{err}");
     }
 
     #[test]
