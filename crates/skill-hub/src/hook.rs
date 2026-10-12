@@ -198,8 +198,8 @@ pub fn context(skills: &[Candidate]) -> String {
         })
         .collect();
     format!(
-        "skill-hub retrieved these installed skills as matching the request \
-         (each can be loaded by name, or with `skill-hub get <id>`):\n{}",
+        "skill-hub retrieved these skills as possibly relevant to the request \
+         (load one with `skill-hub get <id>`, or by name if it is installed; ignore them if none fits):\n{}",
         lines.join("\n")
     )
 }
