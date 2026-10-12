@@ -6,6 +6,7 @@
 //! Invariants: exit 0 when the command ran (rejected skills are a normal outcome, listed in
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
+mod check;
 mod quarantine;
 mod source;
 
@@ -20,6 +21,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  dao intake --store DIR (--git HTTPS_URL|ABS_PATH --rev REV | --local DIR) [--path SUBPATH] [--all]\n\
          --all stages every directory under SUBPATH that contains a SKILL.md (not descending into skills).\n\
+  dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
     ExitCode::from(2)
@@ -187,6 +189,11 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
+        Some("check") if args.len() <= 2 => {
+            let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
+            println!("{}", check::to_json(&r));
+            return ExitCode::from(check::exit_code(&r));
+        }
         _ => return usage(),
     };
     result.unwrap_or_else(|e| {
