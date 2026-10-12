@@ -209,9 +209,12 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
     let t0 = Instant::now();
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).ok()?;
-    let prompt = serde_json::from_str::<Value>(&input).ok()?["prompt"]
+    // bounded before retrieval too: pasted logs/code must not stall the prompt
+    let prompt: String = serde_json::from_str::<Value>(&input).ok()?["prompt"]
         .as_str()?
-        .to_string();
+        .chars()
+        .take(PROMPT_CHARS)
+        .collect();
     let path = registry.or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())?;
     let reg = load(&path)
         .map_err(|e| {
