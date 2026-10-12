@@ -207,12 +207,15 @@ pub fn detect_license(
             let p = d.join(name);
             if let Some(bytes) = read_vetted(&p, tree_root, 256 * 1024) {
                 let spdx = guess_spdx(&String::from_utf8_lossy(&bytes));
+                // the guess reads the first 256 KiB; the recorded hash covers the whole file
+                let mut h = Sha256::new();
+                let full = fs::File::open(&p).and_then(|mut f| std::io::copy(&mut f, &mut h));
                 return LicenseEvidence {
                     file: p
                         .strip_prefix(tree_root)
                         .ok()
                         .map(|r| r.to_string_lossy().into_owned()),
-                    sha256: Some(hex(&Sha256::digest(&bytes))),
+                    sha256: full.ok().map(|_| hex(&h.finalize())),
                     spdx_guess: spdx.map(str::to_string),
                     declared,
                     status: status_for(spdx).into(),

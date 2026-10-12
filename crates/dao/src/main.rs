@@ -89,6 +89,9 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    if let Some(g) = &git {
+        source::validate_origin(g)?; // before touching the filesystem
+    }
     fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
     let store = fs::canonicalize(&store).map_err(|e| e.to_string())?;
     let fetch_dir = store
