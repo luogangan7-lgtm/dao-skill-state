@@ -6,11 +6,15 @@
 //! Called by: the thin `skill-hub` entry skill, CI tests, DAO admission scripts.
 //! Invariants:
 //! - `get` only serves ids present in the registry, and only when the skill directory still
-//!   has the recorded realpath, SKILL.md sha256 and whole-tree sha256.
+//!   has the recorded realpath, SKILL.md sha256 and tree sha256. The tree hash covers every
+//!   regular file and symlink (by link text, never followed) outside hidden directories and
+//!   build caches (`__pycache__`, `target`, `node_modules`, `.DS_Store`).
 //! - Skills the owner restricted to explicit/user invocation (`disable-model-invocation: true`
 //!   in SKILL.md, or Codex `allow_implicit_invocation: false`) are never indexed, so the model
-//!   cannot reach them through the hub.
-//! - `check` is red (exit 1) on any added, removed or changed skill file under the roots.
+//!   cannot reach them through the hub. Policy values are read fail-closed: anything other
+//!   than an explicit permissive value counts as restricted.
+//! - `check` is red (exit 1) on any added, removed, changed or unreadable skill under the roots;
+//!   one broken skill never stops the others from being indexed or served.
 //! - The registry holds local absolute paths; it is a generated artifact, never committed.
 
 use serde::{Deserialize, Serialize};
@@ -22,7 +26,7 @@ use std::process::ExitCode;
 
 const SCHEMA: u32 = 2;
 const MAX_FILES: usize = 10_000;
-const SKIP_NAMES: [&str; 5] = [".git", "__pycache__", ".DS_Store", "target", "node_modules"];
+const SKIP_NAMES: [&str; 4] = ["__pycache__", ".DS_Store", "target", "node_modules"];
 
 /// Exit codes (documented in skill-hub/SKILL.md).
 const EXIT_DRIFT: u8 = 1;
@@ -44,7 +48,7 @@ struct Skill {
     /// Canonical directory of the skill (symlinks resolved).
     dir: String,
     entry_sha256: String,
-    /// Hash over every file in the skill directory (relative path + bytes).
+    /// Hash over the skill tree (see module docs for what is covered).
     tree_sha256: String,
     /// Every `root:folder` location that resolves to this same content.
     locations: Vec<String>,
@@ -108,17 +112,30 @@ fn parse_frontmatter(text: &str) -> Front {
     Front {
         name: field("name"),
         description: field("description").unwrap_or_default(),
-        user_only: field("disable-model-invocation").as_deref() == Some("true"),
+        user_only: restricted(body.iter().copied(), "disable-model-invocation", "false"),
     }
+}
+
+/// YAML scalar of a policy key: trailing comment and quotes removed, lowercased.
+fn policy_value(raw: &str) -> String {
+    let v = raw.split(" #").next().unwrap_or("").trim();
+    v.trim_matches(|c| c == '"' || c == '\'')
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Fail closed: any occurrence of `key` whose value is not exactly `permissive` restricts.
+fn restricted<'a>(lines: impl Iterator<Item = &'a str>, key: &str, permissive: &str) -> bool {
+    let prefix = format!("{key}:");
+    lines
+        .filter_map(|l| l.trim().strip_prefix(prefix.as_str()))
+        .any(|v| policy_value(v) != permissive)
 }
 
 /// Codex keeps its invocation policy in `agents/openai.yaml`.
 fn codex_explicit_only(skill_dir: &Path) -> bool {
     fs::read_to_string(skill_dir.join("agents/openai.yaml"))
-        .map(|t| {
-            t.lines()
-                .any(|l| l.trim() == "allow_implicit_invocation: false")
-        })
+        .map(|t| restricted(t.lines(), "allow_implicit_invocation", "true"))
         .unwrap_or(false)
 }
 
@@ -162,22 +179,25 @@ fn tokenize(text: &str) -> Vec<String> {
     out
 }
 
-/// sha256 over sorted (relative path, file bytes) of the whole skill directory.
+/// sha256 over the sorted skill tree. Regular files contribute their content hash,
+/// symlinks their link text (never followed, so no loops or escapes), other file types
+/// (FIFOs, sockets) only a marker, so hashing never blocks.
 fn tree_hash(dir: &Path) -> Result<String, String> {
     fn walk(base: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<(), String> {
         if depth > 32 {
             return Err(format!("{}: directory nesting too deep", dir.display()));
         }
         for e in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let p = e.map_err(|e| e.to_string())?.path();
-            let name = p.file_name().unwrap().to_string_lossy();
-            if SKIP_NAMES.contains(&name.as_ref()) {
+            let e = e.map_err(|e| e.to_string())?;
+            let ft = e.file_type().map_err(|e| e.to_string())?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if SKIP_NAMES.contains(&name.as_str()) || (ft.is_dir() && name.starts_with('.')) {
                 continue;
             }
-            if p.is_dir() {
-                walk(base, &p, depth + 1, out)?;
+            if ft.is_dir() {
+                walk(base, &e.path(), depth + 1, out)?;
             } else {
-                out.push(p.strip_prefix(base).unwrap().to_path_buf());
+                out.push(e.path().strip_prefix(base).unwrap().to_path_buf());
                 if out.len() > MAX_FILES {
                     return Err(format!("{}: too many files", base.display()));
                 }
@@ -190,18 +210,30 @@ fn tree_hash(dir: &Path) -> Result<String, String> {
     files.sort();
     let mut h = Sha256::new();
     for rel in files {
-        let bytes = fs::read(dir.join(&rel)).map_err(|e| format!("{}: {e}", rel.display()))?;
+        let p = dir.join(&rel);
+        let err = |e: std::io::Error| format!("{}: {e}", rel.display());
+        let ft = fs::symlink_metadata(&p).map_err(err)?.file_type();
+        let id = if ft.is_symlink() {
+            format!("link:{}", fs::read_link(&p).map_err(err)?.display())
+        } else if ft.is_file() {
+            hex(&Sha256::digest(fs::read(&p).map_err(err)?))
+        } else {
+            "special".to_string()
+        };
         h.update(rel.to_string_lossy().as_bytes());
         h.update([0]);
-        h.update(hex(&Sha256::digest(&bytes)).as_bytes());
+        h.update(id.as_bytes());
         h.update(b"\n");
     }
     Ok(hex(&h.finalize()))
 }
 
-fn scan(roots: &[Root]) -> Result<Vec<Skill>, String> {
+/// Skills found under the roots, plus `broken: ...` lines for skills that could not be read.
+/// A missing root is fatal; a single unreadable skill is not.
+fn scan(roots: &[Root]) -> Result<(Vec<Skill>, Vec<String>), String> {
     // canonical dir -> skill (merging locations that resolve to the same directory)
     let mut by_dir: BTreeMap<String, Skill> = BTreeMap::new();
+    let mut broken = Vec::new();
     for root in roots {
         let mut entries: Vec<PathBuf> = fs::read_dir(&root.path)
             .map_err(|e| format!("cannot read root {}: {e}", root.path))?
@@ -214,25 +246,41 @@ fn scan(roots: &[Root]) -> Result<Vec<Skill>, String> {
             if !entry.is_file() || folder.starts_with('.') {
                 continue;
             }
-            let dir = fs::canonicalize(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-            let bytes = fs::read(&entry).map_err(|e| format!("{}: {e}", entry.display()))?;
+            let location = format!("{}:{}", root.label, folder);
+            let read = || -> Result<(PathBuf, Vec<u8>), String> {
+                let dir = fs::canonicalize(&p).map_err(|e| e.to_string())?;
+                Ok((dir, fs::read(&entry).map_err(|e| e.to_string())?))
+            };
+            let (dir, bytes) = match read() {
+                Ok(v) => v,
+                Err(e) => {
+                    broken.push(format!("broken: {location}: {e}"));
+                    continue;
+                }
+            };
             let front = parse_frontmatter(&String::from_utf8_lossy(&bytes));
             if front.user_only || codex_explicit_only(&dir) {
                 continue;
             }
-            let location = format!("{}:{}", root.label, folder);
             let key = dir.to_string_lossy().into_owned();
             if let Some(s) = by_dir.get_mut(&key) {
                 s.locations.push(location);
                 continue;
             }
+            let tree_sha256 = match tree_hash(&dir) {
+                Ok(h) => h,
+                Err(e) => {
+                    broken.push(format!("broken: {location}: {e}"));
+                    continue;
+                }
+            };
             by_dir.insert(
                 key.clone(),
                 Skill {
                     id: String::new(),
                     name: front.name.unwrap_or_else(|| folder.clone()),
                     description: front.description,
-                    tree_sha256: tree_hash(&dir)?,
+                    tree_sha256,
                     dir: key,
                     entry_sha256: hex(&Sha256::digest(&bytes)),
                     locations: vec![location],
@@ -266,7 +314,7 @@ fn scan(roots: &[Root]) -> Result<Vec<Skill>, String> {
         };
     }
     merged.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(merged)
+    Ok((merged, broken))
 }
 
 /// Absolute, unique-label roots; relative paths would break `check` from another cwd.
@@ -302,7 +350,7 @@ fn load(path: &str) -> Result<Registry, String> {
 
 /// Differences between the registry and the disk; empty means in sync.
 fn drift(reg: &Registry) -> Result<Vec<String>, String> {
-    let now = scan(&reg.roots)?;
+    let (now, broken) = scan(&reg.roots)?;
     let old: HashMap<&str, &Skill> = reg.skills.iter().map(|s| (s.id.as_str(), s)).collect();
     let new: HashMap<&str, &Skill> = now.iter().map(|s| (s.id.as_str(), s)).collect();
     let mut out = Vec::new();
@@ -316,6 +364,7 @@ fn drift(reg: &Registry) -> Result<Vec<String>, String> {
     for id in old.keys().filter(|id| !new.contains_key(*id)) {
         out.push(format!("removed: {id}"));
     }
+    out.extend(broken);
     out.sort();
     Ok(out)
 }
@@ -408,7 +457,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  skill-hub index --root LABEL=DIR [--root ...] --out REGISTRY.json\n  \
          skill-hub check  [--registry REGISTRY.json]\n  \
-         skill-hub search [--registry REGISTRY.json] [--top-k N] QUERY...\n  \
+         skill-hub search [--registry REGISTRY.json] [--top-k N] [--] QUERY...\n  \
          skill-hub get    [--registry REGISTRY.json] ID\n\
          check/search/get default to $SKILL_HUB_REGISTRY.\n\
          exit: 0 ok, 1 drift, 2 error/usage, 3 get refused (changed/moved), 4 unknown id"
@@ -424,6 +473,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     let (mut out, mut registry, mut top_k, mut rest) = (None, None, 3usize, Vec::new());
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
+        if a == "--" {
+            rest.extend(it.by_ref().cloned());
+            break;
+        }
         let mut val = || it.next().cloned().ok_or(format!("{a} needs a value"));
         match a.as_str() {
             "--root" => {
@@ -465,7 +518,8 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 return Err("index needs at least one --root".into());
             }
             let roots = normalize_roots(roots)?;
-            let skills = scan(&roots)?;
+            let (skills, broken) = scan(&roots)?;
+            broken.iter().for_each(|b| eprintln!("warning: {b}"));
             let n = skills.len();
             write_registry(
                 &out,
@@ -557,7 +611,7 @@ mod tests {
         .unwrap();
         Registry {
             schema: SCHEMA,
-            skills: scan(&roots).unwrap(),
+            skills: scan(&roots).unwrap().0,
             roots,
         }
     }
@@ -648,6 +702,77 @@ mod tests {
     }
 
     #[test]
+    fn policy_values_fail_closed() {
+        for v in ["true", "True", "\"true\"", "true # user only", "yes", ""] {
+            let fm = format!("---\nname: a\ndisable-model-invocation: {v}\n---\n");
+            assert!(parse_frontmatter(&fm).user_only, "{v:?} must restrict");
+        }
+        assert!(
+            !parse_frontmatter("---\nname: a\ndisable-model-invocation: false\n---\n").user_only
+        );
+        let twice =
+            "---\nname: a\ndisable-model-invocation: false\ndisable-model-invocation: true\n---\n";
+        assert!(parse_frontmatter(twice).user_only);
+        for v in [
+            "False",
+            "FALSE",
+            "\"false\"",
+            "'false'",
+            "false   # explicit",
+        ] {
+            let y = format!("policy:\n  allow_implicit_invocation: {v}\n");
+            assert!(
+                restricted(y.lines(), "allow_implicit_invocation", "true"),
+                "{v:?}"
+            );
+        }
+        assert!(!restricted(
+            "  allow_implicit_invocation: true".lines(),
+            "allow_implicit_invocation",
+            "true"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hostile_trees_neither_hang_nor_block_other_skills() {
+        let root = tmp("hostile");
+        put(&root, "good", "good", "fine");
+        put(&root, "loop", "loop", "has a symlink loop and a fifo");
+        std::os::unix::fs::symlink("..", root.join("loop/up")).unwrap();
+        let fifo = root.join("loop/pipe");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let reg = reg_for(&root);
+        assert_eq!(reg.skills.len(), 2);
+        assert!(get(&reg, "loop").is_ok());
+        // a cache directory written by the skill does not lock it out
+        fs::create_dir_all(root.join("good/.pytest_cache")).unwrap();
+        fs::write(root.join("good/.pytest_cache/x"), "cache").unwrap();
+        assert!(get(&reg, "good").is_ok());
+        assert!(drift(&reg).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_skill_is_reported_not_fatal() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unreadable");
+        put(&root, "good", "good", "fine");
+        put(&root, "bad", "bad", "locked");
+        fs::create_dir_all(root.join("bad/refs")).unwrap();
+        let reg = reg_for(&root);
+        fs::set_permissions(root.join("bad/refs"), fs::Permissions::from_mode(0o000)).unwrap();
+        let d = drift(&reg).unwrap();
+        fs::set_permissions(root.join("bad/refs"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(d.iter().any(|l| l.starts_with("broken: t:bad")), "{d:?}");
+        assert!(d.iter().all(|l| !l.contains("good")));
+    }
+
+    #[test]
     fn duplicate_content_merges_and_conflicts_get_root_ids() {
         let a = tmp("dup-a");
         let b = tmp("dup-b");
@@ -666,7 +791,7 @@ mod tests {
             },
         ])
         .unwrap();
-        let skills = scan(&roots).unwrap();
+        let skills = scan(&roots).unwrap().0;
         let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["a:q", "b:q", "ponytail"]);
         assert_eq!(skills[2].locations, vec!["a:p", "b:p"]);
