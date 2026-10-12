@@ -297,25 +297,78 @@ fn write_atomic(dir: &Path, name: &str, body: &str) -> Result<(), String> {
     fs::rename(&tmp, dir.join(name)).map_err(|e| e.to_string())
 }
 
-/// Re-hash a stored object; Err when it no longer matches its digest.
-fn verify_object(obj: &Path, digest: &str) -> Result<(), String> {
-    let lim = Limits {
-        max_file_bytes: u64::MAX,
-        max_files: usize::MAX,
-        max_total_bytes: u64::MAX,
+/// Every entry under `dir` (no skip list): regular files with their exec bit, plus a note
+/// for anything that is not a regular file or directory, and for empty directories.
+fn list_all(root: &Path, dir: &Path, out: &mut Collected, odd: &mut Vec<String>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        odd.push(format!("unreadable directory {}", dir.display()));
+        return;
     };
-    match inspect(obj, obj, &lim) {
-        Ok((m, _)) if m.digest == digest => Ok(()),
-        Ok((m, _)) => Err(format!(
-            "stored object {} is corrupted (now hashes to {})",
-            obj.display(),
-            m.digest
-        )),
-        Err(r) => Err(format!(
-            "stored object {} is corrupted: {r:?}",
-            obj.display()
-        )),
+    let mut empty = true;
+    for e in rd.filter_map(Result::ok) {
+        empty = false;
+        let p = e.path();
+        let rel = p
+            .strip_prefix(root)
+            .unwrap_or(&p)
+            .to_string_lossy()
+            .into_owned();
+        match fs::symlink_metadata(&p) {
+            Ok(m) if m.is_dir() => list_all(root, &p, out, odd),
+            Ok(m) if m.is_file() => {
+                #[cfg(unix)]
+                let x = {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let x = false;
+                out.push((rel, p, x));
+            }
+            _ => odd.push(format!("not a regular file: {rel}")),
+        }
     }
+    if empty && dir != root {
+        odd.push(format!("empty directory: {}", dir.display()));
+    }
+}
+
+/// Re-check a stored object against the manifest it must equal: exactly the same set of
+/// paths (nothing skipped, nothing extra), same bytes (streamed), same exec bits.
+fn verify_object(obj: &Path, manifest: &Manifest) -> Result<(), String> {
+    let (mut files, mut odd) = (Vec::new(), Vec::new());
+    list_all(obj, obj, &mut files, &mut odd);
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let bad = |why: String| {
+        Err(format!(
+            "stored object {} is corrupted: {why}",
+            obj.display()
+        ))
+    };
+    if let Some(o) = odd.first() {
+        return bad(o.clone());
+    }
+    if files.len() != manifest.files.len() {
+        return bad(format!(
+            "{} files, manifest has {}",
+            files.len(),
+            manifest.files.len()
+        ));
+    }
+    for ((rel, abs, x), want) in files.iter().zip(&manifest.files) {
+        let mut h = Sha256::new();
+        let n = fs::File::open(abs)
+            .and_then(|mut f| std::io::copy(&mut f, &mut h))
+            .map_err(|e| format!("{rel}: {e}"))?;
+        if *rel != want.path
+            || n != want.size
+            || *x != want.executable
+            || hex(&h.finalize()) != want.sha256
+        {
+            return bad(format!("{rel} differs from the manifest"));
+        }
+    }
+    Ok(())
 }
 
 /// Copy `files` into a fresh temp dir, check every copy against the manifest hash (the
@@ -347,7 +400,7 @@ fn publish(store: &Path, obj: &Path, manifest: &Manifest, files: &Collected) -> 
         match fs::rename(&tmp, obj) {
             Ok(()) => set_mode(obj, 0o555).map_err(|e| e.to_string()),
             // a concurrent intake published the same content first: theirs is as good as ours
-            Err(_) if obj.is_dir() => verify_object(obj, &manifest.digest),
+            Err(_) if obj.is_dir() => verify_object(obj, manifest),
             Err(e) => Err(format!("publish {}: {e}", obj.display())),
         }
     })();
@@ -417,7 +470,7 @@ pub fn stage(
     };
     let obj = store.join("objects").join(&manifest.digest);
     if obj.exists() {
-        verify_object(&obj, &manifest.digest)?;
+        verify_object(&obj, &manifest)?;
     } else {
         publish(store, &obj, &manifest, &files)?;
     }
@@ -568,6 +621,29 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("corrupted"), "{err}");
         fs::write(obj.join("references/r.md"), "ref").unwrap();
+        // directories the source walk skips are not blind spots in the stored object
+        let restage = || {
+            stage(
+                &t.0.join("a"),
+                &t.0,
+                "a",
+                &store,
+                &Limits::default(),
+                &lock(),
+            )
+        };
+        for extra in ["node_modules/evil.js", ".git/x", "__pycache__/x.pyc"] {
+            let p = obj.join(extra);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, "evil()").unwrap();
+            let err = restage().unwrap_err();
+            assert!(err.contains("corrupted"), "{extra}: {err}");
+            fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+        fs::create_dir(obj.join("empty")).unwrap();
+        assert!(restage().is_err());
+        fs::remove_dir(obj.join("empty")).unwrap();
+        assert!(restage().is_ok());
         // losing a publish race to identical content is success, and leaves no temp dir
         let m = inspect(&t.0.join("a"), &t.0, &Limits::default()).unwrap();
         publish(&store, &obj, &m.0, &m.1).unwrap();
