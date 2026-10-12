@@ -15,8 +15,8 @@
 //! - `same_entry`     same name and language, byte-identical body; the evidence says whether
 //!   the frontmatter and the supporting files differ
 //! - `drift`          same name and language, still similar (equal description, Jaccard ≥ 0.5
-//!   or containment ≥ 0.8) or shipped by the same repository: one skill's versions diverging,
-//!   e.g. between hosts
+//!   or containment ≥ 0.8) or the same skill directory in one repository under several host
+//!   trees: one skill's versions diverging, e.g. between hosts
 //! - `name_conflict`  same name, dissimilar content from different sources (different
 //!   implementations)
 //! - `near_duplicate` different names, very similar bodies (stubs and invalid cards excluded)
@@ -93,6 +93,36 @@ fn same_name(a: &Card, b: &Card) -> (&'static str, String) {
         let side = if a.status == "stub" { "a" } else { "b" };
         return ("stub_copy", format!("placeholder body on side {side}"));
     }
+    // two Latin-script "languages" with near-identical bodies: a locale directory holding an
+    // untranslated copy (docs/es/ with English text), not a translation
+    let latin = |l: &str| {
+        !matches!(
+            l,
+            "zh" | "zh-Hant"
+                | "ja"
+                | "ko"
+                | "ru"
+                | "ar"
+                | "he"
+                | "el"
+                | "th"
+                | "hi"
+                | "uk"
+                | "bg"
+                | "sr"
+                | "fa"
+                | "ur"
+        )
+    };
+    if a.language != b.language && latin(&a.language) && latin(&b.language) && jac >= 0.8 {
+        return (
+            "drift",
+            format!(
+                "locale {} / {} but the text is not translated, body similarity {jac:.2}",
+                a.language, b.language
+            ),
+        );
+    }
     if a.language != b.language {
         let body = if a.body_sha256 == b.body_sha256 {
             "; body identical (not translated)"
@@ -137,14 +167,19 @@ fn same_name(a: &Card, b: &Card) -> (&'static str, String) {
     }
     // one repository shipping the same name under several host directories (.kiro/, pi/,
     // .agents/, docs/<lang>/) is one skill's lineage, however far the copies have diverged
-    let shared = a
-        .sources
-        .iter()
-        .any(|s| b.sources.iter().any(|t| t.origin == s.origin));
+    // one repository shipping the same skill directory under several host trees (.kiro/,
+    // pi/core/, .agents/): same origin AND same directory name. Two different directories
+    // that merely share a frontmatter name stay a conflict.
+    let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+    let shared = a.sources.iter().any(|s| {
+        b.sources
+            .iter()
+            .any(|t| t.origin == s.origin && base(&t.subpath) == base(&s.subpath))
+    });
     if shared {
         return (
             "drift",
-            format!("same name within one source repository, body similarity {jac:.2}, containment {contain:.2}"),
+            format!("same skill directory in one source repository, body similarity {jac:.2}, containment {contain:.2}"),
         );
     }
     (
@@ -360,6 +395,31 @@ mod tests {
             kiro,
         ]);
         assert_eq!(r2[0].kind, "drift", "{r2:?}");
+        let mut legacy = card("deploy", "latin", "kubernetes rollout helm charts", 'h');
+        legacy.sources[0].subpath = "deploy-legacy".into();
+        let r3 = build(&[
+            card("deploy", "latin", "vercel preview production", 'e'),
+            legacy,
+        ]);
+        assert_eq!(r3[0].kind, "name_conflict", "{r3:?}");
+        // a locale directory holding an untranslated copy is not a translation
+        let mut es = card(
+            "guide",
+            "es",
+            "same english words here for every reader of guide",
+            'i',
+        );
+        es.sources[0].subpath = "docs/es/guide".into();
+        let r4 = build(&[
+            card(
+                "guide",
+                "latin",
+                "same english words here for every reader of guide",
+                'j',
+            ),
+            es,
+        ]);
+        assert_eq!(r4[0].kind, "drift", "{r4:?}");
         // a short digest no longer panics
         let mut bad = card("x", "latin", "y", 'z');
         bad.digest = "abc".into();
