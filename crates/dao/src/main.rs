@@ -7,7 +7,9 @@
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
 mod check;
+mod normalize;
 mod quarantine;
+mod relations;
 mod scan;
 mod source;
 
@@ -24,6 +26,8 @@ fn usage() -> ExitCode {
          --all stages every directory under SUBPATH that contains a SKILL.md (not descending into skills).\n\
   dao scan --store DIR (DIGEST... | --all)\n\
          writes scans/<digest>.json (BLOCK | UNRESOLVED | REVIEW_REQUIRED | CLEAN) and prints a summary.\n\
+  dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
+  dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
@@ -253,6 +257,91 @@ fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
     })
 }
 
+/// `--store DIR` plus either digests or `--all` (every content digest under objects/).
+fn store_and_digests(args: &[String]) -> Result<(PathBuf, Vec<String>), String> {
+    let (mut store, mut digests, mut all) = (None, Vec::new(), false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--store" => store = Some(PathBuf::from(it.next().ok_or("--store needs a value")?)),
+            "--all" => all = true,
+            d if !d.starts_with('-') => digests.push(d.to_string()),
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let store = store.ok_or("--store is required")?;
+    if all {
+        for e in fs::read_dir(store.join("objects"))
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            if let Ok(n) = e.file_name().into_string() {
+                if scan::is_digest(&n) {
+                    digests.push(n);
+                }
+            }
+        }
+        digests.sort();
+    }
+    Ok((store, digests))
+}
+
+fn normalize_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (store, digests) = store_and_digests(args)?;
+    let mut status = std::collections::BTreeMap::<String, usize>::new();
+    let mut errors = Vec::new();
+    for d in &digests {
+        match normalize::card(&store, d).and_then(|c| normalize::write_card(&store, &c).map(|_| c))
+        {
+            Ok(c) => *status.entry(c.status).or_default() += 1,
+            Err(e) => errors.push(serde_json::json!({"digest": d, "error": e})),
+        }
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({"cards": digests.len() - errors.len(), "status": status, "errors": errors})).unwrap()
+    );
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
+fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (store, _) = store_and_digests(args)?;
+    let mut cards: Vec<normalize::Card> = Vec::new();
+    for e in fs::read_dir(store.join("cards"))
+        .map_err(|e| format!("run dao normalize first: {e}"))?
+        .flatten()
+    {
+        if e.path().extension().is_some_and(|x| x == "json") {
+            let b = fs::read(e.path()).map_err(|e| e.to_string())?;
+            cards.push(
+                serde_json::from_slice(&b)
+                    .map_err(|err| format!("{}: {err}", e.path().display()))?,
+            );
+        }
+    }
+    cards.sort_by(|a, b| a.digest.cmp(&b.digest));
+    let rels = relations::build(&cards);
+    let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+    for r in &rels {
+        *kinds.entry(r.kind.as_str()).or_default() += 1;
+    }
+    let tmp = store.join(format!(".relations.{}", std::process::id()));
+    fs::write(&tmp, serde_json::to_vec_pretty(&rels).unwrap()).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, store.join("relations.json")).map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"cards": cards.len(), "relations": kinds})
+        )
+        .unwrap()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let Ok(args) = std::env::args_os()
         .skip(1)
@@ -265,6 +354,8 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
         Some("scan") => scan_cmd(&args[1..]),
+        Some("normalize") => normalize_cmd(&args[1..]),
+        Some("relations") => relations_cmd(&args[1..]),
         Some("check") if args.len() <= 2 => {
             let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
             println!("{}", check::to_json(&r));

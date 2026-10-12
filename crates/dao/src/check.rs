@@ -197,7 +197,7 @@ enum Node {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Val {
+pub(crate) enum Val {
     Str(String),
     /// Shared like PyYAML's object references: an alias never copies the subtree.
     Map(Rc<Vec<(String, Val)>>),
@@ -1091,7 +1091,7 @@ const ALLOWED_TOP: [&str; 6] = [
     "allowed-tools",
 ];
 
-fn parse_frontmatter(text: &str) -> Result<Vec<(String, Val)>, &'static str> {
+pub(crate) fn parse_frontmatter(text: &str) -> Result<Vec<(String, Val)>, &'static str> {
     let lines = py_splitlines(text);
     if lines.first() != Some(&"---") {
         return Err("SKILL.md must start with YAML frontmatter (---)");
