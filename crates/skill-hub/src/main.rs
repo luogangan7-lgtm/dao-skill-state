@@ -1,0 +1,542 @@
+//! skill-hub — registry, drift check, lexical search and verified load for agent skills.
+//!
+//! Role: the hosted-skill layer of the DAO family. Agents call `search` to find a skill
+//! whose description is not resident in context, then `get` to load its verified SKILL.md.
+//! Depends on: serde/serde_json (registry file), sha2 (content identity); std only otherwise.
+//! Called by: the thin `skill-hub` entry skill, CI tests, DAO admission scripts.
+//! Invariants:
+//! - `get` only serves ids present in the registry, and only when the file on disk still
+//!   has the recorded realpath and sha256 (no path from the query is ever trusted).
+//! - `check` is red (exit 1) on any added, removed or changed SKILL.md under the roots.
+//! - The registry holds local absolute paths; it is a generated artifact, never committed.
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+const SCHEMA: u32 = 1;
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+struct Root {
+    label: String,
+    path: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+struct Skill {
+    id: String,
+    name: String,
+    description: String,
+    /// Canonical directory of the skill (symlinks resolved).
+    dir: String,
+    entry_sha256: String,
+    /// Every `root:name` location that resolves to this same content.
+    locations: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Registry {
+    schema: u32,
+    roots: Vec<Root>,
+    skills: Vec<Skill>,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Minimal YAML-frontmatter reader for `name` and `description`
+/// (plain, quoted, and `|`/`>` block scalars). Unknown keys are ignored.
+fn parse_frontmatter(text: &str) -> (Option<String>, String) {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim_end) != Some("---") {
+        return (None, String::new());
+    }
+    let body: Vec<&str> = lines.take_while(|l| l.trim_end() != "---").collect();
+    let field = |key: &str| -> Option<String> {
+        let prefix = format!("{key}:");
+        let i = body.iter().position(|l| l.starts_with(&prefix))?;
+        let rest = body[i][prefix.len()..].trim();
+        if rest.is_empty() || matches!(rest, "|" | ">" | "|-" | ">-" | "|+" | ">+") {
+            let block: Vec<&str> = body[i + 1..]
+                .iter()
+                .take_while(|l| l.is_empty() || l.starts_with(' ') || l.starts_with('\t'))
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect();
+            return Some(block.join(" "));
+        }
+        let unquoted = rest
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| rest.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(rest);
+        Some(unquoted.to_string())
+    };
+    (field("name"), field("description").unwrap_or_default())
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x3040..=0x30FF | 0xAC00..=0xD7AF)
+}
+
+/// Lowercased ASCII/latin words (len >= 2) plus CJK character bigrams
+/// (a lone CJK character becomes a unigram). Hyphens and underscores split words.
+fn tokenize(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut cjk: Vec<char> = Vec::new();
+    let flush_cjk = |cjk: &mut Vec<char>, out: &mut Vec<String>| {
+        match cjk.len() {
+            0 => {}
+            1 => out.push(cjk[0].to_string()),
+            _ => out.extend(cjk.windows(2).map(|w| w.iter().collect::<String>())),
+        }
+        cjk.clear();
+    };
+    for c in text.chars() {
+        if is_cjk(c) {
+            if word.chars().count() >= 2 {
+                out.push(std::mem::take(&mut word));
+            }
+            word.clear();
+            cjk.push(c);
+        } else if c.is_alphanumeric() {
+            flush_cjk(&mut cjk, &mut out);
+            word.extend(c.to_lowercase());
+        } else {
+            flush_cjk(&mut cjk, &mut out);
+            if word.chars().count() >= 2 {
+                out.push(std::mem::take(&mut word));
+            }
+            word.clear();
+        }
+    }
+    flush_cjk(&mut cjk, &mut out);
+    if word.chars().count() >= 2 {
+        out.push(word);
+    }
+    out
+}
+
+fn scan(roots: &[Root]) -> Result<Vec<Skill>, String> {
+    // canonical dir -> skill (merging locations that resolve to the same directory)
+    let mut by_dir: BTreeMap<String, Skill> = BTreeMap::new();
+    for root in roots {
+        let mut entries: Vec<PathBuf> = fs::read_dir(&root.path)
+            .map_err(|e| format!("cannot read root {}: {e}", root.path))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        entries.sort();
+        for p in entries {
+            let entry = p.join("SKILL.md");
+            if !entry.is_file() {
+                continue;
+            }
+            let folder = p.file_name().unwrap().to_string_lossy().into_owned();
+            if folder.starts_with('.') {
+                continue;
+            }
+            let dir = fs::canonicalize(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let bytes = fs::read(&entry).map_err(|e| format!("{}: {e}", entry.display()))?;
+            let (name, description) = parse_frontmatter(&String::from_utf8_lossy(&bytes));
+            let name = name.unwrap_or_else(|| folder.clone());
+            let location = format!("{}:{}", root.label, folder);
+            let key = dir.to_string_lossy().into_owned();
+            by_dir
+                .entry(key.clone())
+                .and_modify(|s| s.locations.push(location.clone()))
+                .or_insert(Skill {
+                    id: String::new(),
+                    name,
+                    description,
+                    dir: key,
+                    entry_sha256: sha256_hex(&bytes),
+                    locations: vec![location],
+                });
+        }
+    }
+    // Identical content under different directories (e.g. a plugin copy) is one skill.
+    let mut merged: Vec<Skill> = Vec::new();
+    for s in by_dir.into_values() {
+        if let Some(m) = merged
+            .iter_mut()
+            .find(|m| m.name == s.name && m.entry_sha256 == s.entry_sha256)
+        {
+            m.locations.extend(s.locations);
+        } else {
+            merged.push(s);
+        }
+    }
+    // Ids: plain name when unique, otherwise `root:folder` of the first location.
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for s in &merged {
+        *counts.entry(s.name.clone()).or_default() += 1;
+    }
+    for s in &mut merged {
+        s.locations.sort();
+        s.id = if counts[&s.name] == 1 {
+            s.name.clone()
+        } else {
+            s.locations[0].clone()
+        };
+    }
+    merged.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(merged)
+}
+
+fn load(path: &str) -> Result<Registry, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("cannot read registry {path}: {e}"))?;
+    let reg: Registry =
+        serde_json::from_str(&text).map_err(|e| format!("bad registry {path}: {e}"))?;
+    if reg.schema != SCHEMA {
+        return Err(format!("registry schema {} != {SCHEMA}", reg.schema));
+    }
+    Ok(reg)
+}
+
+/// Differences between the registry and the disk; empty means in sync.
+fn drift(reg: &Registry) -> Result<Vec<String>, String> {
+    let now = scan(&reg.roots)?;
+    let old: HashMap<&str, &Skill> = reg.skills.iter().map(|s| (s.id.as_str(), s)).collect();
+    let new: HashMap<&str, &Skill> = now.iter().map(|s| (s.id.as_str(), s)).collect();
+    let mut out = Vec::new();
+    for (id, s) in &new {
+        match old.get(id) {
+            None => out.push(format!("added: {id}")),
+            Some(o) if *o != *s => out.push(format!("changed: {id}")),
+            _ => {}
+        }
+    }
+    for id in old.keys().filter(|id| !new.contains_key(*id)) {
+        out.push(format!("removed: {id}"));
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn search<'a>(reg: &'a Registry, query: &str, top_k: usize) -> Vec<(f64, &'a Skill)> {
+    // ponytail: in-memory BM25 over name x3 + description; fine for hundreds of skills,
+    // add an on-disk inverted index only if registries reach tens of thousands.
+    let docs: Vec<Vec<String>> = reg
+        .skills
+        .iter()
+        .map(|s| {
+            let name = tokenize(&s.name);
+            let mut d = Vec::new();
+            for _ in 0..3 {
+                d.extend(name.iter().cloned());
+            }
+            d.extend(tokenize(&s.description));
+            d
+        })
+        .collect();
+    let n = docs.len() as f64;
+    if n == 0.0 {
+        return Vec::new();
+    }
+    let avg = docs.iter().map(Vec::len).sum::<usize>() as f64 / n;
+    let mut q = tokenize(query);
+    q.sort();
+    q.dedup();
+    let (k1, b) = (1.2, 0.75);
+    let mut scored: Vec<(f64, &Skill)> = docs
+        .iter()
+        .zip(&reg.skills)
+        .map(|(d, s)| {
+            let len = d.len() as f64;
+            let score = q
+                .iter()
+                .map(|t| {
+                    let tf = d.iter().filter(|x| *x == t).count() as f64;
+                    if tf == 0.0 {
+                        return 0.0;
+                    }
+                    let df = docs.iter().filter(|d| d.contains(t)).count() as f64;
+                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+                    idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg))
+                })
+                .sum::<f64>();
+            (score, s)
+        })
+        .filter(|(score, _)| *score > 0.0)
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+    scored.truncate(top_k);
+    scored
+}
+
+/// Verified load: the id must be registered and the file must still match.
+fn get(reg: &Registry, id: &str) -> Result<(PathBuf, String), String> {
+    let s = reg
+        .skills
+        .iter()
+        .find(|s| s.id == id)
+        .ok_or(format!("unknown skill id: {id}"))?;
+    let dir = fs::canonicalize(&s.dir).map_err(|e| format!("{id}: {e}"))?;
+    if dir != Path::new(&s.dir) {
+        return Err(format!("{id}: directory moved; run index"));
+    }
+    let entry = dir.join("SKILL.md");
+    let bytes = fs::read(&entry).map_err(|e| format!("{}: {e}", entry.display()))?;
+    if sha256_hex(&bytes) != s.entry_sha256 {
+        return Err(format!(
+            "{id}: SKILL.md changed since indexing; run check/index"
+        ));
+    }
+    Ok((entry, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn usage() -> ExitCode {
+    eprintln!(
+        "usage:\n  skill-hub index --root LABEL=DIR [--root ...] --out REGISTRY.json\n  \
+         (REGISTRY defaults to $SKILL_HUB_REGISTRY)\n  skill-hub check --registry REGISTRY.json\n  \
+         skill-hub search --registry REGISTRY.json [--top-k N] QUERY...\n  \
+         skill-hub get --registry REGISTRY.json ID"
+    );
+    ExitCode::from(2)
+}
+
+fn run(args: &[String]) -> Result<ExitCode, String> {
+    let Some(cmd) = args.first() else {
+        return Ok(usage());
+    };
+    let mut roots = Vec::new();
+    let (mut out, mut registry, mut top_k, mut rest) = (None, None, 3usize, Vec::new());
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().ok_or(format!("{a} needs a value"));
+        match a.as_str() {
+            "--root" => {
+                let v = val()?;
+                let (label, path) = v.split_once('=').ok_or("--root expects LABEL=DIR")?;
+                roots.push(Root {
+                    label: label.into(),
+                    path: path.into(),
+                });
+            }
+            "--out" => out = Some(val()?),
+            "--registry" => registry = Some(val()?),
+            "--top-k" => top_k = val()?.parse().map_err(|_| "--top-k expects a number")?,
+            _ => rest.push(a.clone()),
+        }
+    }
+    match cmd.as_str() {
+        "index" => {
+            let out = out.ok_or("index needs --out")?;
+            if roots.is_empty() {
+                return Err("index needs at least one --root".into());
+            }
+            let skills = scan(&roots)?;
+            let n = skills.len();
+            let reg = Registry {
+                schema: SCHEMA,
+                roots,
+                skills,
+            };
+            fs::write(&out, serde_json::to_string_pretty(&reg).unwrap() + "\n")
+                .map_err(|e| format!("{out}: {e}"))?;
+            println!("indexed {n} skills -> {out}");
+            Ok(ExitCode::SUCCESS)
+        }
+        "check" => {
+            let reg = load(
+                &registry
+                    .clone()
+                    .or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())
+                    .ok_or("check needs --registry or SKILL_HUB_REGISTRY")?,
+            )?;
+            let d = drift(&reg)?;
+            if d.is_empty() {
+                println!("in sync: {} skills", reg.skills.len());
+                return Ok(ExitCode::SUCCESS);
+            }
+            d.iter().for_each(|l| println!("{l}"));
+            Ok(ExitCode::from(1))
+        }
+        "search" => {
+            let reg = load(
+                &registry
+                    .clone()
+                    .or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())
+                    .ok_or("search needs --registry or SKILL_HUB_REGISTRY")?,
+            )?;
+            let hits: Vec<_> = search(&reg, &rest.join(" "), top_k)
+                .into_iter()
+                .map(|(score, s)| {
+                    serde_json::json!({"id": s.id, "score": (score * 1000.0).round() / 1000.0, "description": s.description})
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&hits).unwrap());
+            Ok(ExitCode::SUCCESS)
+        }
+        "get" => {
+            let reg = load(
+                &registry
+                    .clone()
+                    .or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())
+                    .ok_or("get needs --registry or SKILL_HUB_REGISTRY")?,
+            )?;
+            let id = rest.first().ok_or("get needs an ID")?;
+            match get(&reg, id) {
+                Ok((path, text)) => {
+                    println!("<!-- skill-hub: {} -->\n{text}", path.display());
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    eprintln!("refused: {e}");
+                    Ok(ExitCode::from(3))
+                }
+            }
+        }
+        _ => Ok(usage()),
+    }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    run(&args).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("skill-hub-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn put(root: &Path, folder: &str, name: &str, desc: &str) {
+        fs::create_dir_all(root.join(folder)).unwrap();
+        fs::write(
+            root.join(folder).join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n# {name}\n"),
+        )
+        .unwrap();
+    }
+
+    fn reg_for(root: &Path) -> Registry {
+        let roots = vec![Root {
+            label: "t".into(),
+            path: root.to_string_lossy().into(),
+        }];
+        Registry {
+            schema: SCHEMA,
+            skills: scan(&roots).unwrap(),
+            roots,
+        }
+    }
+
+    #[test]
+    fn frontmatter_variants() {
+        assert_eq!(
+            parse_frontmatter("---\nname: a\ndescription: \"quoted: x\"\n---\n"),
+            (Some("a".into()), "quoted: x".into())
+        );
+        assert_eq!(
+            parse_frontmatter(
+                "---\nname: b\ndescription: |\n  line one\n  line two\nmetadata:\n  v: 1\n---\n"
+            ),
+            (Some("b".into()), "line one line two".into())
+        );
+        assert_eq!(parse_frontmatter("no frontmatter"), (None, String::new()));
+    }
+
+    #[test]
+    fn tokenize_latin_and_cjk() {
+        assert_eq!(
+            tokenize("SEO-operator, a GEO"),
+            vec!["seo", "operator", "geo"]
+        );
+        assert_eq!(tokenize("小红书图文"), vec!["小红", "红书", "书图", "图文"]);
+        assert_eq!(tokenize("用 1688 运营"), vec!["用", "1688", "运营"]);
+    }
+
+    #[test]
+    fn search_ranks_relevant_first_and_drops_zero() {
+        let root = tmp("search");
+        put(
+            &root,
+            "seo-operator",
+            "seo-operator",
+            "Audit organic website search and keywords",
+        );
+        put(
+            &root,
+            "xhs",
+            "xiaohongshu-content",
+            "整理小红书图文笔记 package for Xiaohongshu",
+        );
+        put(&root, "pdf", "pdf", "Read and merge PDF files");
+        let reg = reg_for(&root);
+        let hits = search(&reg, "小红书 图文", 3);
+        assert_eq!(hits[0].1.name, "xiaohongshu-content");
+        assert!(hits.iter().all(|(s, _)| *s > 0.0));
+        assert_eq!(
+            search(&reg, "keywords website", 1)[0].1.name,
+            "seo-operator"
+        );
+        assert!(search(&reg, "zzzz", 3).is_empty());
+    }
+
+    #[test]
+    fn duplicate_content_merges_and_conflicts_get_root_ids() {
+        let a = tmp("dup-a");
+        let b = tmp("dup-b");
+        put(&a, "p", "ponytail", "same");
+        put(&b, "p", "ponytail", "same");
+        put(&a, "q", "review", "one");
+        put(&b, "q", "review", "two");
+        let roots = vec![
+            Root {
+                label: "a".into(),
+                path: a.to_string_lossy().into(),
+            },
+            Root {
+                label: "b".into(),
+                path: b.to_string_lossy().into(),
+            },
+        ];
+        let skills = scan(&roots).unwrap();
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["a:q", "b:q", "ponytail"]);
+        assert_eq!(skills[2].locations, vec!["a:p", "b:p"]);
+    }
+
+    #[test]
+    fn check_detects_added_changed_removed() {
+        let root = tmp("drift");
+        put(&root, "one", "one", "first");
+        let reg = reg_for(&root);
+        assert!(drift(&reg).unwrap().is_empty());
+        put(&root, "two", "two", "second");
+        put(&root, "one", "one", "edited");
+        assert_eq!(drift(&reg).unwrap(), vec!["added: two", "changed: one"]);
+        fs::remove_dir_all(root.join("one")).unwrap();
+        fs::remove_dir_all(root.join("two")).unwrap();
+        assert_eq!(drift(&reg).unwrap(), vec!["removed: one"]);
+    }
+
+    #[test]
+    fn get_refuses_unknown_and_tampered() {
+        let root = tmp("get");
+        put(&root, "one", "one", "first");
+        let reg = reg_for(&root);
+        assert!(get(&reg, "one").unwrap().1.contains("# one"));
+        assert!(get(&reg, "../etc").is_err());
+        put(&root, "one", "one", "tampered");
+        assert!(get(&reg, "one").unwrap_err().contains("changed"));
+    }
+}

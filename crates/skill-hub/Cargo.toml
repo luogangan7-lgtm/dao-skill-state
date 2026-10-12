@@ -1,0 +1,15 @@
+[package]
+name = "skill-hub"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Registry, drift check, search and verified load for agent skills (DAO family)"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+
+[profile.release]
+strip = true
+lto = true
