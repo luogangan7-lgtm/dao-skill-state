@@ -16,7 +16,7 @@
 //! - Jev may only answer with a retrieved candidate or the no-skill sentinel; anything else
 //!   falls back to the lexical rule.
 
-use crate::{load, search};
+use crate::load;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -25,6 +25,8 @@ use std::time::Instant;
 pub const DEFAULT_K: usize = 10;
 const FLOOR: f64 = 6.0;
 const REL: f64 = 0.5;
+/// Calibrated on the dev cases (see the PR): bge-m3 cosine for "name: description" vs prompt.
+const DENSE_FLOOR: f64 = 0.6;
 const PROMPT_CHARS: usize = 2500;
 const DESC_CHARS: usize = 400;
 const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
@@ -45,7 +47,10 @@ fn sentinel(cands: &[Candidate]) -> String {
 pub struct Candidate {
     pub id: String,
     pub description: String,
+    /// BM25 score (0 when only dense recall found the skill).
     pub score: f64,
+    /// Cosine similarity when dense recall ran.
+    pub dense: Option<f64>,
 }
 
 /// How to reach Jev; absent means local lexical selection only.
@@ -69,15 +74,28 @@ fn floor_for(n: usize) -> f64 {
     FLOOR * (max_idf(n.max(1) as f64) / max_idf(2000.0)).min(1.0)
 }
 
-/// Lexical rule used without Jev or when Jev fails: top-3 above an absolute and relative floor.
+/// Lexical rule used without Jev or when Jev fails: of the top 3 (in fused order when dense
+/// recall ran), keep those whose BM25 score clears the absolute and relative floor, or whose
+/// cosine similarity clears `DENSE_FLOOR`.
 pub fn lexical(cands: &[Candidate], n_skills: usize) -> Vec<Candidate> {
-    let top = cands.first().map_or(0.0, |c| c.score);
+    let top = cands.iter().map(|c| c.score).fold(0.0, f64::max);
     cands
         .iter()
         .take(3)
-        .filter(|c| c.score >= floor_for(n_skills).max(REL * top))
+        .filter(|c| {
+            c.score >= floor_for(n_skills).max(REL * top)
+                || c.dense.is_some_and(|d| d >= dense_floor())
+        })
         .cloned()
         .collect()
+}
+
+/// Cosine floor for keeping a dense-recalled skill (bge-m3), overridable for calibration.
+pub fn dense_floor() -> f64 {
+    std::env::var("SKILL_HUB_DENSE_FLOOR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DENSE_FLOOR)
 }
 
 /// At most `PROMPT_CHARS` characters: the head and the tail of a long prompt, so a request
@@ -245,12 +263,13 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
             let _ = writeln!(std::io::stderr(), "skill-hub hook: {e}");
         })
         .ok()?;
-    let cands: Vec<Candidate> = search(&reg, &prompt, top_k)
+    let cands: Vec<Candidate> = crate::ranked(&reg, &path, &prompt, top_k)
         .into_iter()
-        .map(|(score, s)| Candidate {
-            id: s.id.clone(),
-            description: s.description.clone(),
-            score,
+        .map(|h| Candidate {
+            id: h.skill.id.clone(),
+            description: h.skill.description.clone(),
+            score: h.lexical,
+            dense: h.dense.map(f64::from),
         })
         .collect();
     let jev = std::env::var("TYPESAFE_API_KEY")
@@ -297,6 +316,7 @@ mod tests {
             id: id.into(),
             description: format!("{id} does things"),
             score,
+            dense: None,
         }
     }
 
@@ -330,9 +350,20 @@ mod tests {
                 id: s.id.clone(),
                 description: s.description.clone(),
                 score,
+                dense: None,
             })
             .collect();
         assert_eq!(lexical(&cands, reg.skills.len()).len(), 1);
+        // a dense-recalled skill with no lexical score is kept when its cosine clears the floor
+        let mut d = cand("semantic-only", 0.0);
+        d.dense = Some(DENSE_FLOOR + 0.01);
+        let mut low = cand("weak", 0.0);
+        low.dense = Some(DENSE_FLOOR - 0.2);
+        let kept = lexical(&[d, low], 2000);
+        assert_eq!(
+            kept.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["semantic-only"]
+        );
         let _ = std::fs::remove_dir_all(root);
         // a skill literally named "none" is an ordinary candidate
         let c = [cand("none", 1.0)];
