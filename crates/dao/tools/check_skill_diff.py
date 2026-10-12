@@ -154,6 +154,16 @@ REVIEW = [
     ("r-bomb", "---\nname: r-bomb\ndescription: ok\na0: &a0 {x: 1}\n"
      + "".join(f"a{i}: &a{i} {{p: *a{i-1}, q: *a{i-1}}}\n" for i in range(1, 40)) + "---\n"),
     ("r-emptyblk", "---\nname: r-emptyblk\ndescription: ok\nx: |\n---\n"),
+    ("r-setcycle", "---\nname: r-setcycle\ndescription: ok\nx: !!set &m {<<: *m}\n---\n"),
+    ("r-setcycle2", "---\nname: r-setcycle2\ndescription: ok\nx: !!set &a {<<: &b {<<: *a}}\n---\n"),
+    ("r-strcycle", "---\nname: r-strcycle\ndescription: ok\nx: !!str &m {=: *m}\n---\n"),
+    ("r-intcycle", "---\nname: r-intcycle\ndescription: ok\nx: !!int &m {=: *m}\n---\n"),
+    ("r-dots2", "---\n...\n--- \nname: r-dots2\ndescription: ok\n---\n"),
+    ("r-emptybang", "---\nname: r-emptybang\ndescription: ok\nmetadata:\n  k: ! |\n---\n"),
+    ("r-hdrtab", "---\nname: r-hdrtab\ndescription: ok\nmetadata:\n  k: |\t\n---\n"),
+    ("r-keepempty", "---\nname: r-keepempty\ndescription: ok\nmetadata:\n  k: ! |+\n\n---\n"),
+    ("r-setchain", "---\nname: r-setchain\ndescription: ok\nb0: &b0 {z: 1}\n"
+     + "".join(f"b{i}: &b{i} !!set {{<<: [*b{i-1}, *b{i-1}]}}\n" for i in range(1, 12)) + "---\n"),  # exponential in PyYAML too
 ] + [
     (f"r-depth-{style}-{n}", "---\nname: r-depth-%s-%d\ndescription: ok\n%s---\n" % (style, n, body))
     for n in (480, 489, 490, 491, 600, 5000)

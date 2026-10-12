@@ -285,11 +285,16 @@ enum Fail {
     Crash,
 }
 
+/// Flattened `!!set` pairs: (key node, value node, key is a retagged `=` string).
+type Flat = Rc<Vec<(usize, usize, bool)>>;
+
 struct Loader<'a> {
     nodes: Vec<Node>,
     res: &'a Resolvers,
     done: HashMap<usize, Val>,
     in_progress: HashSet<usize>,
+    flat_memo: std::cell::RefCell<HashMap<usize, Flat>>,
+    flat_busy: std::cell::RefCell<HashSet<usize>>,
 }
 
 /// Value of a Unicode decimal digit (`\p{Nd}`) as Python's `int()` reads it. Nd digits come in
@@ -453,7 +458,7 @@ impl Loader<'_> {
                     let data = c.is_ascii_alphanumeric() || c == '+' || c == '/';
                     if done {
                         if data {
-                            return Err(Fail::Invalid); // excess data after padding (3.14)
+                            return Err(Fail::Invalid); // ponytail: stricter than 3.14, which may keep decoding
                         }
                         continue;
                     }
@@ -610,7 +615,7 @@ impl Loader<'_> {
                     // SafeConstructor.construct_mapping (generator): flatten merges, then every
                     // key must be hashable; merged entries are constructed like the rest
                     let mut fresh = Vec::new();
-                    for (k, v, key_is_str) in self.flatten(id)? {
+                    for &(k, v, key_is_str) in self.flatten(id)?.iter() {
                         if !key_is_str {
                             match self.construct(k, &mut fresh)? {
                                 Val::Map(_) | Val::Seq | Val::Other { hashable: false } => {
@@ -643,56 +648,84 @@ impl Loader<'_> {
     }
 
     /// SafeConstructor.construct_scalar: a mapping stands for the value of its `=` key.
+    /// A `=` chain that loops back (`&m {=: *m}`) is Python's RecursionError: invalid.
     fn scalar_text(&self, id: usize) -> Result<String, Fail> {
-        match &self.nodes[self.deref(id)] {
-            Node::Scalar { value, .. } => Ok(value.clone()),
-            Node::Map { pairs, .. } => {
-                for &(k, v) in pairs {
-                    if self.scalar_tag(k).as_deref() == Some(&format!("{CORE}value")) {
-                        return self.scalar_text(v);
-                    }
-                }
-                Err(Fail::Invalid)
+        let mut seen = HashSet::new();
+        let mut id = self.deref(id);
+        loop {
+            if !seen.insert(id) {
+                return Err(Fail::Invalid);
             }
-            _ => Err(Fail::Invalid),
+            match &self.nodes[id] {
+                Node::Scalar { value, .. } => return Ok(value.clone()),
+                Node::Map { pairs, .. } => {
+                    let Some(&(_, v)) = pairs.iter().find(|(k, _)| {
+                        self.scalar_tag(*k).as_deref() == Some(&format!("{CORE}value"))
+                    }) else {
+                        return Err(Fail::Invalid);
+                    };
+                    id = self.deref(v);
+                }
+                _ => return Err(Fail::Invalid),
+            }
         }
     }
 
     /// SafeConstructor.flatten_mapping: `<<` merges first (sequence merges in reverse),
     /// then the node's own pairs; `=` keys become string keys. Returns (key, value, key_is_str).
-    fn flatten(&self, id: usize) -> Result<Vec<(usize, usize, bool)>, Fail> {
-        let Node::Map { pairs, .. } = &self.nodes[self.deref(id)] else {
+    /// PyYAML rewrites `node.value` in place, so a node is flattened once: results are memoised,
+    /// and a node reached again while it is being flattened has already lost its merge keys
+    /// (its own pairs only), which also ends self-referencing merges.
+    fn flatten(&self, id: usize) -> Result<Flat, Fail> {
+        let id = self.deref(id);
+        if let Some(done) = self.flat_memo.borrow().get(&id) {
+            return Ok(done.clone());
+        }
+        let Node::Map { pairs, .. } = &self.nodes[id] else {
             return Err(Fail::Invalid);
         };
-        let (mut merge, mut rest) = (Vec::new(), Vec::new());
-        for &(k, v) in pairs {
-            match self
-                .scalar_tag(k)
-                .as_deref()
-                .and_then(|t| t.strip_prefix(CORE))
-            {
-                Some("merge") => match &self.nodes[self.deref(v)] {
-                    Node::Map { .. } => merge.extend(self.flatten(v)?),
-                    Node::Seq { items, .. } => {
-                        let mut sub = Vec::new();
-                        for &i in items {
-                            if !matches!(self.nodes[self.deref(i)], Node::Map { .. }) {
-                                return Err(Fail::Invalid);
-                            }
-                            sub.push(self.flatten(i)?);
-                        }
-                        for s in sub.into_iter().rev() {
-                            merge.extend(s);
-                        }
-                    }
-                    _ => return Err(Fail::Invalid),
-                },
-                Some("value") => rest.push((k, v, true)),
-                _ => rest.push((k, v, false)),
-            }
+        let tag_of = |k: usize| self.scalar_tag(k);
+        let is = |k: usize, s: &str| tag_of(k).as_deref() == Some(&format!("{CORE}{s}"));
+        if !self.flat_busy.borrow_mut().insert(id) {
+            return Ok(Rc::new(
+                pairs
+                    .iter()
+                    .filter(|(k, _)| !is(*k, "merge"))
+                    .map(|&(k, v)| (k, v, is(k, "value")))
+                    .collect(),
+            ));
         }
-        merge.extend(rest);
-        Ok(merge)
+        let res = (|| {
+            let (mut merge, mut rest) = (Vec::new(), Vec::new());
+            for &(k, v) in pairs {
+                if is(k, "merge") {
+                    match &self.nodes[self.deref(v)] {
+                        Node::Map { .. } => merge.extend(self.flatten(v)?.iter().copied()),
+                        Node::Seq { items, .. } => {
+                            let mut sub = Vec::new();
+                            for &i in items {
+                                if !matches!(self.nodes[self.deref(i)], Node::Map { .. }) {
+                                    return Err(Fail::Invalid);
+                                }
+                                sub.push(self.flatten(i)?);
+                            }
+                            for s in sub.into_iter().rev() {
+                                merge.extend(s.iter().copied());
+                            }
+                        }
+                        _ => return Err(Fail::Invalid),
+                    }
+                } else {
+                    rest.push((k, v, is(k, "value")));
+                }
+            }
+            merge.extend(rest);
+            Ok(Rc::new(merge))
+        })();
+        self.flat_busy.borrow_mut().remove(&id);
+        let res = res?;
+        self.flat_memo.borrow_mut().insert(id, res.clone());
+        Ok(res)
     }
 
     fn deref(&self, mut id: usize) -> usize {
@@ -838,8 +871,19 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
     // document markers and directives (line-level)
     let text: String = src.iter().collect();
     let mut after_end = false;
+    let mut seen_content = false;
+    static BLOCK_TAB: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let block_tab = BLOCK_TAB
+        .get_or_init(|| Regex::new(r"(?:^|:\s|-\s)\s*(?:[!&]\S*\s+)*[|>][-+0-9]*[ ]*\t").unwrap());
     for line in text.lines() {
         let content = !line.trim().is_empty() && !line.trim_start().starts_with('#');
+        if block_tab.is_match(line) {
+            return false; // tab after a block scalar header
+        }
+        if !seen_content && (line == "..." || line.starts_with("... ")) {
+            return false; // '...' before the first document
+        }
+        seen_content |= content;
         if after_end && content && !line.starts_with("---") {
             return false; // expected '<document start>'
         }
@@ -905,8 +949,36 @@ fn load(source: &str) -> Result<Option<Val>, Fail> {
                 if anchor > 0 {
                     anchors.insert(anchor, id);
                 }
+                // PyYAML: a block scalar with no content lines is "" (clipped) or one break per
+                // blank line (kept, `|+`); saphyr adds the header's line break
+                let mut value = v.into_owned();
+                if matches!(style, ScalarStyle::Literal | ScalarStyle::Folded)
+                    && value.chars().all(|c| c == '\n')
+                {
+                    let header = chars[..(span.start.index() + 1).min(chars.len())]
+                        .iter()
+                        .rposition(|c| *c == '|' || *c == '>')
+                        .map(|i| {
+                            chars[i..]
+                                .iter()
+                                .take_while(|c| **c != '\n')
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default();
+                    if header.contains('+') {
+                        // kept: one break per line after the header line (saphyr reports at
+                        // least one; its span starts at the indicator when there is no content)
+                        let raw = &chars[span.start.index().min(chars.len())
+                            ..span.end.index().min(chars.len())];
+                        let breaks = raw.iter().filter(|c| **c == '\n').count();
+                        let header_break = usize::from(matches!(raw.first(), Some('|' | '>')));
+                        value = "\n".repeat(breaks.saturating_sub(header_break));
+                    } else {
+                        value.clear();
+                    }
+                }
                 Node::Scalar {
-                    value: v.into_owned(),
+                    value,
                     plain: style == ScalarStyle::Plain,
                     tag: tag_str(&tag),
                 }
@@ -960,6 +1032,8 @@ fn load(source: &str) -> Result<Option<Val>, Fail> {
                 res: &res,
                 done: HashMap::new(),
                 in_progress: HashSet::new(),
+                flat_memo: Default::default(),
+                flat_busy: Default::default(),
             };
             l.construct(roots[0], &mut Vec::new()).map(Some)
         }

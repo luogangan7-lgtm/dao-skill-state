@@ -3276,6 +3276,60 @@
 "python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: x\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
 },
 {
+"dir": "r-setcycle",
+"skill_md_b64": "LS0tCm5hbWU6IHItc2V0Y3ljbGUKZGVzY3JpcHRpb246IG9rCng6ICEhc2V0ICZtIHs8PDogKm19Ci0tLQo=",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: x\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-setcycle2",
+"skill_md_b64": "LS0tCm5hbWU6IHItc2V0Y3ljbGUyCmRlc2NyaXB0aW9uOiBvawp4OiAhIXNldCAmYSB7PDw6ICZiIHs8PDogKmF9fQotLS0K",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: x\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-strcycle",
+"skill_md_b64": "LS0tCm5hbWU6IHItc3RyY3ljbGUKZGVzY3JpcHRpb246IG9rCng6ICEhc3RyICZtIHs9OiAqbX0KLS0tCg==",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-intcycle",
+"skill_md_b64": "LS0tCm5hbWU6IHItaW50Y3ljbGUKZGVzY3JpcHRpb246IG9rCng6ICEhaW50ICZtIHs9OiAqbX0KLS0tCg==",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-dots2",
+"skill_md_b64": "LS0tCi4uLgotLS0gCm5hbWU6IHItZG90czIKZGVzY3JpcHRpb246IG9rCi0tLQo=",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-emptybang",
+"skill_md_b64": "LS0tCm5hbWU6IHItZW1wdHliYW5nCmRlc2NyaXB0aW9uOiBvawptZXRhZGF0YToKICBrOiAhIHwKLS0tCg==",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"metadata\",\n      \"message\": \"metadata keys and values must all be strings\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-hdrtab",
+"skill_md_b64": "LS0tCm5hbWU6IHItaGRydGFiCmRlc2NyaXB0aW9uOiBvawptZXRhZGF0YToKICBrOiB8CQotLS0K",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-keepempty",
+"skill_md_b64": "LS0tCm5hbWU6IHIta2VlcGVtcHR5CmRlc2NyaXB0aW9uOiBvawptZXRhZGF0YToKICBrOiAhIHwrCgotLS0K",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-setchain",
+"skill_md_b64": "LS0tCm5hbWU6IHItc2V0Y2hhaW4KZGVzY3JpcHRpb246IG9rCmIwOiAmYjAge3o6IDF9CmIxOiAmYjEgISFzZXQgezw8OiBbKmIwLCAqYjBdfQpiMjogJmIyICEhc2V0IHs8PDogWypiMSwgKmIxXX0KYjM6ICZiMyAhIXNldCB7PDw6IFsqYjIsICpiMl19CmI0OiAmYjQgISFzZXQgezw8OiBbKmIzLCAqYjNdfQpiNTogJmI1ICEhc2V0IHs8PDogWypiNCwgKmI0XX0KYjY6ICZiNiAhIXNldCB7PDw6IFsqYjUsICpiNV19CmI3OiAmYjcgISFzZXQgezw8OiBbKmI2LCAqYjZdfQpiODogJmI4ICEhc2V0IHs8PDogWypiNywgKmI3XX0KYjk6ICZiOSAhIXNldCB7PDw6IFsqYjgsICpiOF19CmIxMDogJmIxMCAhIXNldCB7PDw6IFsqYjksICpiOV19CmIxMTogJmIxMSAhIXNldCB7PDw6IFsqYjEwLCAqYjEwXX0KLS0tCg==",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: b0, b1, b10, b11, b2, b3, b4, b5, b6, b7, b8, b9\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
+},
+{
 "dir": "r-depth-flow-480",
 "skill_md_b64": "LS0tCm5hbWU6IHItZGVwdGgtZmxvdy00ODAKZGVzY3JpcHRpb246IG9rCng6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IHthOiB7YToge2E6IDF9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX0KLS0tCg==",
 "python_exit": 0,
