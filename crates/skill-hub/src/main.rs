@@ -17,10 +17,13 @@
 //!   one broken skill never stops the others from being indexed or served.
 //! - The registry holds local absolute paths; it is a generated artifact, never committed.
 
+mod hook;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -626,7 +629,8 @@ fn usage() -> ExitCode {
         "usage:\n  skill-hub index --root LABEL=DIR [--root ...] --out REGISTRY.json\n  \
          skill-hub check  [--registry REGISTRY.json]\n  \
          skill-hub search [--registry REGISTRY.json] [--top-k N] [--] QUERY...\n  \
-         skill-hub get    [--registry REGISTRY.json] ID\n\
+         skill-hub get    [--registry REGISTRY.json] ID\n  \
+         skill-hub hook   [--registry REGISTRY.json] [--top-k N]   (UserPromptSubmit hook; reads JSON on stdin)\n\
          check/search/get default to $SKILL_HUB_REGISTRY.\n\
          exit: 0 ok, 1 drift, 2 error/usage, 3 get refused (changed/moved), 4 unknown id"
     );
@@ -754,8 +758,37 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
+/// `skill-hub hook [--registry PATH] [--top-k N]`: always exits 0 so a hook never blocks
+/// the user's prompt (Codex treats exit 2 as "block"); problems go to stderr only.
+fn run_hook(args: &[String]) -> ExitCode {
+    let (mut registry, mut top_k) = (None, hook::DEFAULT_K);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--registry" => registry = it.next().cloned(),
+            "--top-k" => {
+                top_k = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(hook::DEFAULT_K)
+            }
+            _ => {
+                let _ = writeln!(std::io::stderr(), "skill-hub hook: ignoring argument {a}");
+            }
+        }
+    }
+    if let Some(out) = hook::run(registry, top_k) {
+        // a closed stdout must not turn into a panic exit code
+        let _ = writeln!(std::io::stdout(), "{out}");
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("hook") {
+        return run_hook(&args[1..]);
+    }
     run(&args).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         ExitCode::from(EXIT_ERROR)
