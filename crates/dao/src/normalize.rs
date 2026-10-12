@@ -100,10 +100,11 @@ pub fn language(text: &str) -> &'static str {
 }
 
 /// ISO 639-1 codes accepted as locale directories (not `go`, `js`, `api`, …).
-const LOCALES: [&str; 44] = [
-    "ar", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "he", "hi",
-    "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "ms", "nb", "nl", "no", "pl", "pt", "ro", "ru",
-    "sk", "sl", "sr", "sv", "sw", "th", "tl", "tr", "uk", "ur", "vi", "zh",
+/// (`en` is the default language, never a translation locale.)
+const LOCALES: [&str; 43] = [
+    "ar", "bg", "bn", "ca", "cs", "da", "de", "el", "es", "et", "fa", "fi", "fr", "he", "hi", "hr",
+    "hu", "id", "it", "ja", "ko", "lt", "lv", "ms", "nb", "nl", "no", "pl", "pt", "ro", "ru", "sk",
+    "sl", "sr", "sv", "sw", "th", "tl", "tr", "uk", "ur", "vi", "zh",
 ];
 
 /// The base language of a locale directory in a source path (`docs/zh-CN/x` → `zh`,
@@ -146,6 +147,25 @@ fn script_of(lang: &str) -> &'static str {
         "hi" => "hi",
         _ => "latin",
     }
+}
+
+/// Letters of a non-Latin script in a text (code-heavy translated bodies keep their prose
+/// in the target script even when it is under 20% of all letters).
+fn script_chars(text: &str, script: &str) -> usize {
+    text.chars()
+        .filter(|c| match script {
+            "zh" => matches!(c, '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}'),
+            "ja" => matches!(c, '\u{3040}'..='\u{30ff}'),
+            "ko" => matches!(c, '\u{ac00}'..='\u{d7af}'),
+            "ru" => matches!(c, '\u{0400}'..='\u{04ff}'),
+            "ar" => matches!(c, '\u{0600}'..='\u{06ff}'),
+            "he" => matches!(c, '\u{0590}'..='\u{05ff}'),
+            "el" => matches!(c, '\u{0370}'..='\u{03ff}'),
+            "th" => matches!(c, '\u{0e00}'..='\u{0e7f}'),
+            "hi" => matches!(c, '\u{0900}'..='\u{097f}'),
+            _ => false, // Latin-script locales are never accepted on letter counts alone
+        })
+        .count()
 }
 
 /// Words (lowercased alphanumerics of any script, ≥ 3 chars, CJK excluded) plus CJK bigrams.
@@ -242,7 +262,8 @@ fn invocation_lines(fm: &[&str]) -> Vec<String> {
     out
 }
 
-/// Body text shorter than this (non-whitespace characters) is a placeholder, not a skill.
+/// Body text shorter than this (non-whitespace characters; a CJK character counts 3) is a
+/// placeholder, not a skill.
 const STUB_CHARS: usize = 300;
 /// Bodies are tokenized up to this many bytes (cards stay small for huge bodies).
 const TOKEN_BYTES: usize = 1 << 20;
@@ -319,7 +340,15 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
         (Err(_), _, _) => "invalid_frontmatter",
         (_, None, _) => "needs_name",
         (_, _, None) => "needs_description",
-        _ if body.chars().filter(|c| !c.is_whitespace()).count() < STUB_CHARS => "stub",
+        _ if body
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| if matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}') { 3 } else { 1 })
+            .sum::<usize>()
+            < STUB_CHARS =>
+        {
+            "stub"
+        }
         _ => "ok",
     };
     let p = patterns();
@@ -332,7 +361,11 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
         .sources
         .iter()
         .find_map(|s| path_locale(&s.subpath))
-        .filter(|l| script_of(l) == script || script_of(l) == language(body))
+        .filter(|l| {
+            script_of(l) == script
+                || script_of(l) == language(body)
+                || script_chars(body, script_of(l)) >= 30
+        })
         .unwrap_or_else(|| script.to_string());
     let mut cut = body.len().min(TOKEN_BYTES);
     while !body.is_char_boundary(cut) {
