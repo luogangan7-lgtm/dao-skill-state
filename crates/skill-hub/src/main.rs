@@ -446,7 +446,7 @@ const LANG_SUFFIXES: [&str; 8] = ["ts", "js", "py", "java", "dotnet", "rust", "g
 
 /// Unambiguous ways a query names a language, mapped to the variant suffix. Short forms
 /// such as "go", "net", "ts" or "py" are ordinary words or too ambiguous to count.
-const LANGUAGE_NAMES: [(&str, &str); 10] = [
+const LANGUAGE_NAMES: [(&str, &str); 12] = [
     ("typescript", "ts"),
     ("javascript", "js"),
     ("python", "py"),
@@ -457,7 +457,15 @@ const LANGUAGE_NAMES: [(&str, &str); 10] = [
     ("golang", "go"),
     ("kotlin", "kt"),
     ("nodejs", "js"),
+    // JavaScript/Node SDK skills are usually published as `*-ts`
+    ("javascript", "ts"),
+    ("nodejs", "ts"),
 ];
+
+/// Spellings that `tokenize` would split, joined so synonyms and language names apply.
+fn normalize_query(query: &str) -> String {
+    query.to_lowercase().replace("node.js", "nodejs")
+}
 
 /// `needle` occurs with no letter or digit right before or after it (".NET", not "example.net").
 fn standalone(hay: &str, needle: &str) -> bool {
@@ -470,8 +478,8 @@ fn standalone(hay: &str, needle: &str) -> bool {
 
 /// Languages the query names explicitly (including the spellings ".NET" and "C#").
 fn named_languages(query: &str) -> Vec<&'static str> {
-    let lower = query.to_lowercase();
-    let tokens = tokenize(query);
+    let lower = normalize_query(query);
+    let tokens = tokenize(&lower);
     let mut langs: Vec<&str> = LANGUAGE_NAMES
         .iter()
         .filter(|(n, _)| tokens.iter().any(|t| t == n))
@@ -488,7 +496,7 @@ fn named_languages(query: &str) -> Vec<&'static str> {
 /// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
 /// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
 fn expand_query(query: &str) -> Vec<(String, f64)> {
-    let base = tokenize(query);
+    let base = tokenize(&normalize_query(query));
     let mut q: Vec<(String, f64)> = base.iter().map(|t| (t.clone(), 1.0)).collect();
     if named_languages(query).contains(&"dotnet") {
         q.push(("dotnet".to_string(), 0.5));
@@ -903,6 +911,10 @@ mod tests {
             named_languages("fetch data from example.net"),
             Vec::<&str>::new()
         );
+        assert_eq!(named_languages("a Node.js worker"), vec!["js", "ts"]);
+        assert!(expand_query("Node.js worker")
+            .iter()
+            .any(|(t, _)| t == "ts"));
         assert_eq!(
             named_languages("a C# client and Python worker"),
             vec!["dotnet", "py"]
