@@ -188,6 +188,7 @@ fn stage_all(
 
 fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
     let (mut store, mut digests, mut all) = (None, Vec::new(), false);
+    let (mut skipped, mut errors) = (Vec::<String>::new(), Vec::new());
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -200,10 +201,14 @@ fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
     let store = store.ok_or("scan needs --store")?;
     if all {
         let rd = fs::read_dir(store.join("objects")).map_err(|e| e.to_string())?;
-        digests.extend(
-            rd.filter_map(Result::ok)
-                .filter_map(|e| e.file_name().into_string().ok()),
-        );
+        // only content digests; anything else in objects/ is reported, not scanned
+        for e in rd.filter_map(Result::ok) {
+            match e.file_name().into_string() {
+                Ok(n) if scan::is_digest(&n) => digests.push(n),
+                Ok(n) => skipped.push(n),
+                Err(n) => skipped.push(n.to_string_lossy().into_owned()),
+            }
+        }
         digests.sort();
     }
     if digests.is_empty() {
@@ -212,8 +217,14 @@ fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
     let mut rows = Vec::new();
     for d in &digests {
-        let r = scan::scan(&store, d)?;
-        scan::write_receipt(&store, &r)?;
+        let r = match scan::scan(&store, d).and_then(|r| scan::write_receipt(&store, &r).map(|_| r))
+        {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(serde_json::json!({"digest": d, "error": e}));
+                continue;
+            }
+        };
         let v = serde_json::to_value(r.verdict).unwrap();
         *counts
             .entry(v.as_str().unwrap_or("?").to_string())
@@ -223,7 +234,7 @@ fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"scanned": digests.len(), "verdicts": counts, "objects": rows})
+            &serde_json::json!({"scanned": rows.len(), "verdicts": counts, "objects": rows, "skipped": skipped, "errors": errors})
         )
         .unwrap()
     );
