@@ -3300,6 +3300,42 @@
 "python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
 },
 {
+"dir": "r-b64q",
+"skill_md_b64": "LS0tCm5hbWU6IHItYjY0cQpkZXNjcmlwdGlvbjogb2sKeDogISFiaW5hcnkgQUFBPUEKLS0tCg==",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: x\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-b64q2",
+"skill_md_b64": "LS0tCm5hbWU6IHItYjY0cTIKZGVzY3JpcHRpb246IG9rCng6ICEhYmluYXJ5IEFBQT1BQQotLS0K",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-key1024",
+"skill_md_b64": "LS0tCm5hbWU6IHIta2V5MTAyNApkZXNjcmlwdGlvbjogb2sKa2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2trazogdgotLS0K",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-key1025",
+"skill_md_b64": "LS0tCm5hbWU6IHIta2V5MTAyNQpkZXNjcmlwdGlvbjogb2sKa2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s6IHYKLS0tCg==",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-aliaskey",
+"skill_md_b64": "LS0tCm5hbWU6IHItYWxpYXNrZXkKZGVzY3JpcHRpb246IG9rCmJhc2U6ICZhIGN1c3RvbQoqYTogdmFsdWUKLS0tCg==",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [\n    {\n      \"kind\": \"unknown-field\",\n      \"message\": \"unrecognized optional fields: base, custom\"\n    }\n  ],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-yamlfoo",
+"skill_md_b64": "LS0tCiVZQU1MZm9vIGJhcgotLS0gCm5hbWU6IHIteWFtbGZvbwpkZXNjcmlwdGlvbjogb2sKLS0tCg==",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [],\n  \"status\": \"valid\"\n}\n"
+},
+{
 "dir": "r-dots2",
 "skill_md_b64": "LS0tCi4uLgotLS0gCm5hbWU6IHItZG90czIKZGVzY3JpcHRpb246IG9rCi0tLQo=",
 "python_exit": 1,
