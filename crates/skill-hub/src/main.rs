@@ -437,7 +437,18 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             "--out" => out = Some(val()?),
             "--registry" => registry = Some(val()?),
             "--top-k" => top_k = val()?.parse().map_err(|_| "--top-k expects a number")?,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => rest.push(a.clone()),
+        }
+    }
+    // Stray arguments would silently drop intent (e.g. a mistyped `--root`), so reject them.
+    match (cmd.as_str(), rest.len()) {
+        ("index" | "check", 0) | ("get", 1) | ("search", _) => {}
+        _ => {
+            return Err(format!(
+                "unexpected arguments for {cmd}: {}",
+                rest.join(" ")
+            ))
         }
     }
     let registry = || -> Result<Registry, String> {
@@ -703,6 +714,20 @@ mod tests {
         let reg = reg_for(&root);
         fs::write(root.join("one/references/a.md"), "v2").unwrap();
         assert_eq!(drift(&reg).unwrap(), vec!["changed: one"]);
+    }
+
+    #[test]
+    fn stray_arguments_are_rejected() {
+        let a = |v: &[&str]| run(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(a(&["index", "--root", "a=.", "--rot", "b=.", "--out", "x"])
+            .unwrap_err()
+            .contains("unknown option: --rot"));
+        assert!(a(&["index", "--root", "a=.", "extra", "--out", "x"])
+            .unwrap_err()
+            .contains("unexpected arguments"));
+        assert!(a(&["get", "one", "two"])
+            .unwrap_err()
+            .contains("unexpected"));
     }
 
     #[test]
