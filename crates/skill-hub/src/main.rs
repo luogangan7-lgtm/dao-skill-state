@@ -485,7 +485,11 @@ fn named_languages(query: &str) -> Vec<&'static str> {
         .filter(|(n, _)| tokens.iter().any(|t| t == n))
         .map(|(_, s)| *s)
         .collect();
-    if standalone(&lower, ".net") || lower.contains("c#") {
+    let dotnet_words = ["asp.net", "vb.net", "ado.net"];
+    if standalone(&lower, ".net")
+        || lower.contains("c#")
+        || dotnet_words.iter().any(|w| lower.contains(w))
+    {
         langs.push("dotnet");
     }
     langs.sort();
@@ -912,6 +916,7 @@ mod tests {
             Vec::<&str>::new()
         );
         assert_eq!(named_languages("a Node.js worker"), vec!["js", "ts"]);
+        assert_eq!(named_languages("my ASP.NET Core app"), vec!["dotnet"]);
         assert!(expand_query("Node.js worker")
             .iter()
             .any(|(t, _)| t == "ts"));
