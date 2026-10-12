@@ -267,6 +267,8 @@ impl Resolvers {
             Some('~') => &[("null", &self.null)],
             Some('<') if v == "<<" => return "merge",
             Some('=') if v == "=" => return "value",
+            // PyYAML's documentation-only resolver: no constructor, so loading fails
+            Some('!' | '&' | '*') if v.chars().count() == 1 => return "yaml",
             _ => &[],
         };
         // `null` is only registered for '~', 'n', 'N' and '' (not for y/t/f/o)
@@ -788,6 +790,31 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
             *slot = Some(sp.style);
         }
         let raw: String = src[sp.start.min(src.len())..end].iter().collect();
+        if matches!(sp.style, ScalarStyle::Literal | ScalarStyle::Folded) {
+            // the block header line (`|`/`>` plus indicators) may not carry a tab
+            // saphyr's span starts at the content (after indentation) or, for an empty block,
+            // at the indicator itself
+            let s0 = sp.start.min(src.len());
+            let at_content = src[..s0]
+                .iter()
+                .rev()
+                .take_while(|c| **c != '\n')
+                .all(|c| *c == ' ');
+            let upto = if at_content {
+                s0
+            } else {
+                (s0 + 1).min(src.len())
+            };
+            if let Some(h) = src[..upto].iter().rposition(|c| *c == '|' || *c == '>') {
+                if src[h..]
+                    .iter()
+                    .take_while(|c| **c != '\n')
+                    .any(|c| *c == '\t')
+                {
+                    return false;
+                }
+            }
+        }
         if sp.in_flow
             && sp.style == ScalarStyle::Plain
             && (raw.contains('?') || raw.starts_with([':', '?', '|', '>']))
@@ -869,14 +896,8 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
     let text: String = src.iter().collect();
     let mut after_end = false;
     let mut seen_content = false;
-    static BLOCK_TAB: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let block_tab = BLOCK_TAB
-        .get_or_init(|| Regex::new(r"(?:^|:\s|-\s)\s*(?:[!&]\S*\s+)*[|>][-+0-9]*[ ]*\t").unwrap());
     for line in text.lines() {
         let content = !line.trim().is_empty() && !line.trim_start().starts_with('#');
-        if block_tab.is_match(line) {
-            return false; // tab after a block scalar header
-        }
         if !seen_content && (line == "..." || line.starts_with("... ")) {
             return false; // '...' before the first document
         }

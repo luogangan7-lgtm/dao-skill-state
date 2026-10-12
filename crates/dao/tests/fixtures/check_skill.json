@@ -3336,6 +3336,36 @@
 "python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [],\n  \"status\": \"valid\"\n}\n"
 },
 {
+"dir": "r-tabletab",
+"skill_md_b64": "LS0tCm5hbWU6IHItdGFibGV0YWIKZGVzY3JpcHRpb246IHwKICB8CU5hbWUJfAlVc2UJfAotLS0K",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-quotetab",
+"skill_md_b64": "LS0tCm5hbWU6IHItcXVvdGV0YWIKZGVzY3JpcHRpb246ICJhOiB8CWIiCi0tLQo=",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-commenttab",
+"skill_md_b64": "LS0tCm5hbWU6IHItY29tbWVudHRhYgpkZXNjcmlwdGlvbjogb2sKIyBub3RlOiB8CXgKLS0tCg==",
+"python_exit": 0,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [],\n  \"warnings\": [],\n  \"status\": \"valid\"\n}\n"
+},
+{
+"dir": "r-lonebang",
+"skill_md_b64": "LS0tCm5hbWU6IHItbG9uZWJhbmcKZGVzY3JpcHRpb246IG9rCm1ldGFkYXRhOgogIGo6ICEgIiYiCi0tLQo=",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
+"dir": "r-lonebang2",
+"skill_md_b64": "LS0tCm5hbWU6IHItbG9uZWJhbmcyCmRlc2NyaXB0aW9uOiBvawptZXRhZGF0YToKICBqOiAhIHwKICAgICEKLS0tCg==",
+"python_exit": 1,
+"python_stdout": "{\n  \"path\": \"{DIR}\",\n  \"errors\": [\n    {\n      \"kind\": \"frontmatter\",\n      \"message\": \"invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)\"\n    }\n  ],\n  \"warnings\": [],\n  \"status\": \"invalid\"\n}\n"
+},
+{
 "dir": "r-dots2",
 "skill_md_b64": "LS0tCi4uLgotLS0gCm5hbWU6IHItZG90czIKZGVzY3JpcHRpb246IG9rCi0tLQo=",
 "python_exit": 1,
