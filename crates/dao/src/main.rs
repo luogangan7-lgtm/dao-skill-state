@@ -238,7 +238,17 @@ fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
         )
         .unwrap()
     );
-    Ok(ExitCode::SUCCESS)
+    // a digest that could not be scanned keeps no stale receipt and fails the run
+    for e in &errors {
+        if let Some(d) = e["digest"].as_str().filter(|d| scan::is_digest(d)) {
+            let _ = fs::remove_file(store.join("scans").join(format!("{d}.json")));
+        }
+    }
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
 }
 
 fn main() -> ExitCode {
