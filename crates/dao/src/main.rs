@@ -12,6 +12,7 @@ mod quarantine;
 mod relations;
 mod scan;
 mod source;
+mod upstream;
 
 use quarantine::{stage, Limits, Outcome};
 use source::{detect_license, fetch_git, read_vetted, SourceLock};
@@ -28,6 +29,7 @@ fn usage() -> ExitCode {
          writes scans/<digest>.json (BLOCK | UNRESOLVED | REVIEW_REQUIRED | CLEAN) and prints a summary.\n\
   dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
+  dao upstream check --store DIR [--apply]   sources moved since intake; --apply stages them as new candidates\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
@@ -140,6 +142,91 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
     });
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     Ok(ExitCode::SUCCESS)
+}
+
+/// `dao upstream check --store DIR [--apply]`: report moved sources; with --apply stage each
+/// changed path again as a new candidate (git: the new commit; local: the current tree).
+fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (mut store, mut apply) = (None, false);
+    let mut it = args.iter();
+    if it.next().map(String::as_str) != Some("check") {
+        return Err("usage: dao upstream check --store DIR [--apply]".into());
+    }
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--store" => store = Some(PathBuf::from(it.next().ok_or("--store needs a value")?)),
+            "--apply" => apply = true,
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let store = fs::canonicalize(store.ok_or("--store is required")?).map_err(|e| e.to_string())?;
+    let items = upstream::tracked(&store)?;
+    let reports = upstream::check(&items);
+    let mut staged = Vec::new();
+    if apply {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // one fetch per (origin, upstream commit); every changed path under it is staged
+        let mut groups: std::collections::BTreeMap<
+            (String, String, Option<String>, String),
+            Vec<String>,
+        > = Default::default();
+        for r in reports.iter().filter(|r| r.status == "changed") {
+            let key = (
+                r.kind.clone(),
+                r.origin.clone(),
+                r.requested_rev.clone(),
+                r.upstream.clone().unwrap_or_default(),
+            );
+            groups.entry(key).or_default().push(r.subpath.clone());
+        }
+        for ((kind, origin, rev, upstream_commit), paths) in groups {
+            let fetch_dir = store
+                .join("tmp")
+                .join(format!("upstream-{}", std::process::id()));
+            let (tree, commit) = if kind == "git" {
+                let _ = fs::remove_dir_all(&fetch_dir);
+                let c = fetch_git(&origin, &upstream_commit, &fetch_dir).inspect_err(|_| {
+                    let _ = fs::remove_dir_all(&fetch_dir);
+                })?;
+                (fetch_dir.clone(), Some(c))
+            } else {
+                (PathBuf::from(&origin), None)
+            };
+            for p in paths {
+                let res = stage_all(&tree, &p, false, &store, &kind, &origin, &rev, &commit, now);
+                match res {
+                    Ok((outcomes, _)) => staged.extend(
+                        outcomes
+                            .into_iter()
+                            .map(|o| serde_json::to_value(o).unwrap()),
+                    ),
+                    Err(e) => staged
+                        .push(serde_json::json!({"outcome": "error", "subpath": p, "error": e})),
+                }
+            }
+            if kind == "git" {
+                let _ = fs::remove_dir_all(&fetch_dir);
+            }
+        }
+    }
+    let count = |s: &str| reports.iter().filter(|r| r.status == s).count();
+    let errors = count("error");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "tracked": reports.len(), "unchanged": count("unchanged"), "changed": count("changed"),
+            "pinned": count("pinned"), "errors": errors, "reports": reports, "staged": staged,
+        }))
+        .unwrap()
+    );
+    Ok(if errors == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -386,6 +473,7 @@ fn main() -> ExitCode {
     };
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
+        Some("upstream") => upstream_cmd(&args[1..]),
         Some("scan") => scan_cmd(&args[1..]),
         Some("normalize") => normalize_cmd(&args[1..]),
         Some("relations") => relations_cmd(&args[1..]),

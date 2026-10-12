@@ -134,6 +134,31 @@ pub fn fetch_git(origin: &str, rev: &str, dest: &Path) -> Result<String, String>
     Ok(commit)
 }
 
+/// The commit `rev` names on `origin` right now (`git ls-remote`, no clone, hooks impossible).
+/// A full 40-hex `rev` is returned as is: a pinned commit has no upstream to follow.
+pub fn remote_commit(origin: &str, rev: &str) -> Result<String, String> {
+    validate_origin(origin)?;
+    if rev.starts_with('-') || rev.is_empty() {
+        return Err(format!("invalid revision: {rev}"));
+    }
+    if rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(rev.to_ascii_lowercase());
+    }
+    let out = git(&std::env::temp_dir(), &["ls-remote", "--", origin, rev])?;
+    // prefer the exact branch, then the exact (peeled) tag, then HEAD
+    let refs: Vec<(&str, &str)> = out.lines().filter_map(|l| l.split_once('\t')).collect();
+    let pick = |name: &str| {
+        refs.iter()
+            .find(|(_, r)| *r == name)
+            .map(|(c, _)| c.to_string())
+    };
+    pick(&format!("refs/heads/{rev}"))
+        .or_else(|| pick(&format!("refs/tags/{rev}^{{}}")))
+        .or_else(|| pick(&format!("refs/tags/{rev}")))
+        .or_else(|| pick(rev))
+        .ok_or_else(|| format!("{origin}: no ref named {rev}"))
+}
+
 /// Read a small metadata file (license, frontmatter) before quarantine has vetted the tree:
 /// regular file only (a symlink must resolve to a regular file inside `boundary` and outside
 /// `.git`), at most `cap` bytes. Anything else reads as absent.
