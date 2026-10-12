@@ -1,8 +1,8 @@
 //! check — Rust port of `dao-skill-state/scripts/check_skill.py` (read-only frontmatter lint).
 //!
 //! Depends on: saphyr-parser (YAML events only); regex (Unicode categories for `isalnum`).
-//! Called by: `main` (`dao check`). Differential gate: tests/check_skill/ fixtures frozen from
-//! the Python checker (M0) and `tools/diff_check_skill.py` over real corpora.
+//! Called by: `main` (`dao check`). Differential gate: tests/fixtures/check_skill.json frozen
+//! from the Python checker (M0) and `tools/check_skill_diff.py` over real corpora.
 //! Invariants:
 //! - Same JSON (key order path, errors, warnings, status), same messages, same exit codes
 //!   (0 valid, 1 invalid, 2 uncheckable) as the Python checker for every input it handles.
@@ -18,6 +18,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Issue {
@@ -125,7 +126,12 @@ fn py_realpath(path: &Path) -> std::io::Result<PathBuf> {
         seen: &mut HashMap<PathBuf, Option<PathBuf>>,
     ) -> std::io::Result<PathBuf> {
         let mut cur = base;
-        for comp in rest.components() {
+        let comps: Vec<_> = rest.components().collect();
+        for (k, comp) in comps.iter().copied().enumerate() {
+            // CPython 3.14 strict realpath: a non-directory cannot have further components
+            if k > 0 && !fs::metadata(&cur).map(|m| m.is_dir()).unwrap_or(false) {
+                return Err(std::io::Error::from(std::io::ErrorKind::NotADirectory));
+            }
             use std::path::Component::*;
             match comp {
                 RootDir => cur = PathBuf::from("/"),
@@ -188,7 +194,8 @@ enum Node {
 #[derive(Clone, Debug, PartialEq)]
 enum Val {
     Str(String),
-    Map(Vec<(String, Val)>),
+    /// Shared like PyYAML's object references: an alias never copies the subtree.
+    Map(Rc<Vec<(String, Val)>>),
     Seq,
     /// Any other constructed value (null, bool, int, float, timestamp, bytes, set, …);
     /// `hashable` matters only for `!!set` keys.
@@ -198,6 +205,8 @@ enum Val {
 }
 
 const CORE: &str = "tag:yaml.org,2002:";
+/// Collections open at once; see the composer note in `load`.
+const MAX_DEPTH: usize = 490;
 
 struct Resolvers {
     bool_: Regex,
@@ -232,8 +241,14 @@ impl Resolvers {
     }
 
     /// Implicit tag of an untagged plain scalar, in PyYAML's first-character order.
-    fn implicit(&self, v: &str) -> &'static str {
-        let first = v.chars().next();
+    fn implicit(&self, value: &str) -> &'static str {
+        // resolvers are keyed on the first character of the value as is, but Python's `$`
+        // also matches just before one trailing newline (e.g. `! |` block "null\n")
+        let first = value.chars().next();
+        let v = value.strip_suffix('\n').unwrap_or(value);
+        if first == Some('\n') {
+            return "str";
+        }
         let order: &[(&str, &Regex)] = match first {
             None => &[("null", &self.null)],
             Some(c) if "yYnNtTfFoO".contains(c) => &[("bool", &self.bool_), ("null", &self.null)],
@@ -277,6 +292,31 @@ struct Loader<'a> {
     in_progress: HashSet<usize>,
 }
 
+/// Value of a Unicode decimal digit (`\p{Nd}`) as Python's `int()` reads it. Nd digits come in
+/// runs of ten starting at zero, so the value is the distance from the run start mod 10.
+fn py_digit(c: char) -> Option<u32> {
+    if let Some(d) = c.to_digit(10) {
+        return Some(d);
+    }
+    static ND: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let nd = ND.get_or_init(|| Regex::new(r"^\p{Nd}$").unwrap());
+    let is_nd = |c: char| nd.is_match(c.encode_utf8(&mut [0; 4]));
+    if !is_nd(c) {
+        return None;
+    }
+    let mut k = 0;
+    let mut p = c as u32;
+    while let Some(prev) = p
+        .checked_sub(1)
+        .and_then(char::from_u32)
+        .filter(|x| is_nd(*x))
+    {
+        k += 1;
+        p = prev as u32;
+    }
+    Some(k % 10)
+}
+
 /// Python `int(s, base)` after `_` removal: whitespace, sign, optional matching prefix.
 fn py_int_ok(s: &str, base: u32) -> bool {
     let mut t = py_strip(s);
@@ -295,11 +335,20 @@ fn py_int_ok(s: &str, base: u32) -> bool {
             }
         }
     }
-    !t.is_empty() && t.chars().all(|c| c.is_digit(base))
+    !t.is_empty()
+        && t.chars()
+            .all(|c| c.is_digit(base) || py_digit(c).is_some_and(|d| d < base && !c.is_ascii()))
 }
 
 fn py_float_ok(s: &str) -> bool {
-    let t = py_strip(s);
+    // Python float() accepts Unicode decimal digits too: map them to ASCII first
+    let t: String = py_strip(s)
+        .chars()
+        .map(|c| match py_digit(c) {
+            Some(d) if !c.is_ascii() => char::from_digit(d, 10).unwrap(),
+            _ => c,
+        })
+        .collect();
     !t.is_empty() && t.is_ascii() && t.parse::<f64>().is_ok()
 }
 
@@ -314,7 +363,8 @@ fn days_in_month(y: u32, m: u32) -> u32 {
 
 impl Loader<'_> {
     fn timestamp(&self, v: &str) -> Result<Val, Fail> {
-        let Some(c) = self.res.ts_ctor.captures(v) else {
+        // Python's `$` also matches before one trailing newline
+        let Some(c) = self.res.ts_ctor.captures(v.strip_suffix('\n').unwrap_or(v)) else {
             return Err(Fail::Crash); // match is None → AttributeError
         };
         let n = |i: usize| c.get(i).map(|m| m.as_str().parse::<u32>().unwrap());
@@ -400,8 +450,12 @@ impl Loader<'_> {
                 }
                 let (mut q, mut pads, mut done) = (0usize, 0usize, false);
                 for c in value.chars() {
+                    let data = c.is_ascii_alphanumeric() || c == '+' || c == '/';
                     if done {
-                        break;
+                        if data {
+                            return Err(Fail::Invalid); // excess data after padding (3.14)
+                        }
+                        continue;
                     }
                     if c == '=' {
                         if q % 4 >= 2 {
@@ -442,7 +496,7 @@ impl Loader<'_> {
             // Python would have finished this node already (we got here through a deferred
             // sequence); only its kind can be observed, never inspected further.
             return Ok(match self.nodes[id] {
-                Node::Map { .. } => Val::Map(Vec::new()),
+                Node::Map { .. } => Val::Map(Rc::default()),
                 _ => Val::Seq,
             });
         }
@@ -470,7 +524,7 @@ impl Loader<'_> {
                     // `!!map` on a scalar: iterating the string's characters as pairs
                     Some("map") => {
                         if value.is_empty() {
-                            Ok(Val::Map(Vec::new()))
+                            Ok(Val::Map(Rc::default()))
                         } else {
                             Err(Fail::Invalid)
                         }
@@ -509,7 +563,7 @@ impl Loader<'_> {
                     }
                     t if t == format!("{CORE}map") => {
                         if items.is_empty() {
-                            Ok(Val::Map(Vec::new()))
+                            Ok(Val::Map(Rc::default()))
                         } else {
                             Err(Fail::Crash) // TypeError: cannot unpack non-iterable node
                         }
@@ -520,6 +574,16 @@ impl Loader<'_> {
             Node::Map { pairs, tag } => {
                 let pairs = pairs.clone();
                 let tag = tag.clone().unwrap_or_else(|| format!("{CORE}map"));
+                const SCALAR_CTORS: [&str; 7] =
+                    ["str", "null", "bool", "int", "float", "binary", "timestamp"];
+                if let Some(s) = tag.strip_prefix(CORE).filter(|s| SCALAR_CTORS.contains(s)) {
+                    let text = self.scalar_text(id)?;
+                    // construct_yaml_timestamp then regex-matches node.value (a list): TypeError
+                    if s == "timestamp" {
+                        return Err(Fail::Crash);
+                    }
+                    return self.scalar(&text, &tag);
+                }
                 if tag == format!("{CORE}map") || tag == "!" {
                     chain.push(id);
                     let mut out: Vec<(String, Val)> = Vec::new();
@@ -541,30 +605,19 @@ impl Loader<'_> {
                         out.push((key, val));
                     }
                     chain.pop();
-                    Ok(Val::Map(out))
+                    Ok(Val::Map(Rc::new(out)))
                 } else if tag == format!("{CORE}set") {
-                    // SafeConstructor.construct_mapping (generator): merge keys, hashable keys
+                    // SafeConstructor.construct_mapping (generator): flatten merges, then every
+                    // key must be hashable; merged entries are constructed like the rest
                     let mut fresh = Vec::new();
-                    for (k, v) in pairs {
-                        let is_merge = matches!(&self.nodes[self.deref(k)], Node::Scalar { value, plain: true, tag: None } if value == "<<");
-                        if is_merge {
-                            let ok = match &self.nodes[self.deref(v)] {
-                                Node::Map { .. } => true,
-                                Node::Seq { items, .. } => items.iter().all(|i| {
-                                    matches!(self.nodes[self.deref(*i)], Node::Map { .. })
-                                }),
-                                _ => false,
-                            };
-                            if !ok {
-                                return Err(Fail::Invalid);
+                    for (k, v, key_is_str) in self.flatten(id)? {
+                        if !key_is_str {
+                            match self.construct(k, &mut fresh)? {
+                                Val::Map(_) | Val::Seq | Val::Other { hashable: false } => {
+                                    return Err(Fail::Invalid)
+                                }
+                                _ => {}
                             }
-                            continue;
-                        }
-                        match self.construct(k, &mut fresh)? {
-                            Val::Map(_) | Val::Seq | Val::Other { hashable: false } => {
-                                return Err(Fail::Invalid)
-                            }
-                            _ => {}
                         }
                         self.construct(v, &mut fresh)?;
                     }
@@ -574,6 +627,72 @@ impl Loader<'_> {
                 }
             }
         }
+    }
+
+    /// Tag a scalar node resolves to (PyYAML composer + resolver), or None for collections.
+    fn scalar_tag(&self, id: usize) -> Option<String> {
+        match &self.nodes[self.deref(id)] {
+            Node::Scalar { value, plain, tag } => Some(match tag.as_deref() {
+                None if *plain => format!("{CORE}{}", self.res.implicit(value)),
+                Some("!") => format!("{CORE}{}", self.res.implicit(value)),
+                None => format!("{CORE}str"),
+                Some(t) => t.to_string(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// SafeConstructor.construct_scalar: a mapping stands for the value of its `=` key.
+    fn scalar_text(&self, id: usize) -> Result<String, Fail> {
+        match &self.nodes[self.deref(id)] {
+            Node::Scalar { value, .. } => Ok(value.clone()),
+            Node::Map { pairs, .. } => {
+                for &(k, v) in pairs {
+                    if self.scalar_tag(k).as_deref() == Some(&format!("{CORE}value")) {
+                        return self.scalar_text(v);
+                    }
+                }
+                Err(Fail::Invalid)
+            }
+            _ => Err(Fail::Invalid),
+        }
+    }
+
+    /// SafeConstructor.flatten_mapping: `<<` merges first (sequence merges in reverse),
+    /// then the node's own pairs; `=` keys become string keys. Returns (key, value, key_is_str).
+    fn flatten(&self, id: usize) -> Result<Vec<(usize, usize, bool)>, Fail> {
+        let Node::Map { pairs, .. } = &self.nodes[self.deref(id)] else {
+            return Err(Fail::Invalid);
+        };
+        let (mut merge, mut rest) = (Vec::new(), Vec::new());
+        for &(k, v) in pairs {
+            match self
+                .scalar_tag(k)
+                .as_deref()
+                .and_then(|t| t.strip_prefix(CORE))
+            {
+                Some("merge") => match &self.nodes[self.deref(v)] {
+                    Node::Map { .. } => merge.extend(self.flatten(v)?),
+                    Node::Seq { items, .. } => {
+                        let mut sub = Vec::new();
+                        for &i in items {
+                            if !matches!(self.nodes[self.deref(i)], Node::Map { .. }) {
+                                return Err(Fail::Invalid);
+                            }
+                            sub.push(self.flatten(i)?);
+                        }
+                        for s in sub.into_iter().rev() {
+                            merge.extend(s);
+                        }
+                    }
+                    _ => return Err(Fail::Invalid),
+                },
+                Some("value") => rest.push((k, v, true)),
+                _ => rest.push((k, v, false)),
+            }
+        }
+        merge.extend(rest);
+        Ok(merge)
     }
 
     fn deref(&self, mut id: usize) -> usize {
@@ -589,15 +708,70 @@ fn printable(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\r' | ' '..='~' | '\u{85}' | '\u{a0}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..)
 }
 
-/// Rules of PyYAML's scanner that saphyr (YAML 1.2) does not enforce, checked on the source
-/// with the scalar spans saphyr reports (char offsets):
-/// - a tab outside quoted scalars, block scalar content and comments is an error;
-/// - anchors/aliases are `[0-9A-Za-z_-]+`, and an anchor name may not repeat.
-fn pyyaml_lexical_ok(src: &[char], scalars: &[(usize, usize, ScalarStyle)]) -> bool {
+/// A scalar as saphyr reported it, plus where it sits.
+struct Span {
+    start: usize,
+    end: usize,
+    style: ScalarStyle,
+    in_flow: bool,
+    is_key: bool,
+}
+
+/// Char offset just past the closing quote of the quoted scalar opening at `start` (saphyr's
+/// reported end also covers trailing blanks, which would hide a tab after the quote).
+fn quoted_end(src: &[char], start: usize) -> usize {
+    let q = src[start];
+    let mut i = start + 1;
+    while i < src.len() {
+        match src[i] {
+            '\\' if q == '"' => i += 2,
+            '\'' if q == '\'' && src.get(i + 1) == Some(&'\'') => i += 2,
+            c if c == q => return i + 1,
+            _ => i += 1,
+        }
+    }
+    src.len()
+}
+
+/// Rules of PyYAML's scanner/parser that saphyr (YAML 1.2) does not enforce, checked on the
+/// source with saphyr's scalar spans (char offsets). Any hit = invalid frontmatter:
+/// - a tab outside quoted scalars, block scalar content and comments;
+/// - anchors/aliases are `[0-9A-Za-z_-]+`, may not repeat, and `&name:` is not an anchor;
+/// - in flow context (`[...]`, `{...}`) a plain scalar may not contain `?` nor start with
+///   `:`, `?`, `|` or `>`; a bare `!` tag may not touch `,`, `]` or `}`;
+/// - a simple (non-`?`) key may not span lines and must be under 1024 characters;
+/// - content after a `...` document end needs a `---`; `%YAML` must be version 1.x.
+fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
     let mut in_scalar = vec![None; src.len() + 1];
-    for &(s, e, st) in scalars {
-        for slot in in_scalar.iter_mut().take(e.min(src.len())).skip(s) {
-            *slot = Some(st);
+    for sp in scalars {
+        let quoted = matches!(
+            sp.style,
+            ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
+        );
+        let end = if quoted && sp.start < src.len() {
+            quoted_end(src, sp.start)
+        } else {
+            sp.end.min(src.len())
+        };
+        for slot in in_scalar.iter_mut().take(end).skip(sp.start) {
+            *slot = Some(sp.style);
+        }
+        let raw: String = src[sp.start.min(src.len())..end].iter().collect();
+        if sp.in_flow
+            && sp.style == ScalarStyle::Plain
+            && (raw.contains('?') || raw.starts_with([':', '?', '|', '>']))
+        {
+            return false;
+        }
+        if sp.is_key {
+            let explicit = src[..sp.start]
+                .iter()
+                .rev()
+                .find(|c| !matches!(c, ' ' | '\t'))
+                == Some(&'?');
+            if !explicit && (raw.contains('\n') || raw.chars().count() >= 1024) {
+                return false;
+            }
         }
     }
     let mut comment = vec![false; src.len()];
@@ -633,7 +807,13 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[(usize, usize, ScalarStyle)]) -> b
         {
             return false;
         }
-        if (c == '&' || c == '*') && in_scalar[i].is_none() {
+        if in_scalar[i].is_some() {
+            continue;
+        }
+        if c == '!' && matches!(src.get(i + 1), Some(',' | ']' | '}')) {
+            return false;
+        }
+        if c == '&' || c == '*' {
             let name: String = src[i + 1..]
                 .iter()
                 .take_while(|c| c.is_ascii_alphanumeric() || **c == '-' || **c == '_')
@@ -645,13 +825,32 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[(usize, usize, ScalarStyle)]) -> b
             if name.is_empty()
                 || !matches!(
                     next,
-                    ' ' | '\t' | '\n' | '\r' | '?' | ':' | ',' | ']' | '}' | '%' | '@' | '`'
+                    ' ' | '\t' | '\n' | '\r' | '?' | ',' | ']' | '}' | '%' | '@' | '`'
                 )
             {
-                return false;
+                return false; // includes `&name:` (PyYAML ends the anchor at ':')
             }
             if c == '&' && !seen.insert(name) {
                 return false; // found duplicate anchor
+            }
+        }
+    }
+    // document markers and directives (line-level)
+    let text: String = src.iter().collect();
+    let mut after_end = false;
+    for line in text.lines() {
+        let content = !line.trim().is_empty() && !line.trim_start().starts_with('#');
+        if after_end && content && !line.starts_with("---") {
+            return false; // expected '<document start>'
+        }
+        if line == "..." || line.starts_with("... ") {
+            after_end = true;
+        } else if content {
+            after_end = false;
+        }
+        if let Some(v) = line.strip_prefix("%YAML") {
+            if v.trim().split('.').next() != Some("1") {
+                return false;
             }
         }
     }
@@ -669,14 +868,30 @@ fn load(source: &str) -> Result<Option<Val>, Fail> {
     let mut anchors: HashMap<usize, usize> = HashMap::new();
     let mut stack: Vec<(usize, Option<usize>)> = Vec::new(); // (node, pending map key)
     let mut roots = Vec::new();
-    let mut spans: Vec<(usize, usize, ScalarStyle)> = Vec::new();
+    let chars: Vec<char> = src.chars().collect();
+    let mut spans: Vec<Span> = Vec::new();
+    let mut flow: Vec<bool> = Vec::new(); // per open collection: flow style ([ or {)
     let tag_str = |t: &Option<std::borrow::Cow<'_, saphyr_parser::Tag>>| {
         t.as_ref().map(|t| format!("{}{}", t.handle, t.suffix))
     };
     while let Some(ev) = parser.next_event() {
         let (ev, span) = ev.map_err(|_| Fail::Invalid)?;
         if let Event::Scalar(_, st, ..) = &ev {
-            spans.push((span.start.index(), span.end.index(), *st));
+            let is_key =
+                matches!(stack.last(), Some((p, None)) if matches!(nodes[*p], Node::Map { .. }));
+            spans.push(Span {
+                start: span.start.index(),
+                end: span.end.index(),
+                style: *st,
+                in_flow: flow.iter().any(|f| *f),
+                is_key,
+            });
+        }
+        if matches!(ev, Event::SequenceStart(..) | Event::MappingStart(..)) {
+            flow.push(matches!(chars.get(span.start.index()), Some('[' | '{')));
+        }
+        if matches!(ev, Event::SequenceEnd | Event::MappingEnd) {
+            flow.pop();
         }
         let is_seq = matches!(ev, Event::SequenceStart(..));
         let new = match ev {
@@ -716,6 +931,12 @@ fn load(source: &str) -> Result<Option<Val>, Fail> {
                 nodes.push(node);
                 attach(&mut nodes, &mut stack, &mut roots, id);
                 stack.push((id, None));
+                // PyYAML composes recursively and the checker turns RecursionError into
+                // invalid frontmatter at ~490 levels (489 block, 490 flow, 491 flow seq on
+                // CPython 3.14). Stricter-or-equal: reject beyond MAX_DEPTH collections.
+                if stack.len() > MAX_DEPTH {
+                    return Err(Fail::Invalid);
+                }
                 continue;
             }
             Event::SequenceEnd | Event::MappingEnd => {
@@ -727,7 +948,6 @@ fn load(source: &str) -> Result<Option<Val>, Fail> {
         nodes.push(new);
         attach(&mut nodes, &mut stack, &mut roots, id);
     }
-    let chars: Vec<char> = src.chars().collect();
     if !pyyaml_lexical_ok(&chars, &spans) {
         return Err(Fail::Invalid);
     }
@@ -793,7 +1013,7 @@ fn parse_frontmatter(text: &str) -> Result<Vec<(String, Val)>, &'static str> {
     };
     let source = lines[1..end].join("\n") + "\n";
     match load(&source) {
-        Ok(Some(Val::Map(m))) => Ok(m),
+        Ok(Some(Val::Map(m))) => Ok((*m).clone()),
         Ok(_) => Err("frontmatter must be a mapping"),
         Err(_) => {
             Err("invalid YAML frontmatter (syntax, key, duplicate, recursion or unsupported tag)")
@@ -1078,9 +1298,21 @@ mod tests {
     /// divergences: Python tracebacks (reported here as invalid frontmatter) and KNOWN below.
     #[test]
     fn matches_frozen_python_baseline() {
-        // saphyr (YAML 1.2) rejects a double-quoted continuation line at the parent's indent,
-        // PyYAML accepts it. Stricter, never looser; no real skill in 2,888 hits it.
-        const KNOWN: [&str; 1] = ["v76m"];
+        // Documented divergences, all "Rust stricter, never looser":
+        // - v76m, r-sqcont: saphyr (YAML 1.2) rejects a quoted continuation line at or below
+        //   the parent's indent; PyYAML accepts it.
+        // - r-depth-{flow,seq}-{480,489,490}: saphyr's flow nesting limit is 256; PyYAML's
+        //   recursion limit allows ~490. No real frontmatter nests that deep.
+        const KNOWN: [&str; 8] = [
+            "v76m",
+            "r-sqcont",
+            "r-depth-flow-480",
+            "r-depth-seq-480",
+            "r-depth-flow-489",
+            "r-depth-seq-489",
+            "r-depth-flow-490",
+            "r-depth-seq-490",
+        ];
         let raw = include_str!("../tests/fixtures/check_skill.json");
         let cases: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap();
         let root = std::env::temp_dir().join(format!("dao-check-fx-{}", std::process::id()));
@@ -1119,6 +1351,13 @@ mod tests {
 
     #[test]
     fn python_string_and_path_semantics() {
+        // a path through a regular file is "missing" (CPython 3.14 strict realpath)
+        let d = std::env::temp_dir().join(format!("dao-check-pf-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("SKILL.md"), "---\nname: x\ndescription: y\n---\n").unwrap();
+        let through = format!("{}/SKILL.md/..", d.display());
+        assert_eq!(exit_code(&check_skill(&through)), 2);
+        let _ = fs::remove_dir_all(&d);
         assert_eq!(py_splitlines("a\u{2028}b\u{1c}c\n"), vec!["a", "b", "c"]);
         assert_eq!(py_strip("\u{1f} x \u{3000}"), "x");
         for (a, b) in [

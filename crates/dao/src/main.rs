@@ -186,7 +186,14 @@ fn stage_all(
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Ok(args) = std::env::args_os()
+        .skip(1)
+        .map(|a| a.into_string())
+        .collect::<Result<Vec<String>, _>>()
+    else {
+        eprintln!("error: arguments must be UTF-8");
+        return ExitCode::from(2);
+    };
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
         Some("check") if args.len() <= 2 => {
