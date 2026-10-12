@@ -26,15 +26,14 @@ fn usage() -> ExitCode {
 }
 
 /// Directories under `base` that contain SKILL.md; a skill's own subdirectories are not searched.
-fn find_skills(base: &Path, skip: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if base == skip {
-        return; // the store itself may live inside a --local tree
-    }
+/// `too_deep` collects directories left unsearched at the depth limit, so truncation is visible.
+fn find_skills(base: &Path, depth: usize, out: &mut Vec<PathBuf>, too_deep: &mut Vec<PathBuf>) {
     if base.join("SKILL.md").is_file() {
         out.push(base.to_path_buf());
         return;
     }
     if depth == 0 {
+        too_deep.push(base.to_path_buf());
         return;
     }
     let Ok(rd) = fs::read_dir(base) else { return };
@@ -46,7 +45,7 @@ fn find_skills(base: &Path, skip: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         .collect();
     dirs.sort();
     for d in dirs {
-        find_skills(&d, skip, depth - 1, out);
+        find_skills(&d, depth - 1, out, too_deep);
     }
 }
 
@@ -108,6 +107,9 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
         }
         (None, Some(l)) => {
             let abs = fs::canonicalize(&l).map_err(|e| format!("{}: {e}", l.display()))?;
+            if store.starts_with(&abs) {
+                return Err("--store must not be inside the --local source tree".into());
+            }
             ("local", abs.to_string_lossy().into_owned(), abs, None)
         }
         _ => return Err("give exactly one of --git or --local".into()),
@@ -116,7 +118,7 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
     if kind == "git" {
         let _ = fs::remove_dir_all(&fetch_dir);
     }
-    let outcomes = result?;
+    let (outcomes, too_deep) = result?;
     let staged = outcomes
         .iter()
         .filter(|o| matches!(o, Outcome::Staged { .. }))
@@ -125,6 +127,7 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
         "origin": origin, "commit": commit, "path": path,
         "found": outcomes.len(), "staged": staged, "rejected": outcomes.len() - staged,
         "outcomes": outcomes,
+        "not_searched_depth_limit": too_deep,
     });
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     Ok(ExitCode::SUCCESS)
@@ -141,11 +144,11 @@ fn stage_all(
     rev: &Option<String>,
     commit: &Option<String>,
     now: u64,
-) -> Result<Vec<Outcome>, String> {
+) -> Result<(Vec<Outcome>, Vec<String>), String> {
     let base = tree.join(path);
-    let mut skills = Vec::new();
+    let (mut skills, mut too_deep) = (Vec::new(), Vec::new());
     if all {
-        find_skills(&base, store, 8, &mut skills);
+        find_skills(&base, 8, &mut skills, &mut too_deep);
     } else {
         skills.push(base.clone());
     }
@@ -168,7 +171,16 @@ fn stage_all(
         };
         outcomes.push(stage(dir, tree, &sub, store, &lim, &lock)?);
     }
-    Ok(outcomes)
+    let too_deep = too_deep
+        .iter()
+        .map(|d| {
+            d.strip_prefix(tree)
+                .unwrap_or(d)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    Ok((outcomes, too_deep))
 }
 
 fn main() -> ExitCode {
