@@ -125,6 +125,11 @@ fn py_realpath(path: &Path) -> std::io::Result<PathBuf> {
         rest: &Path,
         seen: &mut HashMap<PathBuf, Option<PathBuf>>,
     ) -> std::io::Result<PathBuf> {
+        // ponytail: recursion per symlink hop; past 4096 hops report it as unresolvable
+        // (CPython walks iteratively) instead of risking the stack
+        if seen.len() > 4096 {
+            return Err(std::io::Error::from_raw_os_error(62)); // ELOOP
+        }
         let mut cur = base;
         let comps: Vec<_> = rest.components().collect();
         for (k, comp) in comps.iter().copied().enumerate() {
@@ -447,39 +452,31 @@ impl Loader<'_> {
                 }
             }
             Some("binary") => {
-                // value.encode('ascii') then binascii.a2b_base64 (non-strict: characters
-                // outside the alphabet are skipped; data length ≡ 1 (mod 4) or missing
-                // padding is an error)
+                // value.encode('ascii') then CPython 3.14 binascii.a2b_base64 (non-strict):
+                // non-alphabet characters are skipped, a pad only counts after two data
+                // characters, decoding continues after a completed pad, and the final length
+                // check is skipped only when the last significant character completed a pad.
+                // Checked against binascii on every string over {A, =, .} up to length 9.
                 if !value.is_ascii() {
                     return Err(Fail::Invalid);
                 }
                 let (mut q, mut pads, mut done) = (0usize, 0usize, false);
                 for c in value.chars() {
-                    let data = c.is_ascii_alphanumeric() || c == '+' || c == '/';
-                    if done {
-                        if data {
-                            return Err(Fail::Invalid); // ponytail: stricter than 3.14, which may keep decoding
-                        }
-                        continue;
-                    }
                     if c == '=' {
-                        if q % 4 >= 2 {
+                        if q >= 2 {
                             pads += 1;
-                            if q % 4 + pads >= 4 {
-                                done = true;
-                            }
+                            done |= q + pads >= 4;
                         }
                     } else if c.is_ascii_alphanumeric() || c == '+' || c == '/' {
-                        if pads > 0 {
-                            pads = 0; // data after a partial pad continues the stream
-                        }
-                        q += 1;
+                        pads = 0;
+                        done = false;
+                        q = (q + 1) % 4;
                     }
                 }
-                if q % 4 == 1 || (q % 4 != 0 && !done) {
-                    Err(Fail::Invalid)
-                } else {
+                if done || q == 0 {
                     other
+                } else {
+                    Err(Fail::Invalid)
                 }
             }
             Some("timestamp") => self.timestamp(value),
@@ -592,13 +589,14 @@ impl Loader<'_> {
                 if tag == format!("{CORE}map") || tag == "!" {
                     chain.push(id);
                     let mut out: Vec<(String, Val)> = Vec::new();
+                    let mut keys: HashSet<String> = HashSet::new();
                     for (k, v) in pairs {
                         let key = self.construct(k, chain)?;
                         let Val::Str(key) = key else {
                             chain.pop();
                             return Err(Fail::Invalid);
                         };
-                        if out.iter().any(|(e, _)| *e == key) {
+                        if !keys.insert(key.clone()) {
                             chain.pop();
                             return Err(Fail::Invalid);
                         }
@@ -802,7 +800,7 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
                 .rev()
                 .find(|c| !matches!(c, ' ' | '\t'))
                 == Some(&'?');
-            if !explicit && (raw.contains('\n') || raw.chars().count() >= 1024) {
+            if !explicit && (raw.contains('\n') || raw.chars().count() > 1024) {
                 return false;
             }
         }
@@ -855,13 +853,12 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
                 .get(i + 1 + name.chars().count())
                 .copied()
                 .unwrap_or('\n');
-            if name.is_empty()
-                || !matches!(
-                    next,
-                    ' ' | '\t' | '\n' | '\r' | '?' | ',' | ']' | '}' | '%' | '@' | '`'
-                )
-            {
-                return false; // includes `&name:` (PyYAML ends the anchor at ':')
+            let ends = matches!(
+                next,
+                ' ' | '\t' | '\n' | '\r' | '?' | ',' | ']' | '}' | '%' | '@' | '`'
+            ) || (c == '*' && next == ':'); // `*a: v` is an alias key; `&a:` is rejected
+            if name.is_empty() || !ends {
+                return false;
             }
             if c == '&' && !seen.insert(name) {
                 return false; // found duplicate anchor
@@ -892,10 +889,11 @@ fn pyyaml_lexical_ok(src: &[char], scalars: &[Span]) -> bool {
         } else if content {
             after_end = false;
         }
-        if let Some(v) = line.strip_prefix("%YAML") {
-            if v.trim().split('.').next() != Some("1") {
-                return false;
-            }
+        let mut words = line.split_whitespace();
+        if words.next() == Some("%YAML")
+            && words.next().and_then(|v| v.split('.').next()) != Some("1")
+        {
+            return false;
         }
     }
     true
@@ -1377,7 +1375,10 @@ mod tests {
         //   the parent's indent; PyYAML accepts it.
         // - r-depth-{flow,seq}-{480,489,490}: saphyr's flow nesting limit is 256; PyYAML's
         //   recursion limit allows ~490. No real frontmatter nests that deep.
-        const KNOWN: [&str; 8] = [
+        // - r-aliaskey: `*a: v` — YAML 1.2 lets alias names contain ':', so saphyr reads an
+        //   undefined alias `a:`; PyYAML ends the alias at ':' and makes it a key.
+        const KNOWN: [&str; 9] = [
+            "r-aliaskey",
             "v76m",
             "r-sqcont",
             "r-depth-flow-480",
@@ -1417,8 +1418,11 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(&root);
+        let mut known = KNOWN.to_vec();
+        known.sort_unstable();
+        bad.sort_unstable();
         assert_eq!(
-            bad, KNOWN,
+            bad, known,
             "unexplained differences from the Python baseline"
         );
     }
