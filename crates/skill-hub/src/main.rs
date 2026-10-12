@@ -24,7 +24,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
+/// Characters of SKILL.md body kept in the registry for retrieval.
+const BODY_CHARS: usize = 1500;
+/// Weight of the body field relative to name+description in the ranking score.
+const BODY_WEIGHT: f64 = 0.3;
 const MAX_FILES: usize = 10_000;
 /// Never executed by a skill, but rewritten by tools; hashing them would lock skills out.
 const SKIP_NAMES: [&str; 6] = [
@@ -60,6 +64,8 @@ struct Skill {
     tree_sha256: String,
     /// Every `root:folder` location that resolves to this same content.
     locations: Vec<String>,
+    /// First `BODY_CHARS` characters of SKILL.md after the frontmatter (retrieval only).
+    body: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -316,6 +322,7 @@ fn scan(roots: &[Root]) -> Result<Scan, String> {
                     dir: key,
                     entry_sha256: hex(&Sha256::digest(&bytes)),
                     locations: vec![location],
+                    body: body_excerpt(&String::from_utf8_lossy(&bytes)),
                 },
             );
         }
@@ -373,15 +380,18 @@ fn normalize_roots(roots: Vec<Root>) -> Result<Vec<Root>, String> {
 
 fn load(path: &str) -> Result<Registry, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("cannot read registry {path}: {e}"))?;
-    let reg: Registry =
+    // Check the version before the full decode so an older registry gets the migration
+    // hint instead of a "missing field" error for fields that version never had.
+    let raw: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("bad registry {path}: {e}"))?;
-    if reg.schema != SCHEMA {
+    let schema = raw.get("schema").and_then(serde_json::Value::as_u64);
+    if schema != Some(u64::from(SCHEMA)) {
         return Err(format!(
             "registry schema {} != {SCHEMA}; run index",
-            reg.schema
+            schema.map_or("missing".to_string(), |s| s.to_string())
         ));
     }
-    Ok(reg)
+    serde_json::from_value(raw).map_err(|e| format!("bad registry {path}: {e}"))
 }
 
 /// Differences between the registry and the disk; empty means in sync.
@@ -409,52 +419,170 @@ fn drift(reg: &Registry) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// SKILL.md text after the frontmatter, truncated to `BODY_CHARS` characters.
+fn body_excerpt(text: &str) -> String {
+    let text = text.trim_start_matches('\u{feff}');
+    let body = text
+        .strip_prefix("---")
+        .and_then(|rest| rest.find("\n---").map(|i| &rest[i + 4..]))
+        .unwrap_or(text);
+    body.chars().take(BODY_CHARS).collect()
+}
+
+/// Query-side synonyms so "TypeScript service" reaches `*-ts` skills and so on.
+const SYNONYMS: [(&str, &[&str]); 8] = [
+    ("typescript", &["ts"]),
+    ("javascript", &["js"]),
+    ("nodejs", &["ts", "js"]),
+    ("python", &["py"]),
+    ("csharp", &["dotnet"]),
+    ("golang", &["go"]),
+    ("kotlin", &["kt"]),
+    ("postgresql", &["postgres"]),
+];
+
+/// Name suffixes that mark per-language SDK variants (`azure-foo-ts`, `azure-foo-py`, ...).
+const LANG_SUFFIXES: [&str; 8] = ["ts", "js", "py", "java", "dotnet", "rust", "go", "kt"];
+
+/// Unambiguous ways a query names a language, mapped to the variant suffix. Short forms
+/// such as "go", "net", "ts" or "py" are ordinary words or too ambiguous to count.
+const LANGUAGE_NAMES: [(&str, &str); 12] = [
+    ("typescript", "ts"),
+    ("javascript", "js"),
+    ("python", "py"),
+    ("java", "java"),
+    ("csharp", "dotnet"),
+    ("dotnet", "dotnet"),
+    ("rust", "rust"),
+    ("golang", "go"),
+    ("kotlin", "kt"),
+    ("nodejs", "js"),
+    // JavaScript/Node SDK skills are usually published as `*-ts`
+    ("javascript", "ts"),
+    ("nodejs", "ts"),
+];
+
+/// Spellings that `tokenize` would split, joined so synonyms and language names apply.
+fn normalize_query(query: &str) -> String {
+    query.to_lowercase().replace("node.js", "nodejs")
+}
+
+/// `needle` occurs with no letter or digit right before or after it (".NET", not "example.net").
+fn standalone(hay: &str, needle: &str) -> bool {
+    hay.match_indices(needle).any(|(i, _)| {
+        let before = hay[..i].chars().next_back();
+        let after = hay[i + needle.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
+/// Languages the query names explicitly (including the spellings ".NET" and "C#").
+fn named_languages(query: &str) -> Vec<&'static str> {
+    let lower = normalize_query(query);
+    let tokens = tokenize(&lower);
+    let mut langs: Vec<&str> = LANGUAGE_NAMES
+        .iter()
+        .filter(|(n, _)| tokens.iter().any(|t| t == n))
+        .map(|(_, s)| *s)
+        .collect();
+    let dotnet_words = ["asp.net", "vb.net", "ado.net"];
+    if standalone(&lower, ".net")
+        || lower.contains("c#")
+        || dotnet_words.iter().any(|w| lower.contains(w))
+    {
+        langs.push("dotnet");
+    }
+    langs.sort();
+    langs.dedup();
+    langs
+}
+
+/// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
+/// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
+fn expand_query(query: &str) -> Vec<(String, f64)> {
+    let base = tokenize(&normalize_query(query));
+    let mut q: Vec<(String, f64)> = base.iter().map(|t| (t.clone(), 1.0)).collect();
+    if named_languages(query).contains(&"dotnet") {
+        q.push(("dotnet".to_string(), 0.5));
+    }
+    for t in &base {
+        for (_, v) in SYNONYMS.iter().filter(|(k, _)| k == t) {
+            q.extend(v.iter().map(|s| (s.to_string(), 0.5)));
+        }
+    }
+    let latin = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric());
+    for w in base.windows(2).filter(|w| latin(&w[0]) && latin(&w[1])) {
+        q.push((format!("{}{}", w[0], w[1]), 0.5));
+    }
+    // keep the highest weight per term
+    q.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
+    q.dedup_by(|a, b| a.0 == b.0);
+    q
+}
+
+/// Okapi BM25 of `q` against every document of one field.
+fn bm25(docs: &[Vec<String>], q: &[(String, f64)]) -> Vec<f64> {
+    let (k1, b) = (1.2, 0.75);
+    let n = docs.len() as f64;
+    let avg = (docs.iter().map(Vec::len).sum::<usize>() as f64 / n).max(1.0);
+    let mut df: HashMap<&str, f64> = HashMap::new();
+    for d in docs {
+        let present: HashSet<&str> = d.iter().map(String::as_str).collect();
+        for (t, _) in q.iter().filter(|(t, _)| present.contains(t.as_str())) {
+            *df.entry(t.as_str()).or_default() += 1.0;
+        }
+    }
+    docs.iter()
+        .map(|d| {
+            let len = d.len() as f64;
+            q.iter()
+                .filter_map(|(t, w)| {
+                    let tf = d.iter().filter(|x| *x == t).count() as f64;
+                    let df = *df.get(t.as_str())?;
+                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+                    Some(w * idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg)))
+                })
+                .sum()
+        })
+        .collect()
+}
+
 fn search<'a>(reg: &'a Registry, query: &str, top_k: usize) -> Vec<(f64, &'a Skill)> {
-    // ponytail: in-memory BM25 over name x3 + description; fine for hundreds of skills,
-    // add an on-disk inverted index only if registries reach tens of thousands.
-    let docs: Vec<Vec<String>> = reg
+    // ponytail: in-memory BM25 over name x3 + description, plus a weighted body field;
+    // fine for thousands of skills, add an on-disk inverted index beyond ~50k.
+    if reg.skills.is_empty() {
+        return Vec::new();
+    }
+    let head: Vec<Vec<String>> = reg
         .skills
         .iter()
         .map(|s| {
             let name = tokenize(&s.name);
-            let mut d = Vec::new();
-            for _ in 0..3 {
-                d.extend(name.iter().cloned());
-            }
+            let mut d: Vec<String> = name.iter().chain(&name).chain(&name).cloned().collect();
             d.extend(tokenize(&s.description));
             d
         })
         .collect();
-    let n = docs.len() as f64;
-    if n == 0.0 {
-        return Vec::new();
-    }
-    let avg = docs.iter().map(Vec::len).sum::<usize>() as f64 / n;
-    let mut q = tokenize(query);
-    q.sort();
-    q.dedup();
-    let (k1, b) = (1.2, 0.75);
-    let mut scored: Vec<(f64, &Skill)> = docs
+    let body: Vec<Vec<String>> = reg.skills.iter().map(|s| tokenize(&s.body)).collect();
+    let q = expand_query(query);
+    let (h, bd) = (bm25(&head, &q), bm25(&body, &q));
+    let mut scored: Vec<(f64, &Skill)> = h
         .iter()
+        .zip(&bd)
         .zip(&reg.skills)
-        .map(|(d, s)| {
-            let len = d.len() as f64;
-            let score = q
-                .iter()
-                .map(|t| {
-                    let tf = d.iter().filter(|x| *x == t).count() as f64;
-                    if tf == 0.0 {
-                        return 0.0;
-                    }
-                    let df = docs.iter().filter(|d| d.contains(t)).count() as f64;
-                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-                    idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg))
-                })
-                .sum::<f64>();
-            (score, s)
-        })
+        .map(|((h, bd), s)| (h + BODY_WEIGHT * bd, s))
         .filter(|(score, _)| *score > 0.0)
         .collect();
+    // A query naming one language demotes SDK variants for a different language.
+    let langs = named_languages(query);
+    if !langs.is_empty() {
+        for (score, s) in scored.iter_mut() {
+            let suffix = s.name.rsplit('-').next().unwrap_or("");
+            if LANG_SUFFIXES.contains(&suffix) && !langs.contains(&suffix) {
+                *score *= 0.5;
+            }
+        }
+    }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
     scored.truncate(top_k);
     scored
@@ -732,6 +860,94 @@ mod tests {
         );
         assert_eq!(search(&reg, "X posts", 1)[0].1.name, "x-operator");
         assert!(search(&reg, "zzzz", 3).is_empty());
+    }
+
+    #[test]
+    fn language_synonyms_and_body_reach_variants() {
+        let root = tmp("synonyms");
+        put(&root, "ts", "azure-blob-ts", "Azure Blob Storage SDK");
+        put(&root, "py", "azure-blob-py", "Azure Blob Storage SDK");
+        put_raw(&root, "b", "---\nname: deploy-helper\ndescription: Ship things\n---\nUses the flyctl CLI for Fly.io apps.\n");
+        let reg = reg_for(&root);
+        assert_eq!(
+            search(&reg, "TypeScript upload to Azure Blob Storage", 1)[0]
+                .1
+                .name,
+            "azure-blob-ts"
+        );
+        assert_eq!(
+            search(&reg, "Python Azure Blob Storage", 1)[0].1.name,
+            "azure-blob-py"
+        );
+        assert_eq!(search(&reg, "flyctl", 1)[0].1.name, "deploy-helper");
+        // joined words reach compound names; the named language wins over other variants
+        put(
+            &root,
+            "ac-ts",
+            "azure-appconfiguration-ts",
+            "Feature flags and dynamic refresh",
+        );
+        put(
+            &root,
+            "ac-py",
+            "azure-appconfiguration-py",
+            "Feature flags and dynamic refresh for Python apps",
+        );
+        let reg = reg_for(&root);
+        assert_eq!(
+            search(
+                &reg,
+                "TypeScript service reading Azure App Configuration",
+                1
+            )[0]
+            .1
+            .name,
+            "azure-appconfiguration-ts"
+        );
+    }
+
+    #[test]
+    fn only_unambiguous_language_names_constrain_variants() {
+        assert_eq!(named_languages("go upload this file"), Vec::<&str>::new());
+        assert_eq!(named_languages("net revenue report"), Vec::<&str>::new());
+        assert_eq!(named_languages("our .NET service"), vec!["dotnet"]);
+        assert_eq!(
+            named_languages("fetch data from example.net"),
+            Vec::<&str>::new()
+        );
+        assert_eq!(named_languages("a Node.js worker"), vec!["js", "ts"]);
+        assert_eq!(named_languages("my ASP.NET Core app"), vec!["dotnet"]);
+        assert!(expand_query("Node.js worker")
+            .iter()
+            .any(|(t, _)| t == "ts"));
+        assert_eq!(
+            named_languages("a C# client and Python worker"),
+            vec!["dotnet", "py"]
+        );
+        let root = tmp("lang-words");
+        put(&root, "a", "upload-ts", "Upload files to storage");
+        put(&root, "b", "upload-py", "Upload files to storage quickly");
+        let reg = reg_for(&root);
+        // "go" is not a language here, so the better-matching -py variant is not halved
+        assert_eq!(
+            search(&reg, "go upload files to storage quickly", 1)[0]
+                .1
+                .name,
+            "upload-py"
+        );
+    }
+
+    #[test]
+    fn older_registry_gets_migration_hint() {
+        let dir = tmp("schema2");
+        let p = dir.join("r.json");
+        fs::write(
+            &p,
+            r#"{"schema":2,"roots":[],"skills":[{"id":"x","name":"x"}]}"#,
+        )
+        .unwrap();
+        let err = load(p.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("schema 2 != 3; run index"), "{err}");
     }
 
     #[test]
