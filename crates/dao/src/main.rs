@@ -288,6 +288,9 @@ fn store_and_digests(args: &[String]) -> Result<(PathBuf, Vec<String>), String> 
 
 fn normalize_cmd(args: &[String]) -> Result<ExitCode, String> {
     let (store, digests) = store_and_digests(args)?;
+    if digests.is_empty() {
+        return Err("normalize needs digests or --all (and --all found no objects)".into());
+    }
     let mut status = std::collections::BTreeMap::<String, usize>::new();
     let mut errors = Vec::new();
     for d in &digests {
