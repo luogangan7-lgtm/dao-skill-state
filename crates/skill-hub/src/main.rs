@@ -459,6 +459,15 @@ const LANGUAGE_NAMES: [(&str, &str); 10] = [
     ("nodejs", "js"),
 ];
 
+/// `needle` occurs with no letter or digit right before or after it (".NET", not "example.net").
+fn standalone(hay: &str, needle: &str) -> bool {
+    hay.match_indices(needle).any(|(i, _)| {
+        let before = hay[..i].chars().next_back();
+        let after = hay[i + needle.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
 /// Languages the query names explicitly (including the spellings ".NET" and "C#").
 fn named_languages(query: &str) -> Vec<&'static str> {
     let lower = query.to_lowercase();
@@ -468,7 +477,7 @@ fn named_languages(query: &str) -> Vec<&'static str> {
         .filter(|(n, _)| tokens.iter().any(|t| t == n))
         .map(|(_, s)| *s)
         .collect();
-    if lower.contains(".net") || lower.contains("c#") {
+    if standalone(&lower, ".net") || lower.contains("c#") {
         langs.push("dotnet");
     }
     langs.sort();
@@ -890,6 +899,10 @@ mod tests {
         assert_eq!(named_languages("go upload this file"), Vec::<&str>::new());
         assert_eq!(named_languages("net revenue report"), Vec::<&str>::new());
         assert_eq!(named_languages("our .NET service"), vec!["dotnet"]);
+        assert_eq!(
+            named_languages("fetch data from example.net"),
+            Vec::<&str>::new()
+        );
         assert_eq!(
             named_languages("a C# client and Python worker"),
             vec!["dotnet", "py"]
