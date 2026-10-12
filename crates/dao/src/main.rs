@@ -7,6 +7,7 @@
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
 mod quarantine;
+mod scan;
 mod source;
 
 use quarantine::{stage, Limits, Outcome};
@@ -20,6 +21,8 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  dao intake --store DIR (--git HTTPS_URL|ABS_PATH --rev REV | --local DIR) [--path SUBPATH] [--all]\n\
          --all stages every directory under SUBPATH that contains a SKILL.md (not descending into skills).\n\
+  dao scan --store DIR (DIGEST... | --all)
+         writes scans/<digest>.json (BLOCK | UNRESOLVED | REVIEW_REQUIRED | CLEAN) and prints a summary.
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
     ExitCode::from(2)
@@ -183,10 +186,76 @@ fn stage_all(
     Ok((outcomes, too_deep))
 }
 
+fn scan_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (mut store, mut digests, mut all) = (None, Vec::new(), false);
+    let (mut skipped, mut errors) = (Vec::<String>::new(), Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--store" => store = Some(PathBuf::from(it.next().ok_or("--store needs a value")?)),
+            "--all" => all = true,
+            d if !d.starts_with('-') => digests.push(d.to_string()),
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let store = store.ok_or("scan needs --store")?;
+    if all {
+        let rd = fs::read_dir(store.join("objects")).map_err(|e| e.to_string())?;
+        // only content digests; anything else in objects/ is reported, not scanned
+        for e in rd.filter_map(Result::ok) {
+            match e.file_name().into_string() {
+                Ok(n) if scan::is_digest(&n) => digests.push(n),
+                Ok(n) => skipped.push(n),
+                Err(n) => skipped.push(n.to_string_lossy().into_owned()),
+            }
+        }
+        digests.sort();
+    }
+    if digests.is_empty() {
+        return Err("give digests or --all".into());
+    }
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut rows = Vec::new();
+    for d in &digests {
+        let r = match scan::scan(&store, d).and_then(|r| scan::write_receipt(&store, &r).map(|_| r))
+        {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(serde_json::json!({"digest": d, "error": e}));
+                continue;
+            }
+        };
+        let v = serde_json::to_value(r.verdict).unwrap();
+        *counts
+            .entry(v.as_str().unwrap_or("?").to_string())
+            .or_default() += 1;
+        rows.push(serde_json::json!({"digest": d, "verdict": v, "findings": r.findings.len()}));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"scanned": rows.len(), "verdicts": counts, "objects": rows, "skipped": skipped, "errors": errors})
+        )
+        .unwrap()
+    );
+    // a digest that could not be scanned keeps no stale receipt and fails the run
+    for e in &errors {
+        if let Some(d) = e["digest"].as_str().filter(|d| scan::is_digest(d)) {
+            let _ = fs::remove_file(store.join("scans").join(format!("{d}.json")));
+        }
+    }
+    Ok(if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
+        Some("scan") => scan_cmd(&args[1..]),
         _ => return usage(),
     };
     result.unwrap_or_else(|e| {
