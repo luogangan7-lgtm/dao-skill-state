@@ -3,25 +3,30 @@
 //! Depends on: normalize (Card). Called by: `main` (`dao relations`); later eval/admission
 //! read `relations.json` to build parent/child and confusable routing tests.
 //! Invariants:
-//! - Every relation names both sides and says why (`evidence`); nothing is deleted, merged or
-//!   renamed here. A name collision is classified, not resolved.
+//! - Every relation names both sides and says why (`evidence`, stating what actually differs);
+//!   nothing is deleted, merged or renamed here. A name collision is classified, not resolved.
 //! - Output is deterministic: relations sorted by (kind, a, b).
 //!
-//! Kinds:
-//! - `same_content`       one digest reached from several sources (exact duplicate)
-//! - `same_entry`         different digests, byte-identical SKILL.md body + name (files differ)
-//! - `translation`        same name, different description language
-//! - `drift`              same name and language, different content, still similar (versions
-//!   of one skill diverging, e.g. between hosts)
-//! - `name_conflict`      same name, dissimilar content (different implementations)
-//! - `near_duplicate`     different names, very similar bodies
-//! - `family`             `a` is the name prefix of `b` (`beatra` → `beatra-ai-video-studio`)
-//! - `references`         `a`'s body names `b` and at least two other known skills (see-also
-//!   or umbrella candidate; per name pair, not per copy)
+//! Kinds (same-name pairs are classified in this order):
+//! - `same_content`   one digest reached from several sources (exact duplicate)
+//! - `stub_copy`      same name, one side is a placeholder body (`status: stub`)
+//! - `translation`    same name, different language (the evidence says when the body itself
+//!   was left untranslated)
+//! - `same_entry`     same name and language, byte-identical body; the evidence says whether
+//!   the frontmatter and the supporting files differ
+//! - `drift`          same name and language, still similar (equal description, Jaccard ≥ 0.5
+//!   or containment ≥ 0.8) or shipped by the same repository: one skill's versions diverging,
+//!   e.g. between hosts
+//! - `name_conflict`  same name, dissimilar content from different sources (different
+//!   implementations)
+//! - `near_duplicate` different names, very similar bodies (stubs and invalid cards excluded)
+//! - `family`         `a` is the name prefix of `b` (`beatra` → `beatra-ai-video-studio`)
+//! - `references`     `a`'s body names `b` and at least two other known skills: a see-also or
+//!   umbrella candidate, not proof of one (per name pair, not per copy)
 
 use crate::normalize::Card;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Relation {
@@ -32,33 +37,124 @@ pub struct Relation {
 }
 
 const DRIFT_MIN: f64 = 0.5;
+const CONTAIN_MIN: f64 = 0.8;
 const NEAR_DUP_MIN: f64 = 0.85;
 
-fn jaccard(a: &[String], b: &[String]) -> f64 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
+/// |a ∩ b| for sorted, deduplicated token lists.
+fn overlap(a: &[String], b: &[String]) -> usize {
+    let (mut i, mut j, mut n) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                n += 1;
+                i += 1;
+                j += 1;
+            }
+        }
     }
-    let sa: HashSet<&String> = a.iter().collect();
-    let inter = b.iter().filter(|t| sa.contains(t)).count();
-    inter as f64 / (a.len() + b.len() - inter) as f64
+    n
 }
 
+/// (Jaccard, containment = overlap / smaller set); 0 when either side has no tokens.
+fn similarity(a: &[String], b: &[String]) -> (f64, f64) {
+    if a.is_empty() || b.is_empty() {
+        return (0.0, 0.0);
+    }
+    let n = overlap(a, b) as f64;
+    let jac = n / (a.len() as f64 + b.len() as f64 - n);
+    (jac, n / a.len().min(b.len()) as f64)
+}
+
+/// `name@digest12 (host/dir:subpath)` — two origin segments tell `.claude/skills` from
+/// `.codex/skills`.
 fn label(c: &Card) -> String {
     let src = c
         .sources
         .first()
         .map(|s| {
-            format!(
-                "{}:{}",
-                s.origin.rsplit('/').next().unwrap_or(""),
-                s.subpath
-            )
+            let mut segs: Vec<&str> = s.origin.trim_end_matches('/').rsplit('/').take(2).collect();
+            segs.reverse();
+            format!("{}:{}", segs.join("/"), s.subpath)
         })
         .unwrap_or_default();
-    format!("{}@{}", c.name.as_deref().unwrap_or("?"), &c.digest[..12]) + &format!(" ({src})")
+    let short = c.digest.get(..12).unwrap_or(&c.digest);
+    format!("{}@{} ({src})", c.name.as_deref().unwrap_or("?"), short)
+}
+
+fn usable(c: &Card) -> bool {
+    matches!(c.status.as_str(), "ok" | "stub" | "needs_description")
+}
+
+fn same_name(a: &Card, b: &Card) -> (&'static str, String) {
+    let (jac, contain) = similarity(&a.tokens, &b.tokens);
+    if a.status == "stub" || b.status == "stub" {
+        let side = if a.status == "stub" { "a" } else { "b" };
+        return ("stub_copy", format!("placeholder body on side {side}"));
+    }
+    if a.language != b.language {
+        let body = if a.body_sha256 == b.body_sha256 {
+            "; body identical (not translated)"
+        } else {
+            ""
+        };
+        return (
+            "translation",
+            format!(
+                "languages {} / {}{body}, body similarity {jac:.2}",
+                a.language, b.language
+            ),
+        );
+    }
+    if a.body_sha256 == b.body_sha256 {
+        let fm = if a.frontmatter_sha256 == b.frontmatter_sha256 {
+            "identical"
+        } else {
+            "differs"
+        };
+        let files = if a.files_sha256 == b.files_sha256 {
+            "identical"
+        } else {
+            "differ"
+        };
+        return (
+            "same_entry",
+            format!("identical SKILL.md body; frontmatter {fm}; supporting files {files}"),
+        );
+    }
+    if a.description.is_some() && a.description == b.description {
+        return (
+            "drift",
+            format!("same description, body similarity {jac:.2} (containment {contain:.2})"),
+        );
+    }
+    if jac >= DRIFT_MIN || contain >= CONTAIN_MIN {
+        return (
+            "drift",
+            format!("body similarity {jac:.2}, containment {contain:.2}"),
+        );
+    }
+    // one repository shipping the same name under several host directories (.kiro/, pi/,
+    // .agents/, docs/<lang>/) is one skill's lineage, however far the copies have diverged
+    let shared = a
+        .sources
+        .iter()
+        .any(|s| b.sources.iter().any(|t| t.origin == s.origin));
+    if shared {
+        return (
+            "drift",
+            format!("same name within one source repository, body similarity {jac:.2}, containment {contain:.2}"),
+        );
+    }
+    (
+        "name_conflict",
+        format!("body similarity {jac:.2}, containment {contain:.2}"),
+    )
 }
 
 pub fn build(cards: &[Card]) -> Vec<Relation> {
+    let cards: Vec<&Card> = cards.iter().filter(|c| usable(c)).collect();
     let mut out = Vec::new();
     let rel = |kind: &str, a: &Card, b: &Card, evidence: String| Relation {
         kind: kind.into(),
@@ -72,16 +168,15 @@ pub fn build(cards: &[Card]) -> Vec<Relation> {
             .iter()
             .map(|s| format!("{}:{}", s.origin, s.subpath))
             .collect();
-        out.push(Relation {
-            kind: "same_content".into(),
-            a: label(c),
-            b: label(c),
-            evidence: format!("{} sources: {}", srcs.len(), srcs.join(", ")),
-        });
+        out.push(rel(
+            "same_content",
+            c,
+            c,
+            format!("{} sources: {}", srcs.len(), srcs.join(", ")),
+        ));
     }
-    // same name: classify every pair
     let mut by_name: BTreeMap<&str, Vec<&Card>> = BTreeMap::new();
-    for c in cards {
+    for c in &cards {
         if let Some(n) = c.name.as_deref() {
             by_name.entry(n).or_default().push(c);
         }
@@ -89,97 +184,76 @@ pub fn build(cards: &[Card]) -> Vec<Relation> {
     for group in by_name.values() {
         for (i, a) in group.iter().enumerate() {
             for b in &group[i + 1..] {
-                let sim = jaccard(&a.tokens, &b.tokens);
-                let (kind, why) = if a.body_sha256 == b.body_sha256 {
-                    (
-                        "same_entry",
-                        "identical SKILL.md body; supporting files differ".to_string(),
-                    )
-                } else if a.language != b.language {
-                    (
-                        "translation",
-                        format!(
-                            "languages {} / {}, body similarity {sim:.2}",
-                            a.language, b.language
-                        ),
-                    )
-                } else if sim >= DRIFT_MIN {
-                    (
-                        "drift",
-                        format!("same name and language, body similarity {sim:.2}"),
-                    )
-                } else {
-                    (
-                        "name_conflict",
-                        format!("same name, body similarity {sim:.2}"),
-                    )
-                };
+                let (kind, why) = same_name(a, b);
                 out.push(rel(kind, a, b, why));
             }
         }
     }
-    // different names: near duplicates (ponytail: O(n²) pairs; MinHash buckets past ~20k cards)
-    for (i, a) in cards.iter().enumerate() {
-        for b in &cards[i + 1..] {
-            if a.name == b.name || a.tokens.len() < 20 || b.tokens.len() < 20 {
+    // different names: near duplicates among real skills (ponytail: O(n²) pairs with a cheap
+    // size bound; MinHash buckets past ~20k cards)
+    let full: Vec<&Card> = cards
+        .iter()
+        .copied()
+        .filter(|c| c.status == "ok" && c.tokens.len() >= 20)
+        .collect();
+    for (i, a) in full.iter().enumerate() {
+        for b in &full[i + 1..] {
+            if a.name == b.name {
                 continue;
             }
-            let small = a.tokens.len().min(b.tokens.len()) as f64;
-            let big = a.tokens.len().max(b.tokens.len()) as f64;
+            let (small, big) = (
+                a.tokens.len().min(b.tokens.len()) as f64,
+                a.tokens.len().max(b.tokens.len()) as f64,
+            );
             if small / big < NEAR_DUP_MIN {
-                continue; // jaccard cannot reach the bar
+                continue; // Jaccard cannot reach the bar
             }
-            let sim = jaccard(&a.tokens, &b.tokens);
-            if sim >= NEAR_DUP_MIN {
+            let (jac, _) = similarity(&a.tokens, &b.tokens);
+            if jac >= NEAR_DUP_MIN {
                 out.push(rel(
                     "near_duplicate",
                     a,
                     b,
-                    format!("different names, body similarity {sim:.2}"),
+                    format!("different names, body similarity {jac:.2}"),
                 ));
             }
         }
     }
-    // families, per name pair (not per copy): name prefix, or an umbrella body naming ≥3
-    // other skills including b
-    let mut fam: BTreeMap<(&str, &str), String> = BTreeMap::new();
-    for a in cards {
+    // families and references, per name pair (not per copy)
+    let names: Vec<&str> = by_name.keys().copied().collect(); // sorted
+    let mut fam: BTreeMap<(&str, &str), (&str, String)> = BTreeMap::new();
+    for a in &cards {
         let Some(an) = a.name.as_deref() else {
             continue;
         };
+        let prefix = format!("{an}-");
+        let start = names.partition_point(|n| *n < prefix.as_str());
+        for &n in names[start..].iter().take_while(|n| n.starts_with(&prefix)) {
+            fam.entry((an, n))
+                .or_insert(("family", format!("name prefix `{prefix}`")));
+        }
         let mentioned: Vec<&str> = a
             .mentions
             .iter()
             .map(String::as_str)
             .filter(|m| *m != an && by_name.contains_key(m))
             .collect();
-        for &n in by_name.keys() {
-            if n == an || fam.contains_key(&(an, n)) {
-                continue;
-            }
-            if n.starts_with(&format!("{an}-")) {
-                fam.insert((an, n), format!("name prefix `{an}-`"));
-            } else if mentioned.len() >= 3 && mentioned.contains(&n) {
-                fam.insert(
-                    (an, n),
+        if mentioned.len() >= 3 {
+            for &n in &mentioned {
+                fam.entry((an, n)).or_insert((
+                    "references",
                     format!(
-                        "umbrella body names {} skills incl. this one ({})",
+                        "body names {} known skills incl. this one ({}); see-also, not proof of an umbrella",
                         mentioned.len(),
                         label(a)
                     ),
-                );
+                ));
             }
         }
     }
-    for ((a, b), why) in fam {
-        // a body that names other skills is a "see also", not proof of an umbrella/child pair
+    for ((a, b), (kind, why)) in fam {
         out.push(Relation {
-            kind: if why.starts_with("name prefix") {
-                "family"
-            } else {
-                "references"
-            }
-            .into(),
+            kind: kind.into(),
             a: a.into(),
             b: b.into(),
             evidence: why,
@@ -200,17 +274,19 @@ mod tests {
             digest: std::iter::repeat_n(digest, 64).collect(),
             status: "ok".into(),
             name: Some(name.into()),
-            description: Some("d".into()),
+            description: Some(format!("d {digest}")),
             language: lang.into(),
             use_when: vec![],
             not_for: vec![],
             invocation: vec![],
             headings: vec![],
             body_sha256: format!("{body:?}"),
+            frontmatter_sha256: format!("fm {digest}"),
+            files_sha256: "files".into(),
             tokens: tokens(body),
             mentions: vec![],
             sources: vec![SourceRef {
-                origin: "o".into(),
+                origin: "/h/.claude/skills".into(),
                 subpath: name.into(),
                 commit: None,
             }],
@@ -220,31 +296,73 @@ mod tests {
     #[test]
     fn classifies_collisions_and_families_without_merging() {
         let long = "alpha beta gamma delta epsilon zeta theta iota kappa lambda omicron sigma tau upsilon phi chi psi omega rust cargo crate";
+        // cards from another repository: same name there is a real conflict, not lineage
+        let other = |mut c: Card| {
+            c.sources[0].origin = "https://github.com/other/skills.git".into();
+            c
+        };
+        let mut stub = card("council", "ja", "翻訳中", '9');
+        stub.status = "stub".into();
         let cards = vec![
             card("council", "latin", long, 'a'),
             card("council", "zh", "议会 技能 中文 说明", 'b'),
+            stub,
             card("ponytail", "latin", &format!("{long} lazy"), 'c'),
             card("ponytail", "latin", &format!("{long} lazy senior"), 'd'),
+            card("ponytail", "latin", &format!("{long} lazy"), 'x'),
             card("deploy", "latin", "totally different words here", 'e'),
-            card(
+            other(card(
                 "deploy",
                 "latin",
                 "nothing shared with that one at all",
                 'f',
-            ),
+            )),
             card("beatra", "latin", "media", '1'),
             card("beatra-ai-video-studio", "latin", "video", '2'),
             card("copycat", "latin", long, '3'),
+            card("пример", "ru", "совсем другой текст навыка", '4'),
+            other(card("пример", "ru", "ничего общего здесь нет вообще", '5')),
         ];
         let r = build(&cards);
         let kinds = |k: &str| r.iter().filter(|x| x.kind == k).count();
         assert_eq!(kinds("translation"), 1);
-        assert_eq!(kinds("drift"), 1);
-        assert_eq!(kinds("name_conflict"), 1);
+        assert_eq!(kinds("stub_copy"), 2);
         assert_eq!(kinds("family"), 1);
+        // same body: says frontmatter differs and files are identical, not "files differ"
+        let se: Vec<_> = r.iter().filter(|x| x.kind == "same_entry").collect();
+        assert_eq!(se.len(), 1);
+        assert!(
+            se[0].evidence.contains("frontmatter differs")
+                && se[0].evidence.contains("supporting files identical")
+        );
+        // non-ASCII bodies are compared on real tokens, not two empty sets
+        assert!(
+            r.iter()
+                .any(|x| x.kind == "name_conflict" && x.a.starts_with("пример")),
+            "{r:?}"
+        );
+        assert!(r
+            .iter()
+            .any(|x| x.kind == "name_conflict" && x.a.starts_with("deploy")));
         assert!(r
             .iter()
             .any(|x| x.kind == "near_duplicate" && x.a.starts_with("co") && x.b.starts_with("co")));
+        assert!(r
+            .iter()
+            .filter(|x| x.kind != "family")
+            .all(|x| x.a.contains(".claude/skills")));
         assert_eq!(build(&cards), r, "deterministic");
+        // same repository, same name, dissimilar bodies: lineage (drift), not a conflict
+        let mut kiro = card("deploy", "latin", "unrelated words for another host", 'g');
+        kiro.sources[0].subpath = ".kiro/skills/deploy".into();
+        let r2 = build(&[
+            card("deploy", "latin", "totally different words here", 'e'),
+            kiro,
+        ]);
+        assert_eq!(r2[0].kind, "drift", "{r2:?}");
+        // a short digest no longer panics
+        let mut bad = card("x", "latin", "y", 'z');
+        bad.digest = "abc".into();
+        let _ = build(&[bad]);
     }
 }
