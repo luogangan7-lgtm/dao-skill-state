@@ -63,7 +63,8 @@ pub fn lexical(cands: &[Candidate]) -> Vec<Candidate> {
 
 pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
     let mut criteria = serde_json::Map::new();
-    for c in cands {
+    // a skill literally named "none" would collide with the abstain option
+    for c in cands.iter().filter(|c| c.id != NONE) {
         let d: String = c.description.chars().take(DESC_CHARS).collect();
         criteria.insert(
             c.id.clone(),
@@ -154,7 +155,12 @@ pub fn decide(cands: &[Candidate], prompt: &str, jev: Option<&Jev>) -> Decision 
                 return Decision::Skills(vec![c], "jev");
             }
             Ok(None) => return Decision::Nothing("jev-none"),
-            Err(e) => eprintln!("skill-hub hook: {e}; using lexical ranking"),
+            Err(e) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "skill-hub hook: {e}; using lexical ranking"
+                );
+            }
         }
     }
     let keep = lexical(cands);
@@ -184,8 +190,8 @@ pub fn context(skills: &[Candidate]) -> String {
         })
         .collect();
     format!(
-        "Skills matched to this request by skill-hub:\n{}\nIf one fits, load it by name (or `skill-hub get <id>`) \
-         and follow it; otherwise ignore this note.",
+        "skill-hub retrieved these installed skills as matching the request \
+         (each can be loaded by name, or with `skill-hub get <id>`):\n{}",
         lines.join("\n")
     )
 }
@@ -200,7 +206,9 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
         .to_string();
     let path = registry.or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())?;
     let reg = load(&path)
-        .map_err(|e| eprintln!("skill-hub hook: {e}"))
+        .map_err(|e| {
+            let _ = writeln!(std::io::stderr(), "skill-hub hook: {e}");
+        })
         .ok()?;
     let cands: Vec<Candidate> = search(&reg, &prompt, top_k)
         .into_iter()
@@ -338,12 +346,13 @@ mod tests {
         assert!(
             stdin.contains("Authorization: Bearer sk-secret-123") && stdin.contains("max-time")
         );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn jev_none_injects_nothing_and_failure_falls_back() {
-        let (curl, _) = fake_curl("none", r#"echo '{"answers":{"skill":{"answer":"none"}}}'"#);
+        let (curl, d1) = fake_curl("none", r#"echo '{"answers":{"skill":{"answer":"none"}}}'"#);
         let jev = Jev {
             key: "k".into(),
             model: "m".into(),
@@ -351,7 +360,7 @@ mod tests {
         };
         let c = [cand("a", 20.0)];
         assert_eq!(decide(&c, "hi", Some(&jev)), Decision::Nothing("jev-none"));
-        let (curl, _) = fake_curl("fail", "exit 22");
+        let (curl, d2) = fake_curl("fail", "exit 22");
         let jev = Jev {
             key: "k".into(),
             model: "m".into(),
@@ -362,6 +371,7 @@ mod tests {
             Decision::Skills(vec![cand("a", 20.0)], "lexical-fallback")
         );
         assert_eq!(decide(&[], "hi", Some(&jev)), Decision::Nothing("no-match"));
+        let _ = (std::fs::remove_dir_all(d1), std::fs::remove_dir_all(d2));
     }
 
     #[test]

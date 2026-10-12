@@ -32,7 +32,7 @@ The registry path comes only from `SKILL_HUB_REGISTRY`. Never pass a `--registry
 
 ## Prompt-time pre-selection (optional hook)
 
-`skill-hub hook` runs as a `UserPromptSubmit` hook: it retrieves the top 10 skills for each prompt and adds the best one to the model's context before it answers, so the model no longer has to decide to search. With `TYPESAFE_API_KEY` set, the Jev decision model picks one candidate or "none"; without it, or if the call fails, a local lexical rule is used. It always exits 0 and never blocks a prompt.
+`skill-hub hook` runs as a `UserPromptSubmit` hook: it retrieves the top 10 skills for each prompt and, before the model answers, adds a short note naming the skill Jev picked (with a key) or up to 3 lexical matches (without one), so the model no longer has to decide to search. With `TYPESAFE_API_KEY` set, the Jev decision model picks one candidate or "none"; without it, or if the call fails, a local lexical rule is used. It always exits 0 and never blocks a prompt.
 
 Privacy: with a key set, the prompt (first 2,500 characters) and the candidates' names and descriptions are sent to the TypeSafe API. Without a key nothing leaves the machine. `SKILL_HUB_HOOK_LOG=<file>` records decisions (never prompt text).
 
@@ -42,7 +42,7 @@ Claude Code (`~/.claude/settings.json`):
 ```
 Codex (`~/.codex/hooks.json`, then trust it via `/hooks`):
 ```json
-{"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "skill-hub hook", "timeout": 10}]}]}
+{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "skill-hub hook", "timeout": 10}]}]}}
 ```
 Both need `SKILL_HUB_REGISTRY` (and optionally `TYPESAFE_API_KEY`) in the hook's environment.
 

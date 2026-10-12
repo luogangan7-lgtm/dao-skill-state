@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -763,14 +764,22 @@ fn run_hook(args: &[String]) -> ExitCode {
     let (mut registry, mut top_k) = (None, hook::DEFAULT_K);
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        match (a.as_str(), it.next()) {
-            ("--registry", Some(v)) => registry = Some(v.clone()),
-            ("--top-k", Some(v)) => top_k = v.parse().unwrap_or(hook::DEFAULT_K),
-            _ => eprintln!("skill-hub hook: ignoring argument {a}"),
+        match a.as_str() {
+            "--registry" => registry = it.next().cloned(),
+            "--top-k" => {
+                top_k = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(hook::DEFAULT_K)
+            }
+            _ => {
+                let _ = writeln!(std::io::stderr(), "skill-hub hook: ignoring argument {a}");
+            }
         }
     }
     if let Some(out) = hook::run(registry, top_k) {
-        println!("{out}");
+        // a closed stdout must not turn into a panic exit code
+        let _ = writeln!(std::io::stdout(), "{out}");
     }
     ExitCode::SUCCESS
 }
