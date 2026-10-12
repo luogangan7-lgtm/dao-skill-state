@@ -294,7 +294,13 @@ fn normalize_cmd(args: &[String]) -> Result<ExitCode, String> {
         match normalize::card(&store, d).and_then(|c| normalize::write_card(&store, &c).map(|_| c))
         {
             Ok(c) => *status.entry(c.status).or_default() += 1,
-            Err(e) => errors.push(serde_json::json!({"digest": d, "error": e})),
+            Err(e) => {
+                // never leave a card behind for an object that can no longer be read
+                if scan::is_digest(d) {
+                    let _ = fs::remove_file(store.join("cards").join(format!("{d}.json")));
+                }
+                errors.push(serde_json::json!({"digest": d, "error": e}));
+            }
         }
     }
     println!(
@@ -309,18 +315,37 @@ fn normalize_cmd(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let (store, _) = store_and_digests(args)?;
+    let (store, digests) = store_and_digests(args)?;
+    if !digests.is_empty() || args.iter().any(|a| a == "--all") {
+        return Err("relations takes only --store (it reads every card)".into());
+    }
     let mut cards: Vec<normalize::Card> = Vec::new();
+    let mut skipped = Vec::new();
     for e in fs::read_dir(store.join("cards"))
         .map_err(|e| format!("run dao normalize first: {e}"))?
         .flatten()
     {
-        if e.path().extension().is_some_and(|x| x == "json") {
-            let b = fs::read(e.path()).map_err(|e| e.to_string())?;
-            cards.push(
-                serde_json::from_slice(&b)
-                    .map_err(|err| format!("{}: {err}", e.path().display()))?,
-            );
+        let path = e.path();
+        let Some(stem) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|_| path.extension().is_some_and(|x| x == "json"))
+        else {
+            continue;
+        };
+        // only cards of objects that still exist, whose digest matches their file name
+        let card: Option<normalize::Card> = fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok());
+        match card {
+            Some(c)
+                if scan::is_digest(stem)
+                    && c.digest == stem
+                    && store.join("objects").join(stem).is_dir() =>
+            {
+                cards.push(c)
+            }
+            _ => skipped.push(stem.to_string()),
         }
     }
     cards.sort_by(|a, b| a.digest.cmp(&b.digest));
@@ -330,12 +355,17 @@ fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
         *kinds.entry(r.kind.as_str()).or_default() += 1;
     }
     let tmp = store.join(format!(".relations.{}", std::process::id()));
-    fs::write(&tmp, serde_json::to_vec_pretty(&rels).unwrap()).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, store.join("relations.json")).map_err(|e| e.to_string())?;
+    let res = fs::write(&tmp, serde_json::to_vec_pretty(&rels).unwrap())
+        .and_then(|_| fs::rename(&tmp, store.join("relations.json")));
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res.map_err(|e| e.to_string())?;
+    skipped.sort();
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"cards": cards.len(), "relations": kinds})
+            &serde_json::json!({"cards": cards.len(), "relations": kinds, "skipped": skipped})
         )
         .unwrap()
     );
