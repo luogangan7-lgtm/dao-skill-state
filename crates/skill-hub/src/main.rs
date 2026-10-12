@@ -7,8 +7,8 @@
 //! Invariants:
 //! - `get` only serves ids present in the registry, and only when the skill directory still
 //!   has the recorded realpath, SKILL.md sha256 and tree sha256. The tree hash covers every
-//!   regular file and symlink (by link text, never followed) outside hidden directories and
-//!   build caches (`__pycache__`, `target`, `node_modules`, `.DS_Store`).
+//!   regular file and symlink (by link text, never followed), including bundled executables
+//!   and dependencies; only VCS metadata and interpreter/test caches in `SKIP_NAMES` are left out.
 //! - Skills the owner restricted to explicit/user invocation (`disable-model-invocation: true`
 //!   in SKILL.md, or Codex `allow_implicit_invocation: false`) are never indexed, so the model
 //!   cannot reach them through the hub. Policy values are read fail-closed: anything other
@@ -26,7 +26,16 @@ use std::process::ExitCode;
 
 const SCHEMA: u32 = 2;
 const MAX_FILES: usize = 10_000;
-const SKIP_NAMES: [&str; 4] = ["__pycache__", ".DS_Store", "target", "node_modules"];
+/// Never executed by a skill, but rewritten by tools; hashing them would lock skills out.
+const SKIP_NAMES: [&str; 7] = [
+    ".git",
+    "__pycache__",
+    ".DS_Store",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+];
 
 /// Exit codes (documented in skill-hub/SKILL.md).
 const EXIT_DRIFT: u8 = 1;
@@ -191,7 +200,7 @@ fn tree_hash(dir: &Path) -> Result<String, String> {
             let e = e.map_err(|e| e.to_string())?;
             let ft = e.file_type().map_err(|e| e.to_string())?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if SKIP_NAMES.contains(&name.as_str()) || (ft.is_dir() && name.starts_with('.')) {
+            if SKIP_NAMES.contains(&name.as_str()) {
                 continue;
             }
             if ft.is_dir() {
@@ -442,7 +451,7 @@ fn get(reg: &Registry, id: &str) -> Result<(PathBuf, String), (u8, String)> {
             "skill files changed since indexing; run check/index".into(),
         ));
     }
-    Ok((entry, String::from_utf8_lossy(&bytes).into_owned()))
+    Ok((dir, String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 /// Replace the registry atomically so a concurrent `get` never reads a partial file.
@@ -477,6 +486,14 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             rest.extend(it.by_ref().cloned());
             break;
         }
+        let allowed: &[&str] = match cmd.as_str() {
+            "index" => &["--root", "--out"],
+            "search" => &["--registry", "--top-k"],
+            _ => &["--registry"],
+        };
+        if a.starts_with("--") && !allowed.contains(&a.as_str()) {
+            return Err(format!("option {a} is not valid for {cmd}"));
+        }
         let mut val = || it.next().cloned().ok_or(format!("{a} needs a value"));
         match a.as_str() {
             "--root" => {
@@ -490,7 +507,6 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             "--out" => out = Some(val()?),
             "--registry" => registry = Some(val()?),
             "--top-k" => top_k = val()?.parse().map_err(|_| "--top-k expects a number")?,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => rest.push(a.clone()),
         }
     }
@@ -558,7 +574,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let id = rest.first().ok_or("get needs an ID")?;
             match get(&reg, id) {
                 Ok((path, text)) => {
-                    println!("<!-- skill-hub: {} -->\n{text}", path.display());
+                    println!("<!-- skill-hub dir: {} -->\n{text}", path.display());
                     Ok(ExitCode::SUCCESS)
                 }
                 Err((code, e)) => {
@@ -846,7 +862,12 @@ mod tests {
         let a = |v: &[&str]| run(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert!(a(&["index", "--root", "a=.", "--rot", "b=.", "--out", "x"])
             .unwrap_err()
-            .contains("unknown option: --rot"));
+            .contains("option --rot is not valid for index"));
+        assert!(a(&["check", "--root", "prod=/new"])
+            .unwrap_err()
+            .contains("not valid for check"));
+        assert!(a(&["index", "--registry", "r", "--root", "a=.", "--out", "x"]).is_err());
+        assert!(a(&["get", "--top-k", "3", "one"]).is_err());
         assert!(a(&["index", "--root", "a=.", "extra", "--out", "x"])
             .unwrap_err()
             .contains("unexpected arguments"));
@@ -861,8 +882,14 @@ mod tests {
         put(&root, "one", "one", "first");
         fs::create_dir_all(root.join("one/scripts")).unwrap();
         fs::write(root.join("one/scripts/run.sh"), "echo ok").unwrap();
+        fs::create_dir_all(root.join("one/node_modules/helper")).unwrap();
+        fs::write(root.join("one/node_modules/helper/index.js"), "ok()").unwrap();
         let reg = reg_for(&root);
-        assert!(get(&reg, "one").unwrap().1.contains("# one"));
+        let (dir, text) = get(&reg, "one").unwrap();
+        assert!(text.contains("# one") && dir.join("SKILL.md").is_file());
+        fs::write(root.join("one/node_modules/helper/index.js"), "evil()").unwrap();
+        assert_eq!(get(&reg, "one").unwrap_err().0, EXIT_REFUSED);
+        fs::write(root.join("one/node_modules/helper/index.js"), "ok()").unwrap();
         assert_eq!(get(&reg, "../etc").unwrap_err().0, EXIT_UNKNOWN_ID);
         fs::write(root.join("one/scripts/run.sh"), "rm -rf /").unwrap();
         assert_eq!(get(&reg, "one").unwrap_err().0, EXIT_REFUSED);
