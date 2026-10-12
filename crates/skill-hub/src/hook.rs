@@ -70,6 +70,20 @@ pub fn lexical(cands: &[Candidate], n_skills: usize) -> Vec<Candidate> {
         .collect()
 }
 
+/// At most `PROMPT_CHARS` characters: the head and the tail of a long prompt, so a request
+/// written after a long paste (logs, code) is still seen by retrieval and by Jev.
+pub fn bound_prompt(prompt: &str) -> String {
+    const GAP: &str = "\n…\n";
+    let n = prompt.chars().count();
+    if n <= PROMPT_CHARS {
+        return prompt.to_string();
+    }
+    let keep = PROMPT_CHARS - GAP.chars().count();
+    let head: String = prompt.chars().take(keep / 2).collect();
+    let tail: String = prompt.chars().skip(n - (keep - keep / 2)).collect();
+    format!("{head}{GAP}{tail}")
+}
+
 pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
     let mut criteria = serde_json::Map::new();
     // the sentinel cannot be a skill name; filtering keeps the criteria map collision-free anyway
@@ -86,7 +100,7 @@ pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
             "No listed skill clearly fits this request; answer directly without a skill.".into(),
         ),
     );
-    let state: String = prompt.chars().take(PROMPT_CHARS).collect();
+    let state = bound_prompt(prompt);
     json!({"model": model, "state": state, "questions": {"skill": {"type": "choice",
         "instructions": "Which skill should an AI agent load to handle this request? \
                          Choose __skill_hub_no_skill__ if no listed skill clearly fits.",
@@ -211,11 +225,7 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).ok()?;
     // bounded before retrieval too: pasted logs/code must not stall the prompt
-    let prompt: String = serde_json::from_str::<Value>(&input).ok()?["prompt"]
-        .as_str()?
-        .chars()
-        .take(PROMPT_CHARS)
-        .collect();
+    let prompt = bound_prompt(serde_json::from_str::<Value>(&input).ok()?["prompt"].as_str()?);
     let path = registry.or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())?;
     let reg = load(&path)
         .map_err(|e| {
@@ -320,6 +330,19 @@ mod tests {
     }
 
     #[test]
+    fn long_prompts_keep_head_and_tail() {
+        let long = format!(
+            "{}please deploy this site to Netlify.",
+            "server log line 42 ok\n".repeat(400)
+        );
+        let b = bound_prompt(&long);
+        assert_eq!(b.chars().count(), PROMPT_CHARS);
+        assert!(b.starts_with("server log") && b.ends_with("to Netlify."));
+        assert_eq!(bound_prompt(&b), b); // idempotent
+        assert_eq!(bound_prompt("short"), "short");
+    }
+
+    #[test]
     fn lexical_rule_keeps_top3_above_floors() {
         let c = [
             cand("a", 20.0),
@@ -342,7 +365,10 @@ mod tests {
         .unwrap();
         let crit = &body["questions"]["skill"]["criteria"];
         assert!(crit["a"].is_string() && crit[NONE].is_string());
-        assert_eq!(body["state"].as_str().unwrap().len(), PROMPT_CHARS);
+        assert_eq!(
+            body["state"].as_str().unwrap().chars().count(),
+            PROMPT_CHARS
+        );
     }
 
     #[test]
