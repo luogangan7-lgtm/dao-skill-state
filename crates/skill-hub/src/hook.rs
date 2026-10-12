@@ -28,8 +28,17 @@ const PROMPT_CHARS: usize = 2500;
 const DESC_CHARS: usize = 400;
 const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 const JEV_TIMEOUT_SECS: u32 = 4;
-/// Abstain option sent to Jev; double underscores keep it out of the skill-name namespace.
-const NONE: &str = "__skill_hub_no_skill__";
+/// Abstain option offered to Jev. Spaces and parentheses are not valid in skill names; if a
+/// candidate id still equals it, `sentinel` extends it until it is unique for that request.
+const NONE_BASE: &str = "(no skill)";
+
+fn sentinel(cands: &[Candidate]) -> String {
+    let mut s = NONE_BASE.to_string();
+    while cands.iter().any(|c| c.id == s) {
+        s.push('*');
+    }
+    s
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
@@ -86,8 +95,8 @@ pub fn bound_prompt(prompt: &str) -> String {
 
 pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
     let mut criteria = serde_json::Map::new();
-    // the sentinel cannot be a skill name; filtering keeps the criteria map collision-free anyway
-    for c in cands.iter().filter(|c| c.id != NONE) {
+    let none = sentinel(cands);
+    for c in cands {
         let d: String = c.description.chars().take(DESC_CHARS).collect();
         criteria.insert(
             c.id.clone(),
@@ -95,16 +104,18 @@ pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
         );
     }
     criteria.insert(
-        NONE.into(),
+        none.clone(),
         Value::String(
             "No listed skill clearly fits this request; answer directly without a skill.".into(),
         ),
     );
     let state = bound_prompt(prompt);
+    let instructions = format!(
+        "Which skill should an AI agent load to handle this request? \
+         Choose {none} if no listed skill clearly fits."
+    );
     json!({"model": model, "state": state, "questions": {"skill": {"type": "choice",
-        "instructions": "Which skill should an AI agent load to handle this request? \
-                         Choose __skill_hub_no_skill__ if no listed skill clearly fits.",
-        "criteria": criteria}}})
+        "instructions": instructions, "criteria": criteria}}})
     .to_string()
 }
 
@@ -116,7 +127,7 @@ pub fn parse_jev(out: &str, cands: &[Candidate]) -> Result<Option<String>, Strin
         .iter()
         .find_map(|k| ans[*k].as_str())
         .ok_or("Jev response has no choice")?;
-    if label == NONE {
+    if label == sentinel(cands) {
         return Ok(None);
     }
     if cands.iter().any(|c| c.id == label) {
@@ -145,7 +156,8 @@ fn call_jev(jev: &Jev, body: &str) -> Result<String, String> {
         quoted(body)?,
     );
     let mut child = Command::new(&jev.curl)
-        .args(["-K", "-"])
+        // -q must come first: skip ~/.curlrc so its own `url` entries can't receive the key
+        .args(["-q", "-K", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -364,7 +376,7 @@ mod tests {
         ))
         .unwrap();
         let crit = &body["questions"]["skill"]["criteria"];
-        assert!(crit["a"].is_string() && crit[NONE].is_string());
+        assert!(crit["a"].is_string() && crit["(no skill)"].is_string());
         assert_eq!(
             body["state"].as_str().unwrap().chars().count(),
             PROMPT_CHARS
@@ -379,13 +391,17 @@ mod tests {
             Ok(Some("a".into()))
         );
         assert_eq!(
-            parse_jev(
-                r#"{"answers":{"skill":{"label":"__skill_hub_no_skill__"}}}"#,
-                &c
-            ),
+            parse_jev(r#"{"answers":{"skill":{"label":"(no skill)"}}}"#, &c),
             Ok(None)
         );
         assert!(parse_jev(r#"{"answers":{"skill":{"answer":"evil"}}}"#, &c).is_err());
+        // a skill that happens to use the sentinel text stays selectable
+        let c = [cand("(no skill)", 1.0)];
+        assert_eq!(sentinel(&c), "(no skill)*");
+        assert_eq!(
+            parse_jev(r#"{"answers":{"skill":{"answer":"(no skill)"}}}"#, &c),
+            Ok(Some("(no skill)".into()))
+        );
         assert!(parse_jev("not json", &c).is_err());
     }
 
@@ -425,7 +441,7 @@ mod tests {
         );
         let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
         let stdin = std::fs::read_to_string(dir.join("stdin")).unwrap();
-        assert!(!argv.contains("sk-secret-123") && argv.contains("-K"));
+        assert!(!argv.contains("sk-secret-123") && argv.starts_with("-q -K -"));
         assert!(
             stdin.contains("Authorization: Bearer sk-secret-123") && stdin.contains("max-time")
         );
@@ -437,7 +453,7 @@ mod tests {
     fn jev_none_injects_nothing_and_failure_falls_back() {
         let (curl, d1) = fake_curl(
             "none",
-            r#"echo '{"answers":{"skill":{"answer":"__skill_hub_no_skill__"}}}'"#,
+            r#"echo '{"answers":{"skill":{"answer":"(no skill)"}}}'"#,
         );
         let jev = Jev {
             key: "k".into(),
