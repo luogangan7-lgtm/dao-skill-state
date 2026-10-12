@@ -24,7 +24,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
+/// Characters of SKILL.md body kept in the registry for retrieval.
+const BODY_CHARS: usize = 1500;
+/// Weight of the body field relative to name+description in the ranking score.
+const BODY_WEIGHT: f64 = 0.3;
 const MAX_FILES: usize = 10_000;
 /// Never executed by a skill, but rewritten by tools; hashing them would lock skills out.
 const SKIP_NAMES: [&str; 6] = [
@@ -60,6 +64,11 @@ struct Skill {
     tree_sha256: String,
     /// Every `root:folder` location that resolves to this same content.
     locations: Vec<String>,
+    /// First `BODY_CHARS` characters of SKILL.md after the frontmatter (retrieval only).
+    body: String,
+    /// True when at least two other skills are named `<name>-...` or mention `<name>`:
+    /// a catalogue-level "umbrella" that should not outrank its specific children.
+    umbrella: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -316,6 +325,8 @@ fn scan(roots: &[Root]) -> Result<Scan, String> {
                     dir: key,
                     entry_sha256: hex(&Sha256::digest(&bytes)),
                     locations: vec![location],
+                    body: body_excerpt(&String::from_utf8_lossy(&bytes)),
+                    umbrella: false,
                 },
             );
         }
@@ -345,6 +356,7 @@ fn scan(roots: &[Root]) -> Result<Scan, String> {
             s.locations[0].clone()
         };
     }
+    mark_umbrellas(&mut merged);
     merged.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(Scan {
         skills: merged,
@@ -409,52 +421,167 @@ fn drift(reg: &Registry) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// SKILL.md text after the frontmatter, truncated to `BODY_CHARS` characters.
+fn body_excerpt(text: &str) -> String {
+    let text = text.trim_start_matches('\u{feff}');
+    let body = text
+        .strip_prefix("---")
+        .and_then(|rest| rest.find("\n---").map(|i| &rest[i + 4..]))
+        .unwrap_or(text);
+    body.chars().take(BODY_CHARS).collect()
+}
+
+/// Is `child` a more specific skill under `parent` (named `parent-...` or mentions it)?
+fn is_child_of(child: &Skill, parent: &Skill) -> bool {
+    child.id != parent.id
+        && (child.name.starts_with(&format!("{}-", parent.name))
+            || child.description.to_lowercase().contains(&parent.name))
+}
+
+fn mark_umbrellas(skills: &mut [Skill]) {
+    let lower: Vec<String> = skills
+        .iter()
+        .map(|s| s.description.to_lowercase())
+        .collect();
+    let flags: Vec<bool> = skills
+        .iter()
+        .map(|u| {
+            let prefix = format!("{}-", u.name);
+            u.name.len() >= 4
+                && skills
+                    .iter()
+                    .zip(&lower)
+                    .filter(|(c, d)| {
+                        c.id != u.id && (c.name.starts_with(&prefix) || d.contains(&u.name))
+                    })
+                    .take(2)
+                    .count()
+                    == 2
+        })
+        .collect();
+    for (s, f) in skills.iter_mut().zip(flags) {
+        s.umbrella = f;
+    }
+}
+
+/// Query-side synonyms so "TypeScript service" reaches `*-ts` skills and so on.
+const SYNONYMS: [(&str, &[&str]); 9] = [
+    ("typescript", &["ts"]),
+    ("javascript", &["js"]),
+    ("nodejs", &["ts", "js"]),
+    ("python", &["py"]),
+    ("net", &["dotnet"]),
+    ("csharp", &["dotnet"]),
+    ("golang", &["go"]),
+    ("kotlin", &["kt"]),
+    ("postgresql", &["postgres"]),
+];
+
+/// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
+/// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
+/// Name suffixes that mark per-language SDK variants (`azure-foo-ts`, `azure-foo-py`, ...).
+const LANG_SUFFIXES: [&str; 8] = ["ts", "js", "py", "java", "dotnet", "rust", "go", "kt"];
+
+fn expand_query(query: &str) -> Vec<(String, f64)> {
+    let base = tokenize(query);
+    let mut q: Vec<(String, f64)> = base.iter().map(|t| (t.clone(), 1.0)).collect();
+    for t in &base {
+        for (_, v) in SYNONYMS.iter().filter(|(k, _)| k == t) {
+            q.extend(v.iter().map(|s| (s.to_string(), 0.5)));
+        }
+    }
+    let latin = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric());
+    for w in base.windows(2).filter(|w| latin(&w[0]) && latin(&w[1])) {
+        q.push((format!("{}{}", w[0], w[1]), 0.5));
+    }
+    // keep the highest weight per term
+    q.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
+    q.dedup_by(|a, b| a.0 == b.0);
+    q
+}
+
+/// Okapi BM25 of `q` against every document of one field.
+fn bm25(docs: &[Vec<String>], q: &[(String, f64)]) -> Vec<f64> {
+    let (k1, b) = (1.2, 0.75);
+    let n = docs.len() as f64;
+    let avg = (docs.iter().map(Vec::len).sum::<usize>() as f64 / n).max(1.0);
+    let mut df: HashMap<&str, f64> = HashMap::new();
+    for d in docs {
+        let present: HashSet<&str> = d.iter().map(String::as_str).collect();
+        for (t, _) in q.iter().filter(|(t, _)| present.contains(t.as_str())) {
+            *df.entry(t.as_str()).or_default() += 1.0;
+        }
+    }
+    docs.iter()
+        .map(|d| {
+            let len = d.len() as f64;
+            q.iter()
+                .filter_map(|(t, w)| {
+                    let tf = d.iter().filter(|x| *x == t).count() as f64;
+                    let df = *df.get(t.as_str())?;
+                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+                    Some(w * idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg)))
+                })
+                .sum()
+        })
+        .collect()
+}
+
 fn search<'a>(reg: &'a Registry, query: &str, top_k: usize) -> Vec<(f64, &'a Skill)> {
-    // ponytail: in-memory BM25 over name x3 + description; fine for hundreds of skills,
-    // add an on-disk inverted index only if registries reach tens of thousands.
-    let docs: Vec<Vec<String>> = reg
+    // ponytail: in-memory BM25 over name x3 + description, plus a weighted body field;
+    // fine for thousands of skills, add an on-disk inverted index beyond ~50k.
+    if reg.skills.is_empty() {
+        return Vec::new();
+    }
+    let head: Vec<Vec<String>> = reg
         .skills
         .iter()
         .map(|s| {
             let name = tokenize(&s.name);
-            let mut d = Vec::new();
-            for _ in 0..3 {
-                d.extend(name.iter().cloned());
-            }
+            let mut d: Vec<String> = name.iter().chain(&name).chain(&name).cloned().collect();
             d.extend(tokenize(&s.description));
             d
         })
         .collect();
-    let n = docs.len() as f64;
-    if n == 0.0 {
-        return Vec::new();
-    }
-    let avg = docs.iter().map(Vec::len).sum::<usize>() as f64 / n;
-    let mut q = tokenize(query);
-    q.sort();
-    q.dedup();
-    let (k1, b) = (1.2, 0.75);
-    let mut scored: Vec<(f64, &Skill)> = docs
+    let body: Vec<Vec<String>> = reg.skills.iter().map(|s| tokenize(&s.body)).collect();
+    let q = expand_query(query);
+    let (h, bd) = (bm25(&head, &q), bm25(&body, &q));
+    let mut scored: Vec<(f64, &Skill)> = h
         .iter()
+        .zip(&bd)
         .zip(&reg.skills)
-        .map(|(d, s)| {
-            let len = d.len() as f64;
-            let score = q
-                .iter()
-                .map(|t| {
-                    let tf = d.iter().filter(|x| *x == t).count() as f64;
-                    if tf == 0.0 {
-                        return 0.0;
-                    }
-                    let df = docs.iter().filter(|d| d.contains(t)).count() as f64;
-                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-                    idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg))
-                })
-                .sum::<f64>();
-            (score, s)
-        })
+        .map(|((h, bd), s)| (h + BODY_WEIGHT * bd, s))
         .filter(|(score, _)| *score > 0.0)
         .collect();
+    // A query naming one language demotes SDK variants for a different language.
+    let langs: Vec<&str> = LANG_SUFFIXES
+        .iter()
+        .copied()
+        .filter(|l| q.iter().any(|(t, _)| t == l))
+        .collect();
+    if !langs.is_empty() {
+        for (score, s) in scored.iter_mut() {
+            let suffix = s.name.rsplit('-').next().unwrap_or("");
+            if LANG_SUFFIXES.contains(&suffix) && !langs.contains(&suffix) {
+                *score *= 0.5;
+            }
+        }
+    }
+    // An umbrella skill yields to a specific child that also matches reasonably well.
+    let demote: Vec<bool> = scored
+        .iter()
+        .map(|(su, u)| {
+            u.umbrella
+                && scored
+                    .iter()
+                    .any(|(sc, c)| is_child_of(c, u) && *sc >= 0.4 * su)
+        })
+        .collect();
+    for ((score, _), d) in scored.iter_mut().zip(demote) {
+        if d {
+            *score *= 0.5;
+        }
+    }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
     scored.truncate(top_k);
     scored
@@ -732,6 +859,87 @@ mod tests {
         );
         assert_eq!(search(&reg, "X posts", 1)[0].1.name, "x-operator");
         assert!(search(&reg, "zzzz", 3).is_empty());
+    }
+
+    #[test]
+    fn umbrella_yields_to_matching_child() {
+        let root = tmp("umbrella");
+        put(
+            &root,
+            "beatra",
+            "beatra",
+            "Beatra media generator: music, voice, images, avatar video",
+        );
+        put(
+            &root,
+            "music",
+            "beatra-music",
+            "Generate background music tracks with the Beatra package",
+        );
+        put(
+            &root,
+            "dub",
+            "beatra-dubbing",
+            "Dub videos into other languages with the Beatra package",
+        );
+        let reg = reg_for(&root);
+        assert!(
+            reg.skills
+                .iter()
+                .find(|s| s.name == "beatra")
+                .unwrap()
+                .umbrella
+        );
+        assert_eq!(
+            search(&reg, "beatra music track", 1)[0].1.name,
+            "beatra-music"
+        );
+        // without a matching child the umbrella keeps its rank
+        assert_eq!(search(&reg, "beatra avatar video", 1)[0].1.name, "beatra");
+    }
+
+    #[test]
+    fn language_synonyms_and_body_reach_variants() {
+        let root = tmp("synonyms");
+        put(&root, "ts", "azure-blob-ts", "Azure Blob Storage SDK");
+        put(&root, "py", "azure-blob-py", "Azure Blob Storage SDK");
+        put_raw(&root, "b", "---\nname: deploy-helper\ndescription: Ship things\n---\nUses the flyctl CLI for Fly.io apps.\n");
+        let reg = reg_for(&root);
+        assert_eq!(
+            search(&reg, "TypeScript upload to Azure Blob Storage", 1)[0]
+                .1
+                .name,
+            "azure-blob-ts"
+        );
+        assert_eq!(
+            search(&reg, "Python Azure Blob Storage", 1)[0].1.name,
+            "azure-blob-py"
+        );
+        assert_eq!(search(&reg, "flyctl", 1)[0].1.name, "deploy-helper");
+        // joined words reach compound names; the named language wins over other variants
+        put(
+            &root,
+            "ac-ts",
+            "azure-appconfiguration-ts",
+            "Feature flags and dynamic refresh",
+        );
+        put(
+            &root,
+            "ac-py",
+            "azure-appconfiguration-py",
+            "Feature flags and dynamic refresh for Python apps",
+        );
+        let reg = reg_for(&root);
+        assert_eq!(
+            search(
+                &reg,
+                "TypeScript service reading Azure App Configuration",
+                1
+            )[0]
+            .1
+            .name,
+            "azure-appconfiguration-ts"
+        );
     }
 
     #[test]
