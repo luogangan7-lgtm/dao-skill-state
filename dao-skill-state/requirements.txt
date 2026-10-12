@@ -1,0 +1,2 @@
+# Only required by the optional local format checker; tested version.
+PyYAML==6.0.3

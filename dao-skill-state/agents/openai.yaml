@@ -1,0 +1,6 @@
+interface:
+  display_name: "道 · Skill.state"
+  short_description: "创建、评估和改进可复用技能，以低上下文和真实验收支持长期维护"
+  default_prompt: "使用 $dao-skill-state，把我的需求变成最小可用技能，先发现可复用能力，再创建并验证；长任务才加入状态契约。"
+policy:
+  allow_implicit_invocation: false
