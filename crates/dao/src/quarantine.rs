@@ -273,14 +273,20 @@ pub fn inspect(
         return Err(reasons);
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let canon = serde_json::to_string(&entries).unwrap();
     Ok((
         Manifest {
-            digest: hex(&Sha256::digest(canon.as_bytes())),
+            digest: digest_of(&entries),
             files: entries,
             flags,
         },
         files,
+    ))
+}
+
+/// The content digest: sha256 of the canonical JSON of the path-sorted file list.
+pub(crate) fn digest_of(sorted: &[FileEntry]) -> String {
+    hex(&Sha256::digest(
+        serde_json::to_string(sorted).unwrap().as_bytes(),
     ))
 }
 
@@ -352,7 +358,7 @@ fn list_all(root: &Path, dir: &Path, out: &mut Collected, odd: &mut Vec<String>)
 
 /// Re-check a stored object against the manifest it must equal: exactly the same set of
 /// paths (nothing skipped, nothing extra), same bytes (streamed), same exec bits.
-fn verify_object(obj: &Path, manifest: &Manifest) -> Result<(), String> {
+pub(crate) fn verify_object(obj: &Path, manifest: &Manifest) -> Result<(), String> {
     let (mut files, mut odd) = (Vec::new(), Vec::new());
     list_all(obj, obj, &mut files, &mut odd);
     files.sort_by(|a, b| a.0.cmp(&b.0));
