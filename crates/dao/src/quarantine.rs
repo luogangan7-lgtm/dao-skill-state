@@ -89,6 +89,8 @@ struct Walk<'a> {
     out: Collected,
     flags: Vec<String>,
     reasons: Vec<String>,
+    /// Bytes of collected files (from metadata), so limits stop the walk before any hashing.
+    total: u64,
 }
 
 fn walk(w: &mut Walk, dir: &Path, depth: usize) {
@@ -105,6 +107,9 @@ fn walk(w: &mut Walk, dir: &Path, depth: usize) {
     let mut entries: Vec<_> = rd.filter_map(Result::ok).collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
+        if w.out.len() > w.lim.max_files || w.total > w.lim.max_total_bytes {
+            return; // over a limit: stop collecting; inspect reports it without hashing
+        }
         let p = e.path();
         let Some(rel) = p
             .strip_prefix(w.root)
@@ -195,6 +200,7 @@ fn walk(w: &mut Walk, dir: &Path, depth: usize) {
                 w.flags.push(format!("hardlink:{rel}"));
             }
         }
+        w.total += size;
         w.out.push((rel, target, executable));
     }
 }
@@ -223,19 +229,30 @@ pub fn inspect(
         out: Vec::new(),
         flags: Vec::new(),
         reasons: Vec::new(),
+        total: 0,
     };
     walk(&mut w, &root, 0);
     let Walk {
         out: files,
         flags,
         mut reasons,
+        total,
         ..
     } = w;
     if !files.iter().any(|(rel, _, _)| rel == "SKILL.md") {
         reasons.push("missing SKILL.md at the skill root".into());
     }
     if files.len() > lim.max_files {
-        reasons.push(format!("too many files ({})", files.len()));
+        reasons.push(format!("too many files (more than {})", lim.max_files));
+    }
+    if total > lim.max_total_bytes {
+        reasons.push(format!(
+            "skill too large (more than {} bytes)",
+            lim.max_total_bytes
+        ));
+    }
+    if !reasons.is_empty() {
+        return Err(reasons); // nothing is hashed for a rejected tree
     }
     let mut entries = Vec::new();
     let mut total = 0u64;
@@ -771,14 +788,21 @@ mod tests {
         for i in 0..5 {
             fs::write(u.0.join(format!("f{i}.md")), "x").unwrap();
         }
+        // an over-limit tree is rejected before any file is read (f0 is unreadable)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(u.0.join("f0.md"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
         let lim = Limits {
             max_files: 3,
             ..Limits::default()
         };
-        assert!(inspect(&u.0, &u.0, &lim)
-            .unwrap_err()
-            .iter()
-            .any(|r| r.contains("too many files")));
+        let reasons = inspect(&u.0, &u.0, &lim).unwrap_err();
+        assert!(
+            reasons.iter().any(|r| r.contains("too many files")),
+            "{reasons:?}"
+        );
     }
 
     #[cfg(unix)]
