@@ -31,6 +31,7 @@ ap.add_argument("--work", required=True)
 ap.add_argument("--corpus", action="append", default=[])
 ap.add_argument("--generated", action="store_true")
 ap.add_argument("--freeze")
+ap.add_argument("--known", default="", help="comma-separated case dirs whose difference is documented")
 a = ap.parse_args()
 
 spec = importlib.util.spec_from_file_location("check_skill", a.checker)
@@ -118,7 +119,51 @@ def gen():
     return [(d, s.encode("utf-8")) for d, s in cases] + [
         ("b1", b"---\nname: b1\ndescription: \xff\n---\n"),
         ("b2", b"\xff\xfe"),
-    ]
+    ] + [(d, s.encode("utf-8")) for d, s in REVIEW]
+
+
+# Repros from the PR #6 reviews (independent reviewer + Codex): each was a divergence once.
+REVIEW = [
+    ("r-tabq", '---\nname: r-tabq\ndescription: "Does a thing."\t\n---\n'),
+    ("r-tabs", "---\nname: r-tabs\ndescription: ok\nx: 'y'\t\n---\n"),
+    ("r-tabk", '---\nname: r-tabk\ndescription: ok\n"k"\t: v\n---\n'),
+    ("r-flowq", "---\nname: r-flowq\ndescription: ok\ntriggers: [how do I deploy?, rollback]\n---\n"),
+    ("r-flowurl", "---\nname: r-flowurl\ndescription: ok\nmetadata: {homepage: https://example.com/docs?lang=en}\n---\n"),
+    ("r-flowdesc", "---\n{name: r-flowdesc, description: Is it ok?}\n---\n"),
+    ("r-flowcolon", "---\nname: r-flowcolon\ndescription: ok\nx: [:a, b]\n---\n"),
+    ("r-flowbar", "---\nname: r-flowbar\ndescription: ok\nx: [|a, b]\n---\n"),
+    ("r-flowtag", "---\nname: r-flowtag\ndescription: ok\nx: [!, a]\n---\n"),
+    ("r-flowkey", '---\nname: r-flowkey\ndescription: ok\nx: {"a\n b": c}\n---\n'),
+    ("r-longkey", "---\nname: r-longkey\ndescription: ok\n" + "k" * 1030 + ": v\n---\n"),
+    ("r-anchorc", "---\nname: r-anchorc\ndescription: ok\nmetadata:\n  &author: someone\n---\n"),
+    ("r-anchord", "---\nname: r-anchord\ndescription: &d: ok\n---\n"),
+    ("r-docend", "---\n...\nname: r-docend\ndescription: ok\n---\n"),
+    ("r-yaml2", "---\n%YAML 2.0\n--- \nname: r-yaml2\ndescription: ok\n---\n"),
+    ("r-sqcont", "---\nname: r-sqcont\ndescription: ok\na: 'x\ny'\n---\n"),
+    ("r-b64pad", "---\nname: r-b64pad\ndescription: ok\nx: !!binary aGk= b c\n---\n"),
+    ("r-setmerge", "---\nname: r-setmerge\ndescription: ok\ncustom: !!set {<<: {a: !foo bar}}\n---\n"),
+    ("r-setmerge2", "---\nname: r-setmerge2\ndescription: ok\ncustom: !!set {<<: {a: !!int x}}\n---\n"),
+    ("r-setval", "---\nname: r-setval\ndescription: ok\ncustom: !!set {=: null}\n---\n"),
+    ("r-strval", "---\nname: r-strval\ndescription: !!str {=: hello}\n---\n"),
+    ("r-tsval", "---\nname: r-tsval\ndescription: ok\nx: !!timestamp {=: 2026-01-01}\n---\n"),
+    ("r-nullnl", "---\nname: r-nullnl\ndescription: ! |\n  null\n---\n"),
+    ("r-datenl", "---\nname: r-datenl\ndescription: ok\nx: ! |\n  2026-10-13\n---\n"),
+    ("r-yesnl", '---\nname: r-yesnl\ndescription: ! "yes\\n"\n---\n'),
+    ("r-arabic", "---\nname: r-arabic\ndescription: ok\ncustom: !!int '١٢'\n---\n"),
+    ("r-arabicf", "---\nname: r-arabicf\ndescription: ok\ncustom: !!float '١.٥'\n---\n"),
+    ("r-bomb", "---\nname: r-bomb\ndescription: ok\na0: &a0 {x: 1}\n"
+     + "".join(f"a{i}: &a{i} {{p: *a{i-1}, q: *a{i-1}}}\n" for i in range(1, 40)) + "---\n"),
+    ("r-emptyblk", "---\nname: r-emptyblk\ndescription: ok\nx: |\n---\n"),
+] + [
+    (f"r-depth-{style}-{n}", "---\nname: r-depth-%s-%d\ndescription: ok\n%s---\n" % (style, n, body))
+    for n in (480, 489, 490, 491, 600, 5000)
+    for style, body in (
+        ("flow", "x: " + "{a: " * n + "1" + "}" * n + "\n"),
+        ("seq", "x: " + "[" * n + "1" + "]" * n + "\n"),
+        ("block", "x:\n" + "".join(" " * (i + 1) + "a:\n" for i in range(n)) + " " * (n + 1) + "1\n"),
+    )
+]
+
 
 
 def materialize(root, cases):
@@ -146,6 +191,7 @@ special = [os.path.join(a.work, "missing-dir"), os.path.join(a.work, "gen", "000
 
 ok = True
 fixtures = []
+known = set(filter(None, a.known.split(",")))
 for name, cases, dirs in groups:
     stats = {"same": 0, "py_crash": 0, "diff": 0}
     for i, d in enumerate(dirs):
@@ -159,6 +205,9 @@ for name, cases, dirs in groups:
                 print(f"UNEXPLAINED {name} {d}: python crashed ({po}); rust exit {rc}")
         elif (pc, po) == (rc, ro):
             stats["same"] += 1
+        elif os.path.basename(d) in known:
+            stats.setdefault("known", 0)
+            stats["known"] += 1
         else:
             stats["diff"] += 1
             ok = False
@@ -178,5 +227,10 @@ for d in special:
 if a.freeze:
     with open(a.freeze, "w") as f:
         json.dump(fixtures, f, ensure_ascii=False, indent=0)
+    import hashlib, platform, yaml
+    with open(a.freeze.replace(".json", ".meta.json"), "w") as f:
+        json.dump({"python": platform.python_version(), "pyyaml": yaml.__version__,
+                   "checker_sha256": hashlib.sha256(open(a.checker, "rb").read()).hexdigest(),
+                   "cases": len(fixtures)}, f, indent=1)
     print(f"froze {len(fixtures)} cases -> {a.freeze}")
 sys.exit(0 if ok else 1)
