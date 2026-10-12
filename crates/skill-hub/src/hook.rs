@@ -2,7 +2,7 @@
 //!
 //! Role: run as a `UserPromptSubmit` command hook. Reads the hook JSON from stdin, retrieves
 //! the top-K skills lexically, optionally asks the Jev decision model (TypeSafe API) to pick
-//! one or "none", and prints `hookSpecificOutput.additionalContext` naming the chosen skill.
+//! one or the no-skill option, and prints `hookSpecificOutput.additionalContext` naming the chosen skill.
 //! Depends on: crate::{load, search} (registry + lexical ranking); serde_json; the system
 //! `curl` binary for the optional Jev call (no HTTP crate).
 //! Called by: the host's hook runner; `main` routes `skill-hub hook` here.
@@ -12,7 +12,8 @@
 //! - The API key is passed to curl on stdin (`-K -`), never in argv or a file.
 //! - Only the prompt (truncated to `PROMPT_CHARS`) and candidate names/descriptions leave the
 //!   machine, and only when `TYPESAFE_API_KEY` is set. Without it, retrieval is fully local.
-//! - Jev may only answer with a retrieved candidate or "none"; anything else falls back.
+//! - Jev may only answer with a retrieved candidate or the no-skill sentinel; anything else
+//!   falls back to the lexical rule.
 
 use crate::{load, search};
 use serde_json::{json, Value};
@@ -71,7 +72,7 @@ pub fn lexical(cands: &[Candidate], n_skills: usize) -> Vec<Candidate> {
 
 pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
     let mut criteria = serde_json::Map::new();
-    // a skill literally named "none" would collide with the abstain option
+    // the sentinel cannot be a skill name; filtering keeps the criteria map collision-free anyway
     for c in cands.iter().filter(|c| c.id != NONE) {
         let d: String = c.description.chars().take(DESC_CHARS).collect();
         criteria.insert(
@@ -88,12 +89,12 @@ pub fn jev_body(prompt: &str, cands: &[Candidate], model: &str) -> String {
     let state: String = prompt.chars().take(PROMPT_CHARS).collect();
     json!({"model": model, "state": state, "questions": {"skill": {"type": "choice",
         "instructions": "Which skill should an AI agent load to handle this request? \
-                         Choose 'none' if no listed skill clearly fits.",
+                         Choose __skill_hub_no_skill__ if no listed skill clearly fits.",
         "criteria": criteria}}})
     .to_string()
 }
 
-/// `Ok(Some(id))` for a candidate, `Ok(None)` for "none", `Err` for anything unexpected.
+/// `Ok(Some(id))` for a candidate, `Ok(None)` for the no-skill sentinel, `Err` otherwise.
 pub fn parse_jev(out: &str, cands: &[Candidate]) -> Result<Option<String>, String> {
     let v: Value = serde_json::from_str(out).map_err(|e| format!("bad Jev response: {e}"))?;
     let ans = &v["answers"]["skill"];
