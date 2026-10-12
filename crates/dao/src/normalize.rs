@@ -197,9 +197,18 @@ pub fn tokens(text: &str) -> Vec<String> {
 
 fn sentences(text: &str) -> Vec<String> {
     static SPLIT: OnceLock<Regex> = OnceLock::new();
-    let re = SPLIT.get_or_init(|| Regex::new(r"(?:[.!?](?:\s+|$)|[。！？；;]\s*|\n+)").unwrap());
-    re.split(text)
-        .map(str::trim)
+    // the terminator (`.`, `!`, `?`, `。`, …) stays with its sentence; only the whitespace
+    // after it is dropped, so every sentence is an exact substring of the description
+    let re = SPLIT.get_or_init(|| Regex::new(r"[.!?](?:\s+|$)|[。！？；;]\s*|\n+").unwrap());
+    let mut out = Vec::new();
+    let mut start = 0;
+    for m in re.find_iter(text) {
+        let keep = m.as_str().trim_end().len();
+        out.push(text[start..m.start() + keep].trim());
+        start = m.end();
+    }
+    out.push(text[start..].trim());
+    out.into_iter()
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()
@@ -277,22 +286,42 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
     let manifest: Manifest =
         serde_json::from_slice(&fs::read(&mpath).map_err(|e| format!("{}: {e}", mpath.display()))?)
             .map_err(|e| format!("{}: {e}", mpath.display()))?;
+    // the same integrity checks as `dao scan`: never bind bytes to a digest they don't hash to
+    let mut sorted = manifest.files.clone();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    if manifest.digest != digest
+        || crate::quarantine::digest_of(&sorted) != digest
+        || sorted != manifest.files
+    {
+        return Err(format!("{digest}: manifest does not hash to the digest"));
+    }
+    crate::quarantine::verify_object(&store.join("objects").join(digest), &manifest)?;
     let raw =
         fs::read(store.join("objects").join(digest).join("SKILL.md")).map_err(|e| e.to_string())?;
-    let mut sources: Vec<SourceRef> = fs::read_dir(store.join("locks").join(digest))
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter_map(|e| fs::read(e.path()).ok())
-                .filter_map(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .map(|v| SourceRef {
-                    origin: v["origin"].as_str().unwrap_or("").into(),
-                    subpath: v["subpath"].as_str().unwrap_or("").into(),
-                    commit: v["commit"].as_str().map(str::to_string),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    sources.sort_by(|a, b| (&a.origin, &a.subpath).cmp(&(&b.origin, &b.subpath)));
+    // source locks are the authoritative provenance: a missing or unreadable lock fails
+    let ldir = store.join("locks").join(digest);
+    let mut sources = Vec::new();
+    for e in fs::read_dir(&ldir).map_err(|e| format!("{}: {e}", ldir.display()))? {
+        let path = e.map_err(|e| e.to_string())?.path();
+        let v: serde_json::Value = serde_json::from_slice(
+            &fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+        )
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+        sources.push(SourceRef {
+            origin: v["origin"]
+                .as_str()
+                .ok_or_else(|| format!("{}: no origin", path.display()))?
+                .into(),
+            subpath: v["subpath"].as_str().unwrap_or("").into(),
+            commit: v["commit"].as_str().map(str::to_string),
+        });
+    }
+    if sources.is_empty() {
+        return Err(format!("{}: no source lock", ldir.display()));
+    }
+    sources.sort_by(|a, b| {
+        (&a.origin, &a.subpath, &a.commit).cmp(&(&b.origin, &b.subpath, &b.commit))
+    });
     let mut files = Sha256::new();
     for f in manifest.files.iter().filter(|f| f.path != "SKILL.md") {
         files.update(format!("{}\0{}\0{}\n", f.path, f.sha256, f.executable));
@@ -372,9 +401,14 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
         cut -= 1;
     }
     static ID: OnceLock<Regex> = OnceLock::new();
-    let id_re = ID.get_or_init(|| Regex::new(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b").unwrap());
+    // hyphenated identifiers anywhere, and single-segment ones only inside `code` (a plain
+    // word like "deploy" in prose is not a reference to the `deploy` skill)
+    let id_re = ID.get_or_init(|| {
+        Regex::new(r"\b([a-z0-9]+(?:-[a-z0-9]+)+)\b|`/?([a-z0-9]+(?:-[a-z0-9]+)*)`").unwrap()
+    });
     let mentions: std::collections::BTreeSet<String> = id_re
-        .find_iter(&body[..cut])
+        .captures_iter(&body[..cut])
+        .filter_map(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| m.as_str().to_string())
         .collect();
     Ok(Card {
@@ -433,13 +467,21 @@ mod tests {
             .filter(|x| p.use_when.is_match(x) && !p.not_for.is_match(x))
             .collect();
         let nf: Vec<_> = s.iter().filter(|x| p.not_for.is_match(x)).collect();
-        assert_eq!(uw, ["Use for social slides"]);
+        assert_eq!(uw, ["Use for social slides."]);
         assert_eq!(
             nf,
             [
-                "Do NOT use for generic images",
-                "Not a generic image generator"
+                "Do NOT use for generic images.",
+                "Not a generic image generator."
             ]
+        );
+        assert!(
+            s.iter().all(|x| d.contains(x.as_str())),
+            "verbatim substrings"
+        );
+        assert_eq!(
+            sentences("用于排版。不用于发布！"),
+            ["用于排版。", "不用于发布！"]
         );
         assert_eq!(language("为 1688 制作一个元 skill"), "zh");
         assert_eq!(language("スキルを使用する場合"), "ja");

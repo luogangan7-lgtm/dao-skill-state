@@ -176,7 +176,9 @@ fn same_name(a: &Card, b: &Card) -> (&'static str, String) {
             .iter()
             .any(|t| t.origin == s.origin && base(&t.subpath) == base(&s.subpath))
     });
-    if shared {
+    // a multi-vendor collection can hold two unrelated skills in same-named directories: the
+    // ports really share content (containment 0.54–0.69 on ECC), unrelated ones don't
+    if shared && contain >= 0.3 {
         return (
             "drift",
             format!("same skill directory in one source repository, body similarity {jac:.2}, containment {contain:.2}"),
@@ -387,14 +389,30 @@ mod tests {
             .filter(|x| x.kind != "family")
             .all(|x| x.a.contains(".claude/skills")));
         assert_eq!(build(&cards), r, "deterministic");
-        // same repository, same name, dissimilar bodies: lineage (drift), not a conflict
-        let mut kiro = card("deploy", "latin", "unrelated words for another host", 'g');
+        // same repository, same skill directory, diverged port that still shares content:
+        // lineage (drift); unrelated bodies in same-named vendor directories: a conflict
+        let mut kiro = card(
+            "deploy",
+            "latin",
+            "vercel preview production rollback kiro hooks",
+            'g',
+        );
         kiro.sources[0].subpath = ".kiro/skills/deploy".into();
         let r2 = build(&[
-            card("deploy", "latin", "totally different words here", 'e'),
+            card(
+                "deploy",
+                "latin",
+                "vercel preview production rollback steps",
+                'e',
+            ),
             kiro,
         ]);
         assert_eq!(r2[0].kind, "drift", "{r2:?}");
+        let mut va = card("deploy2", "latin", "vercel preview production", 'k');
+        va.sources[0].subpath = "vendor-a/deploy2".into();
+        let mut vb = card("deploy2", "latin", "kubernetes helm charts rollout", 'l');
+        vb.sources[0].subpath = "vendor-b/deploy2".into();
+        assert_eq!(build(&[va, vb])[0].kind, "name_conflict");
         let mut legacy = card("deploy", "latin", "kubernetes rollout helm charts", 'h');
         legacy.sources[0].subpath = "deploy-legacy".into();
         let r3 = build(&[
