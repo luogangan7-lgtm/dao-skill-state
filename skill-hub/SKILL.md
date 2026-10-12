@@ -32,7 +32,7 @@ The registry path comes only from `SKILL_HUB_REGISTRY`. Never pass a `--registry
 
 ## Setup (owner)
 
-Every file in a hosted skill's folder is hash-verified, including `node_modules`, `target` and `.venv`; only `.git` and tool caches are skipped. Keep virtual environments and build output outside skill folders, or the skill is refused until re-indexed. Symlinked files are verified through their target content.
+Every file in a hosted skill's folder is hash-verified, including `node_modules`, `target` and `.venv`; only `.git` and tool caches are skipped. Keep virtual environments and build output outside skill folders, or the skill is refused until re-indexed. Symlinked files are verified through their target content; symlinked directories are recorded by link text only, so keep executable content in real directories inside the skill.
 
 ```bash
 cargo install --locked --path crates/skill-hub

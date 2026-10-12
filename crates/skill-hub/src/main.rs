@@ -27,14 +27,13 @@ use std::process::ExitCode;
 const SCHEMA: u32 = 2;
 const MAX_FILES: usize = 10_000;
 /// Never executed by a skill, but rewritten by tools; hashing them would lock skills out.
-const SKIP_NAMES: [&str; 7] = [
+const SKIP_NAMES: [&str; 6] = [
     ".git",
     "__pycache__",
     ".DS_Store",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
-    ".cache",
 ];
 
 /// Exit codes (documented in skill-hub/SKILL.md).
@@ -251,12 +250,21 @@ fn tree_hash(dir: &Path) -> Result<String, String> {
     Ok(hex(&h.finalize()))
 }
 
-/// Skills found under the roots, plus `broken: ...` lines for skills that could not be read.
+/// Result of scanning the roots.
+struct Scan {
+    skills: Vec<Skill>,
+    /// `broken: ...` lines for skills that could not be read (reported by `check`).
+    broken: Vec<String>,
+    /// Locations left out because their owner restricted them to explicit invocation.
+    skipped: Vec<String>,
+}
+
 /// A missing root is fatal; a single unreadable skill is not.
-fn scan(roots: &[Root]) -> Result<(Vec<Skill>, Vec<String>), String> {
+fn scan(roots: &[Root]) -> Result<Scan, String> {
     // canonical dir -> skill (merging locations that resolve to the same directory)
     let mut by_dir: BTreeMap<String, Skill> = BTreeMap::new();
     let mut broken = Vec::new();
+    let mut skipped = Vec::new();
     for root in roots {
         let mut entries: Vec<PathBuf> = fs::read_dir(&root.path)
             .map_err(|e| format!("cannot read root {}: {e}", root.path))?
@@ -283,6 +291,7 @@ fn scan(roots: &[Root]) -> Result<(Vec<Skill>, Vec<String>), String> {
             };
             let front = parse_frontmatter(&String::from_utf8_lossy(&bytes));
             if front.user_only || codex_explicit_only(&dir) {
+                skipped.push(location);
                 continue;
             }
             let key = dir.to_string_lossy().into_owned();
@@ -337,7 +346,11 @@ fn scan(roots: &[Root]) -> Result<(Vec<Skill>, Vec<String>), String> {
         };
     }
     merged.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok((merged, broken))
+    Ok(Scan {
+        skills: merged,
+        broken,
+        skipped,
+    })
 }
 
 /// Absolute, unique-label roots; relative paths would break `check` from another cwd.
@@ -373,7 +386,11 @@ fn load(path: &str) -> Result<Registry, String> {
 
 /// Differences between the registry and the disk; empty means in sync.
 fn drift(reg: &Registry) -> Result<Vec<String>, String> {
-    let (now, broken) = scan(&reg.roots)?;
+    let Scan {
+        skills: now,
+        broken,
+        ..
+    } = scan(&reg.roots)?;
     let old: HashMap<&str, &Skill> = reg.skills.iter().map(|s| (s.id.as_str(), s)).collect();
     let new: HashMap<&str, &Skill> = now.iter().map(|s| (s.id.as_str(), s)).collect();
     let mut out = Vec::new();
@@ -549,8 +566,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 return Err("index needs at least one --root".into());
             }
             let roots = normalize_roots(roots)?;
-            let (skills, broken) = scan(&roots)?;
+            let Scan {
+                skills,
+                broken,
+                skipped,
+            } = scan(&roots)?;
             broken.iter().for_each(|b| eprintln!("warning: {b}"));
+            skipped
+                .iter()
+                .for_each(|s| eprintln!("skipped (explicit-only): {s}"));
             let n = skills.len();
             write_registry(
                 &out,
@@ -642,7 +666,7 @@ mod tests {
         .unwrap();
         Registry {
             schema: SCHEMA,
-            skills: scan(&roots).unwrap().0,
+            skills: scan(&roots).unwrap().skills,
             roots,
         }
     }
@@ -858,7 +882,7 @@ mod tests {
             },
         ])
         .unwrap();
-        let skills = scan(&roots).unwrap().0;
+        let skills = scan(&roots).unwrap().skills;
         let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["a:q", "b:q", "ponytail"]);
         assert_eq!(skills[2].locations, vec!["a:p", "b:p"]);
