@@ -57,7 +57,20 @@ pub fn validate_origin(origin: &str) -> Result<(), String> {
             "refusing source with a transport helper or option syntax: {origin}"
         ));
     }
-    if lower.starts_with("https://") || Path::new(origin).is_absolute() {
+    if let Some(rest) = lower.strip_prefix("https://") {
+        if rest
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("")
+            .contains('@')
+        {
+            return Err(
+                "credentials in the URL would be written to locks; use a credential helper".into(),
+            );
+        }
+        return Ok(());
+    }
+    if Path::new(origin).is_absolute() {
         return Ok(());
     }
     Err(format!(
@@ -77,6 +90,17 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         ])
         .args(args)
         .current_dir(dir)
+        // never act on a repository named by the caller's environment (hooks, wrappers)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_NAMESPACE")
+        .env_remove("GIT_CEILING_DIRECTORIES")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
@@ -108,6 +132,28 @@ pub fn fetch_git(origin: &str, rev: &str, dest: &Path) -> Result<String, String>
         return Err(format!("requested commit {rev} but checked out {commit}"));
     }
     Ok(commit)
+}
+
+/// Read a small metadata file (license, frontmatter) before quarantine has vetted the tree:
+/// regular file only (a symlink must resolve to a regular file inside `boundary` and outside
+/// `.git`), at most `cap` bytes. Anything else reads as absent.
+pub fn read_vetted(path: &Path, boundary: &Path, cap: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let boundary = fs::canonicalize(boundary).ok()?;
+    let real = fs::canonicalize(path).ok()?;
+    if !real.starts_with(&boundary) || real.starts_with(boundary.join(".git")) {
+        return None;
+    }
+    if !fs::symlink_metadata(&real).ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut buf = Vec::new();
+    fs::File::open(&real)
+        .ok()?
+        .take(cap)
+        .read_to_end(&mut buf)
+        .ok()?;
+    Some(buf)
 }
 
 const LICENSE_FILES: [&str; 6] = [
@@ -159,7 +205,7 @@ pub fn detect_license(
     while let Some(d) = dir {
         for name in LICENSE_FILES {
             let p = d.join(name);
-            if let Ok(bytes) = fs::read(&p) {
+            if let Some(bytes) = read_vetted(&p, tree_root, 256 * 1024) {
                 let spdx = guess_spdx(&String::from_utf8_lossy(&bytes));
                 return LicenseEvidence {
                     file: p
@@ -215,10 +261,12 @@ mod tests {
         }
         assert!(validate_origin("https://github.com/a/b.git").is_ok());
         assert!(validate_origin("/abs/repo").is_ok());
+        assert!(validate_origin("https://user:tok@github.com/a/b").is_err());
+        assert!(validate_origin("https://github.com/a/b@v1").is_ok());
     }
 
     #[test]
-    fn fetch_pins_the_commit_and_runs_no_hooks() {
+    fn fetch_pins_the_commit() {
         let src = tmp("repo");
         let run = |args: &[&str]| {
             assert!(Command::new("git")
@@ -286,6 +334,23 @@ mod tests {
             (l.file.as_deref(), l.status.as_str()),
             (Some("skills/a/LICENSE.txt"), "restricted")
         );
+        // a license symlink out of the tree, or to a FIFO/device, reads as absent
+        let out = tmp("outside");
+        fs::write(out.join("secret"), "MIT License").unwrap();
+        fs::remove_file(root.join("skills/a/LICENSE.txt")).unwrap();
+        fs::remove_file(root.join("LICENSE")).unwrap();
+        std::os::unix::fs::symlink(out.join("secret"), root.join("LICENSE")).unwrap();
+        assert_eq!(
+            detect_license(&root, &root.join("skills/a"), None).file,
+            None
+        );
+        fs::remove_file(root.join("LICENSE")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", root.join("LICENSE")).unwrap();
+        assert_eq!(
+            detect_license(&root, &root.join("skills/a"), None).file,
+            None
+        );
+        let _ = fs::remove_dir_all(out);
         let none = tmp("nolic");
         assert_eq!(detect_license(&none, &none, None).status, "unknown");
         let _ = (fs::remove_dir_all(root), fs::remove_dir_all(none));
