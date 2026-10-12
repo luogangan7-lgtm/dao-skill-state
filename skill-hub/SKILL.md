@@ -11,7 +11,7 @@ Hosted skills are installed on disk but hidden from the resident skill list to s
 
 1. Search with the task's key nouns and verbs. Include both the user's own words and their English equivalents, because many skills are described in English:
    ```bash
-   skill-hub search --top-k 3 小红书 图文 xiaohongshu note
+   skill-hub search --top-k 3 -- 小红书 图文 xiaohongshu note
    ```
 2. Pick the candidate whose description fits. If no candidate fits, or the top score is low and unrelated, continue without a hosted skill and say so. Do not force a match.
 3. Load the chosen skill by its exact `id`:
@@ -31,6 +31,8 @@ The registry path comes only from `SKILL_HUB_REGISTRY`. Never pass a `--registry
 - Exit codes: `3` = the skill's files changed or moved since indexing (report it; do not read the files directly as a workaround — the owner re-runs `skill-hub check` and `skill-hub index`); `4` = unknown id (re-run `search` and use an id exactly as printed); `2` = usage error or missing/unreadable registry or root; `127` from the shell = binary not installed. For 2 and 127, report the setup gap instead of guessing skill contents.
 
 ## Setup (owner)
+
+Every file in a hosted skill's folder is hash-verified, including `node_modules`, `target` and `.venv`; only `.git` and tool caches are skipped. Keep virtual environments and build output outside skill folders, or the skill is refused until re-indexed. Symlinked files are verified through their target content.
 
 ```bash
 cargo install --locked --path crates/skill-hub

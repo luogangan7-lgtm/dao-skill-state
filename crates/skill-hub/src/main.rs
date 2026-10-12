@@ -133,12 +133,17 @@ fn policy_value(raw: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Fail closed: any occurrence of `key` whose value is not exactly `permissive` restricts.
+/// Fail closed on the key's presence: every line that mentions `key` must be exactly
+/// `key: <permissive>` (after removing comments and quotes), otherwise the skill is
+/// restricted. Quoted keys, flow mappings or JSON spellings therefore restrict too.
 fn restricted<'a>(lines: impl Iterator<Item = &'a str>, key: &str, permissive: &str) -> bool {
     let prefix = format!("{key}:");
     lines
-        .filter_map(|l| l.trim().strip_prefix(prefix.as_str()))
-        .any(|v| policy_value(v) != permissive)
+        .filter(|l| l.contains(key))
+        .any(|l| match l.trim().strip_prefix(prefix.as_str()) {
+            Some(v) => policy_value(v) != permissive,
+            None => true,
+        })
 }
 
 /// Codex keeps its invocation policy in `agents/openai.yaml`.
@@ -188,9 +193,10 @@ fn tokenize(text: &str) -> Vec<String> {
     out
 }
 
-/// sha256 over the sorted skill tree. Regular files contribute their content hash,
-/// symlinks their link text (never followed, so no loops or escapes), other file types
-/// (FIFOs, sockets) only a marker, so hashing never blocks.
+/// sha256 over the sorted skill tree. Regular files contribute their content hash; a symlink
+/// to a regular file contributes its link text and the target's content (file links cannot
+/// loop); a directory symlink only its link text (never followed); a dangling link is an
+/// error; other file types (FIFOs, sockets) only a marker, so hashing never blocks.
 fn tree_hash(dir: &Path) -> Result<String, String> {
     fn walk(base: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<(), String> {
         if depth > 32 {
@@ -223,7 +229,15 @@ fn tree_hash(dir: &Path) -> Result<String, String> {
         let err = |e: std::io::Error| format!("{}: {e}", rel.display());
         let ft = fs::symlink_metadata(&p).map_err(err)?.file_type();
         let id = if ft.is_symlink() {
-            format!("link:{}", fs::read_link(&p).map_err(err)?.display())
+            let link = fs::read_link(&p).map_err(err)?;
+            let target =
+                fs::metadata(&p).map_err(|e| format!("{}: dangling link: {e}", rel.display()))?;
+            if target.is_file() {
+                let content = hex(&Sha256::digest(fs::read(&p).map_err(err)?));
+                format!("link:{}:{content}", link.display())
+            } else {
+                format!("link:{}", link.display())
+            }
         } else if ft.is_file() {
             hex(&Sha256::digest(fs::read(&p).map_err(err)?))
         } else {
@@ -513,12 +527,13 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     // Stray arguments would silently drop intent (e.g. a mistyped `--root`), so reject them.
     match (cmd.as_str(), rest.len()) {
         ("index" | "check", 0) | ("get", 1) | ("search", _) => {}
-        _ => {
+        ("index" | "check" | "get", n) if n > 1 || cmd != "get" => {
             return Err(format!(
                 "unexpected arguments for {cmd}: {}",
                 rest.join(" ")
             ))
         }
+        _ => return Ok(usage()),
     }
     let registry = || -> Result<Registry, String> {
         let path = registry
@@ -747,6 +762,27 @@ mod tests {
             "allow_implicit_invocation",
             "true"
         ));
+        for k in [
+            "\"disable-model-invocation\": true",
+            "'disable-model-invocation': true",
+            "disable-model-invocation : true",
+        ] {
+            assert!(
+                parse_frontmatter(&format!("---\nname: a\n{k}\n---\n")).user_only,
+                "{k}"
+            );
+        }
+        for y in [
+            "policy: {allow_implicit_invocation: false}",
+            "\"allow_implicit_invocation\": false",
+            "{\"policy\": {\"allow_implicit_invocation\": false}}",
+            "  allow_implicit_invocation : false",
+        ] {
+            assert!(
+                restricted(y.lines(), "allow_implicit_invocation", "true"),
+                "{y}"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -770,6 +806,21 @@ mod tests {
         fs::write(root.join("good/.pytest_cache/x"), "cache").unwrap();
         assert!(get(&reg, "good").is_ok());
         assert!(drift(&reg).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_file_targets_are_verified() {
+        let root = tmp("symlink-target");
+        fs::write(root.join("shared.md"), "v1").unwrap();
+        put(&root, "one", "one", "uses a shared contract");
+        std::os::unix::fs::symlink("../shared.md", root.join("one/contract.md")).unwrap();
+        let reg = reg_for(&root);
+        fs::write(root.join("shared.md"), "v2").unwrap();
+        assert_eq!(drift(&reg).unwrap(), vec!["changed: one"]);
+        assert_eq!(get(&reg, "one").unwrap_err().0, EXIT_REFUSED);
+        fs::remove_file(root.join("shared.md")).unwrap();
+        assert!(drift(&reg).unwrap().iter().any(|l| l.contains("dangling")));
     }
 
     #[cfg(unix)]
