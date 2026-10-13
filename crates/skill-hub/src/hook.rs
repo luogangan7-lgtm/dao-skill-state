@@ -16,7 +16,7 @@
 //! - Jev may only answer with a retrieved candidate or the no-skill sentinel; anything else
 //!   falls back to the lexical rule.
 
-use crate::{load, search};
+use crate::load;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -45,7 +45,10 @@ fn sentinel(cands: &[Candidate]) -> String {
 pub struct Candidate {
     pub id: String,
     pub description: String,
+    /// BM25 score (0 when only dense recall found the skill).
     pub score: f64,
+    /// Cosine similarity when dense recall ran.
+    pub dense: Option<f64>,
 }
 
 /// How to reach Jev; absent means local lexical selection only.
@@ -69,9 +72,12 @@ fn floor_for(n: usize) -> f64 {
     FLOOR * (max_idf(n.max(1) as f64) / max_idf(2000.0)).min(1.0)
 }
 
-/// Lexical rule used without Jev or when Jev fails: top-3 above an absolute and relative floor.
+/// Lexical rule used without Jev or when Jev fails: of the top 3 (in fused order when dense
+/// recall ran), keep those whose BM25 score clears the absolute and relative floor. Dense
+/// recall changes which skills reach the top 3, not the floor: a cosine keep rule made no
+/// measured difference in the D5 review, so there is none.
 pub fn lexical(cands: &[Candidate], n_skills: usize) -> Vec<Candidate> {
-    let top = cands.first().map_or(0.0, |c| c.score);
+    let top = cands.iter().map(|c| c.score).fold(0.0, f64::max);
     cands
         .iter()
         .take(3)
@@ -245,12 +251,13 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
             let _ = writeln!(std::io::stderr(), "skill-hub hook: {e}");
         })
         .ok()?;
-    let cands: Vec<Candidate> = search(&reg, &prompt, top_k)
+    let cands: Vec<Candidate> = crate::ranked(&reg, &path, &prompt, top_k)
         .into_iter()
-        .map(|(score, s)| Candidate {
-            id: s.id.clone(),
-            description: s.description.clone(),
-            score,
+        .map(|h| Candidate {
+            id: h.skill.id.clone(),
+            description: h.skill.description.clone(),
+            score: h.lexical,
+            dense: h.dense.map(f64::from),
         })
         .collect();
     let jev = std::env::var("TYPESAFE_API_KEY")
@@ -269,6 +276,7 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
             Decision::Nothing(via) => (*via, Vec::new()),
         };
         let line = json!({"via": via, "picked": picked,
+                          "dense": cands.iter().any(|c| c.dense.is_some()),
                           "candidates": cands.iter().take(5).map(|c| &c.id).collect::<Vec<_>>(),
                           "ms": t0.elapsed().as_millis() as u64});
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -297,6 +305,7 @@ mod tests {
             id: id.into(),
             description: format!("{id} does things"),
             score,
+            dense: None,
         }
     }
 
@@ -330,6 +339,7 @@ mod tests {
                 id: s.id.clone(),
                 description: s.description.clone(),
                 score,
+                dense: None,
             })
             .collect();
         assert_eq!(lexical(&cands, reg.skills.len()).len(), 1);
