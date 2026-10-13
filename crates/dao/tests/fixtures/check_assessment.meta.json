@@ -2,8 +2,8 @@
  "python": "3.14.6",
  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
  "checker_sha256": "8009c093b1f8cb191cc444e21af6ed6d9bc0015877c5fd8f17cc46dc4abb47cb",
- "corpus_sha256": "13c00b23a8e8dbf8990ad50b6a8ee8ec954e829be34cb6fa2c1a6ee849e8e65f",
- "cases": 1952,
+ "corpus_sha256": "7befe08e226a5f861f8922f5eb7ad9608739bd01375afd8d239cba4cd6792be4",
+ "cases": 1956,
  "live_only": [
   "d-in-field"
  ]
