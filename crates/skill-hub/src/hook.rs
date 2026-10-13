@@ -210,7 +210,10 @@ pub fn decide(
     if let Some(r) = rerank {
         let docs: Vec<String> = cands
             .iter()
-            .map(|c| format!("{}: {}", c.id, c.description))
+            .map(|c| {
+                let d: String = c.description.chars().take(DESC_CHARS).collect();
+                format!("{}: {d}", c.id)
+            })
             .collect();
         match (r.score)(prompt, &docs) {
             Ok(s) if s.len() == cands.len() => {
@@ -255,7 +258,7 @@ pub fn decide(
     } else {
         Decision::Skills(
             keep,
-            if jev.is_some() {
+            if jev.is_some() || rerank.is_some() {
                 "lexical-fallback"
             } else {
                 "lexical"
@@ -327,7 +330,9 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
         score: &rerank_fn,
         tau: std::env::var("SKILL_HUB_RERANK_TAU")
             .ok()
-            .and_then(|v| v.parse().ok())
+            // a probability threshold: nan, negative or > 1 would mean "never" or "always"
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|t| t.is_finite() && (0.0..=1.0).contains(t))
             .unwrap_or(0.02),
     });
     let decision = decide(
@@ -542,7 +547,7 @@ mod tests {
             };
             assert!(matches!(
                 decide(&c, "do a", None, Some(&r), 3000),
-                Decision::Skills(_, "lexical")
+                Decision::Skills(_, "lexical-fallback")
             ));
         }
         // the reranker sees "id: description" for every candidate, in order
@@ -558,6 +563,47 @@ mod tests {
         decide(&c, "x", None, Some(&r), 3000);
         assert_eq!(seen.borrow().len(), 3);
         assert!(seen.borrow()[1].starts_with("b: "));
+    }
+
+    #[test]
+    fn the_prompt_reaches_jev_only_when_the_local_reranker_fails() {
+        let (curl, dir) = fake_curl(
+            "rerank-first",
+            r#"echo '{"answers":{"skill":{"answer":"a"}}}'"#,
+        );
+        let jev = Jev {
+            key: "k".into(),
+            model: "m".into(),
+            curl,
+        };
+        let c = [cand("a", 20.0), cand("b", 15.0)];
+        let ok = |_: &str, d: &[String]| Ok(vec![0.9; d.len()]);
+        let r = Rerank {
+            score: &ok,
+            tau: 0.02,
+        };
+        assert!(matches!(
+            decide(&c, "secret", Some(&jev), Some(&r), 3000),
+            Decision::Skills(_, "rerank")
+        ));
+        assert!(
+            !dir.join("argv").exists(),
+            "jev was called although the reranker answered"
+        );
+        let down = |_: &str, _: &[String]| -> Result<Vec<f32>, String> { Err("down".into()) };
+        let r = Rerank {
+            score: &down,
+            tau: 0.02,
+        };
+        assert!(matches!(
+            decide(&c, "secret", Some(&jev), Some(&r), 3000),
+            Decision::Skills(_, "jev")
+        ));
+        assert!(
+            dir.join("argv").exists(),
+            "jev is the fallback when the reranker fails"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
