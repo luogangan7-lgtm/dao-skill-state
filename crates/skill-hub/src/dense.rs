@@ -24,16 +24,21 @@ pub fn model() -> String {
 
 fn endpoint() -> Result<(String, u16), String> {
     let url = std::env::var("SKILL_HUB_OLLAMA").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    loopback("SKILL_HUB_OLLAMA", &url)
+}
+
+/// `http://host:port` from `var`, refused unless the host is loopback.
+fn loopback(var: &str, url: &str) -> Result<(String, u16), String> {
     let rest = url
         .strip_prefix("http://")
-        .ok_or("SKILL_HUB_OLLAMA must be http://host:port")?;
+        .ok_or(format!("{var} must be http://host:port"))?;
     let hostport = rest.trim_end_matches('/');
     let (host, port) = hostport
         .rsplit_once(':')
-        .ok_or("SKILL_HUB_OLLAMA needs a port")?;
+        .ok_or(format!("{var} needs a port"))?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if !matches!(host, "127.0.0.1" | "::1" | "localhost") {
-        return Err(format!("refusing non-loopback embedding host {host}"));
+        return Err(format!("refusing non-loopback host {host} in {var}"));
     }
     Ok((host.to_string(), port.parse().map_err(|_| "bad port")?))
 }
@@ -45,7 +50,45 @@ fn call(
     body: &str,
     deadline: Instant,
 ) -> Result<serde_json::Value, String> {
-    let (host, port) = endpoint()?;
+    call_at("ollama", endpoint()?, method, path, body, deadline)
+}
+
+/// Relevance of each `doc` to `query` from a local cross-encoder server (`SKILL_HUB_RERANK`,
+/// loopback only), in input order. The API is text-embeddings-inference's `/rerank`:
+/// `{"query", "texts"}` -> `[{"index", "score"}]`; `skill-hub/tools/rerank_server.py` serves it.
+pub fn rerank(query: &str, docs: &[String], deadline: Instant) -> Result<Vec<f32>, String> {
+    let url = std::env::var("SKILL_HUB_RERANK").map_err(|_| "SKILL_HUB_RERANK is not set")?;
+    let at = loopback("SKILL_HUB_RERANK", &url)?;
+    let body = serde_json::json!({"query": query, "texts": docs}).to_string();
+    let v = call_at("rerank", at, "POST", "/rerank", &body, deadline)?;
+    let mut out = vec![f32::NAN; docs.len()];
+    for r in v.as_array().ok_or("rerank: expected a list")? {
+        let i = r["index"].as_u64().ok_or("rerank: hit without index")? as usize;
+        let s = r["score"]
+            .as_f64()
+            .map(|s| s as f32)
+            // tau is a probability: a raw logit or anything outside [0,1] is a bad answer
+            .filter(|s| s.is_finite() && (0.0..=1.0).contains(s));
+        let slot = out.get_mut(i).ok_or("rerank: index out of range")?;
+        if !slot.is_nan() {
+            return Err("rerank: duplicate index".into());
+        }
+        *slot = s.ok_or("rerank: bad score")?;
+    }
+    if out.iter().any(|s| s.is_nan()) {
+        return Err("rerank: not every text was scored".into());
+    }
+    Ok(out)
+}
+
+fn call_at(
+    who: &str,
+    (host, port): (String, u16),
+    method: &str,
+    path: &str,
+    body: &str,
+    deadline: Instant,
+) -> Result<serde_json::Value, String> {
     let left = || {
         deadline
             .checked_duration_since(Instant::now())
@@ -61,7 +104,7 @@ fn call(
     let mut s = addrs
         .iter()
         .find_map(|a| TcpStream::connect_timeout(a, left()?).ok())
-        .ok_or("ollama: no loopback address answered")?;
+        .ok_or(format!("{who}: no loopback address answered"))?;
     s.set_write_timeout(left()).map_err(|e| e.to_string())?;
     // a first bound on reads too, so a read can never outlive the deadline by more than this
     s.set_read_timeout(left()).map_err(|e| e.to_string())?;
@@ -75,14 +118,14 @@ fn call(
     let mut sent = req.as_bytes();
     while !sent.is_empty() {
         let Some(rest) = left() else {
-            return Err("ollama: deadline exceeded".into());
+            return Err(format!("{who}: deadline exceeded"));
         };
         let _ = s.set_write_timeout(Some(rest));
         match s.write(sent) {
-            Ok(0) => return Err("ollama: connection closed".into()),
+            Ok(0) => return Err(format!("{who}: connection closed")),
             Ok(n) => sent = &sent[n..],
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(format!("ollama: {e}")),
+            Err(e) => return Err(format!("{who}: {e}")),
         }
     }
     // one overall deadline and a size cap, however the server dribbles or floods
@@ -90,7 +133,7 @@ fn call(
     let mut buf = [0u8; 64 * 1024];
     loop {
         let Some(rest) = left() else {
-            return Err("ollama: deadline exceeded".into());
+            return Err(format!("{who}: deadline exceeded"));
         };
         // macOS refuses SO_RCVTIMEO (EINVAL) once the peer has closed; the read then returns
         // at once, so the error is harmless and must not fail an answer already received
@@ -100,20 +143,28 @@ fn call(
             Ok(n) => {
                 raw.extend_from_slice(&buf[..n]);
                 if raw.len() > MAX_RESPONSE {
-                    return Err("ollama: response too large".into());
+                    return Err(format!("{who}: response too large"));
                 }
             }
-            Err(e) => return Err(format!("ollama: {e}")),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(format!("{who}: deadline exceeded"))
+            }
+            Err(e) => return Err(format!("{who}: {e}")),
         }
     }
     let text = String::from_utf8_lossy(&raw);
     let (head, payload) = text
         .split_once("\r\n\r\n")
-        .ok_or("ollama: malformed response")?;
+        .ok_or(format!("{who}: malformed response"))?;
     if !head.starts_with("HTTP/1.") || !head.split_whitespace().nth(1).is_some_and(|c| c == "200") {
-        return Err(format!("ollama: {}", head.lines().next().unwrap_or("")));
+        return Err(format!("{who}: {}", head.lines().next().unwrap_or("")));
     }
-    serde_json::from_str(payload).map_err(|e| format!("ollama: {e}"))
+    serde_json::from_str(payload).map_err(|e| format!("{who}: {e}"))
 }
 
 /// The content digest of the configured model as Ollama has it installed, so a sidecar can be
@@ -292,6 +343,63 @@ mod tests {
             "a header whose size overflows"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rerank_client_reads_tei_scores_and_rejects_bad_answers() {
+        // one process-wide env var: every case runs in this single test
+        let serve = |body: &'static str| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut c, _)) = l.accept() {
+                    let mut req = Vec::new();
+                    let mut b = [0u8; 4096];
+                    // headers, then the JSON body (ends with '}')
+                    while !(req.windows(4).any(|w| w == b"\r\n\r\n") && req.ends_with(b"}")) {
+                        match c.read(&mut b) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => req.extend_from_slice(&b[..n]),
+                        }
+                    }
+                    let _ = write!(c, "HTTP/1.0 200 OK\r\n\r\n{body}");
+                }
+            });
+            std::env::set_var("SKILL_HUB_RERANK", format!("http://127.0.0.1:{port}"));
+        };
+        let docs = vec!["a: x".to_string(), "b: y".to_string()];
+        let soon = || Instant::now() + Duration::from_secs(5);
+        serve(r#"[{"index":1,"score":0.9},{"index":0,"score":0.1}]"#);
+        assert_eq!(rerank("q", &docs, soon()).unwrap(), vec![0.1, 0.9]);
+        serve(r#"[{"index":0,"score":0.1}]"#);
+        assert!(rerank("q", &docs, soon())
+            .unwrap_err()
+            .contains("not every text"));
+        serve(r#"[{"index":0,"score":-5.0},{"index":1,"score":5.0}]"#);
+        assert!(
+            rerank("q", &docs, soon())
+                .unwrap_err()
+                .contains("bad score"),
+            "raw logits"
+        );
+        serve(r#"[{"index":0,"score":0.1},{"index":0,"score":0.2}]"#);
+        assert!(rerank("q", &docs, soon())
+            .unwrap_err()
+            .contains("duplicate"));
+        serve(r#"[{"index":5,"score":0.1},{"index":0,"score":0.1}]"#);
+        assert!(rerank("q", &docs, soon())
+            .unwrap_err()
+            .contains("out of range"));
+        serve(r#"[{"index":0,"score":"high"},{"index":1,"score":0.1}]"#);
+        assert!(rerank("q", &docs, soon())
+            .unwrap_err()
+            .contains("bad score"));
+        std::env::set_var("SKILL_HUB_RERANK", "http://example.com:8121");
+        assert!(rerank("q", &docs, soon())
+            .unwrap_err()
+            .contains("non-loopback"));
+        std::env::remove_var("SKILL_HUB_RERANK");
+        assert!(rerank("q", &docs, soon()).is_err());
     }
 
     #[test]
