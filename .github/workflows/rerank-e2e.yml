@@ -100,7 +100,9 @@ jobs:
               curl -sf -m 5 -X POST "http://127.0.0.1:$2/rerank" -d '{"query":"x","texts":["y"]}' > /dev/null && break
               sleep 5
             done
-            head -2 "srv-$2.log" | tee -a lat.txt
+            if ! grep "rerank server on" "srv-$2.log" | tee -a lat.txt; then
+              echo "server $1 did not start:"; cat "srv-$2.log"; exit 1
+            fi
             python3 - "$1" "$2" <<'PY' | tee -a lat.txt
           import json, statistics, sys, time, urllib.request
           model, port = sys.argv[1], sys.argv[2]
@@ -124,3 +126,6 @@ jobs:
           measure Qwen/Qwen3-Reranker-0.6B 8121
           measure BAAI/bge-reranker-v2-m3 8122
           { echo "## rerank server latency on macos-latest"; echo; sed 's/^/    /' lat.txt; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Server logs
+        if: failure()
+        run: cat srv-*.log || true
