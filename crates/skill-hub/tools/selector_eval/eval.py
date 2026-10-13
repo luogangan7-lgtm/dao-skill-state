@@ -237,10 +237,6 @@ def cands(bundle_path, skill_hub, out):
     dense_models = {"bgem3": SentenceTransformer("BAAI/bge-m3", device="cpu", revision=REVISIONS["BAAI/bge-m3"]),
                     "qwen3emb": SentenceTransformer(QWEN_EMB_REPO, device="cpu",
                                                     revision=REVISIONS[QWEN_EMB_REPO])}  # before the data
-    for m in dense_models.values():
-        # ponytail: 512 tokens covers "name: description"; the 8k/32k defaults made the CPU
-        # registry encode run past the 60 min job limit (run 38393875479)
-        m.max_seq_length = 512
     bundle = json.load(open(bundle_path))
     reg = bundle.pop("registry")
     skills = reg["skills"]
@@ -253,8 +249,12 @@ def cands(bundle_path, skill_hub, out):
         texts = [f'{s["name"]}: {s["description"]}'[:2000] for s in skills]
         sv = {}
         for k, m in dense_models.items():
-            t0 = time.time()
+            t0, full = time.time(), m.max_seq_length
+            # ponytail: 512 tokens covers "name: description" for the registry only; the 8k/32k
+            # defaults ran past the 60 min job limit on CPU (run 38393875479). Queries keep full length.
+            m.max_seq_length = 512
             sv[k] = m.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=False)
+            m.max_seq_length = full
             print(f"encoded {len(texts)} skills with {k} in {time.time() - t0:.0f}s", flush=True)
         for split in ("dev", "held"):
             by_src = {k: {} for k in dense_models}
