@@ -37772,6 +37772,170 @@
 "python_stdout": null
 },
 {
+"name": "n-sec-tie-1e15",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1000000000000000.25, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "641915e6c4dcb3c9566c758f5d88a616a5828d0d7bee06e8aebec41bbbee995d",
+"python_stdout": null
+},
+{
+"name": "n-sec-tie-5809",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 580932385485918.25, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "0ab620dc14d6876976269b6c697b577ce5fb2562855e84da89899c6f3ebc946a",
+"python_stdout": null
+},
+{
+"name": "n-sec-tie-2p49",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 562949953421312.25, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "e123f003ef89d0125163c1881ab62edd1751f266f323055eaf99e0c2fdcdbf66",
+"python_stdout": null
+},
+{
+"name": "n-sec-tie-1394",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1394089528363410.2, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "938e11d11c2f69002f86bef2b09d8d88f9c109b3f8f9147f45b4aed1251843cd",
+"python_stdout": null
+},
+{
+"name": "n-sec-long-inf",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 0.",
+"n": 1
+},
+{
+"t": "0",
+"n": 700000
+},
+{
+"t": "1e700401, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 1,
+"python_stderr": "empty",
+"python_stdout_sha256": "9cbba21003fff21d6a510574a282fdcbda26fd53695197eca0815da3a719cd38",
+"python_stdout": "{\n  \"status\": \"invalid\",\n  \"errors\": [\n    {\n      \"path\": \"$.runs[0].cost.seconds\",\n      \"message\": \"must be a finite nonnegative number or null (boolean is not allowed)\"\n    }\n  ]\n}\n"
+},
+{
+"name": "n-sec-long-one",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 0.",
+"n": 1
+},
+{
+"t": "0",
+"n": 700000
+},
+{
+"t": "1e700001, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "4719d2c0d0e88f7df3fd509c8181296002a3b1f48b30ebbd477d7b4d874fee41",
+"python_stdout": null
+},
+{
+"name": "n-sec-long-zero",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1",
+"n": 1
+},
+{
+"t": "0",
+"n": 700000
+},
+{
+"t": "e-700401, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "a849e0d3d294f37d8556c8156275cba67791b3052e3a7e8eb4532c21540b955b",
+"python_stdout": null
+},
+{
 "name": "c-missing-norm",
 "args": [
 "./sub//missing.json"
@@ -38367,6 +38531,86 @@
 "python_stderr": "empty",
 "python_stdout_sha256": "39f4571d74f837cc2750b20e675090ef4d49d2576ef878670551540eca7fb196",
 "python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"Expecting value: line 1 column 1 (char 0)\"}]}\n"
+},
+{
+"name": "c-udigit",
+"args": [
+"-١"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "empty",
+"python_stdout_sha256": "64f8da2b8884046e4ead3eaee8f1471e6f823cc087df92262b72161e6b00dcbb",
+"python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"[Errno 2] No such file or directory: '-\\u0661'\"}]}\n"
+},
+{
+"name": "c-udot",
+"args": [
+"-.١"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "empty",
+"python_stdout_sha256": "c7b787b38e3997fddca879e5a9980b0dc9490028977e59d31bc378d20cdbadf6",
+"python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"[Errno 2] No such file or directory: '-.\\u0661'\"}]}\n"
+},
+{
+"name": "c-udigit-x",
+"args": [
+"-١x"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "empty",
+"python_stdout_sha256": "f052b615398651b2297cd7d854883d258ef9113ad1b15ad0e2f32b93fe19d410",
+"python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"[Errno 2] No such file or directory: '-\\u0661x'\"}]}\n"
+},
+{
+"name": "c-superscript",
+"args": [
+"-²"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "usage",
+"python_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+"python_stdout": ""
+},
+{
+"name": "c-long-space",
+"args": [
+"--x y"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "empty",
+"python_stdout_sha256": "7721356131047c876b4f22fbe2244c578d265ef82a695b6ff86967f50fe2e865",
+"python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"[Errno 2] No such file or directory: '--x y'\"}]}\n"
+},
+{
+"name": "c-nonutf8-missing",
+"args": [
+{
+"b": "eP8uanNvbg=="
+}
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "empty",
+"python_stdout_sha256": "b46ef7bb51e14a1d0f3b93986f15c1d6d9efe6533309a416cabe9d2e61b4983b",
+"python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"[Errno 2] No such file or directory: 'x\\\\udcff.json'\"}]}\n"
 },
 {
 "name": "d-arr-1000",

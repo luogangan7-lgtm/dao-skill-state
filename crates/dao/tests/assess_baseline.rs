@@ -4,7 +4,9 @@
 //! stdout bytes (sha256), exit code and stderr class must match, except the KNOWN divergences.
 
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::process::Command;
 
 /// Documented divergences (all exit codes 0/1/2 on the Rust side, never a crash):
@@ -102,11 +104,14 @@ fn matches_frozen_python_baseline() {
                 .status();
             assert!(ok.unwrap().success());
         }
-        let args: Vec<&str> = c["args"]
+        let args: Vec<OsString> = c["args"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|a| a.as_str().unwrap())
+            .map(|a| match a.as_str() {
+                Some(s) => s.into(),
+                None => OsString::from_vec(b64(a["b"].as_str().unwrap())),
+            })
             .collect();
         let out = Command::new(env!("CARGO_BIN_EXE_dao"))
             .arg("assess")

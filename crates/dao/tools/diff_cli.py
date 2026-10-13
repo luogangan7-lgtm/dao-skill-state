@@ -95,11 +95,20 @@ def execute(cmd, case, root):
     return result
 
 
+def encode_arg(x):
+    """argv as JSON: a str, or {"b": base64} when it carries surrogate-escaped non-UTF-8 bytes."""
+    try:
+        x.encode("utf-8")
+        return x
+    except UnicodeEncodeError:
+        return {"b": base64.b64encode(os.fsencode(x)).decode()}
+
+
 def compare(a, i, case):
     root = os.path.join(a.work, "%05d" % i)
     py = execute([sys.executable, "-I", a.py], case, root + "-py")
     rs = execute([a.dao, a.sub], case, root + "-rs")
-    if rs[2] in ("panic", "traceback", "timeout"):
+    if rs[2] in ("panic", "traceback", "timeout") or rs[0] < 0:  # rs[0] < 0: killed by a signal
         verdict = "diff"
     elif py[2] == "traceback":
         verdict = "py_crash"
@@ -165,7 +174,7 @@ def main():
                 live.append(case["name"])
                 continue
             out = py[1].decode("utf-8", "surrogateescape")
-            fixtures.append({"name": case["name"], "args": case["args"], "files": files,
+            fixtures.append({"name": case["name"], "args": [encode_arg(x) for x in case["args"]], "files": files,
                              "dirs": case.get("dirs", []), "fifos": case.get("fifos", []),
                              "python_exit": py[0], "python_stderr": py[2],
                              "python_stdout_sha256": hashlib.sha256(py[1]).hexdigest(),
@@ -177,7 +186,7 @@ def main():
                 "checker_sha256": hashlib.sha256(open(a.py, "rb").read()).hexdigest(),
                 "corpus_sha256": hashlib.sha256(open(corpus_file, "rb").read()).hexdigest(),
                 "cases": len(fixtures), "live_only": live}
-        with open(a.freeze.replace(".json", ".meta.json"), "w") as f:
+        with open(os.path.splitext(a.freeze)[0] + ".meta.json", "w") as f:
             json.dump(meta, f, indent=1)
         print("froze %d cases -> %s (live-only: %s)" % (len(fixtures), a.freeze, ", ".join(live) or "none"))
     sys.exit(0 if stats["diff"] == 0 else 1)

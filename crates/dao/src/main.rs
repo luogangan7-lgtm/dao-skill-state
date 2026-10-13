@@ -378,8 +378,12 @@ fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn main() -> ExitCode {
-    let Ok(args) = std::env::args_os()
-        .skip(1)
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "assess") {
+        return ExitCode::from(assess::main(&raw[1..])); // its paths may be non-UTF-8, like Python's
+    }
+    let Ok(args) = raw
+        .into_iter()
         .map(|a| a.into_string())
         .collect::<Result<Vec<String>, _>>()
     else {
@@ -396,7 +400,6 @@ fn main() -> ExitCode {
             println!("{}", check::to_json(&r));
             return ExitCode::from(check::exit_code(&r));
         }
-        Some("assess") => return ExitCode::from(assess::main(&args[1..])),
         _ => return usage(),
     };
     result.unwrap_or_else(|e| {

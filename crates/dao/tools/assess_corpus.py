@@ -265,8 +265,17 @@ def numbers():
         out.append(raw(name, json.dumps(d).replace('"@@T@@"', tok).encode()))
     for name, tok in (("n-sec-dblmax", DBL_MAX), ("n-sec-dblmax-float", "1.7976931348623157e308"),
                       ("n-sec-2p53", str(2 ** 53 + 1)), ("n-sec-tiny", "4.9e-324"),
-                      ("n-sec-exp", "1.5e-7"), ("n-sec-int-big", "1" + "0" * 300)):
+                      ("n-sec-exp", "1.5e-7"), ("n-sec-int-big", "1" + "0" * 300),
+                      # repr breaks shortest-digit ties half-even
+                      ("n-sec-tie-1e15", "1000000000000000.25"), ("n-sec-tie-5809", "580932385485918.25"),
+                      ("n-sec-tie-2p49", "562949953421312.25"), ("n-sec-tie-1394", "1394089528363410.2")):
         out.append(raw(name, with_raw(complete(), ["runs", 0, "cost", "seconds"], tok)))
+    # literals whose exponent only fits after folding in the digit count (Python: inf, 1.0, 0.0)
+    z = (b"0", 700000)
+    for name, head, tail in (("n-sec-long-inf", b"0.", b"1e700401"), ("n-sec-long-one", b"0.", b"1e700001"),
+                             ("n-sec-long-zero", b"1", b"e-700401")):
+        pre, post = with_raw(complete(), ["runs", 0, "cost", "seconds"], "@@").split(b"@@")
+        out.append(raw(name, pre + head, z, tail + post))
     return out
 
 
@@ -299,6 +308,11 @@ def cli():
         raw("c-maxsize", good, (b" ", MAX_BYTES - len(good))),
         raw("c-maxsize-plus", good, (b" ", MAX_BYTES - len(good) + 1)),
         raw("c-empty-file", (b"", 1)),
+        # argparse: -\.?\d with Unicode Nd digits, or a space (long options too), means positional
+        raw("c-udigit", args=["-\u0661"]), raw("c-udot", args=["-.\u0661"]), raw("c-udigit-x", args=["-\u0661x"]),
+        raw("c-superscript", args=["-\u00b2"]), raw("c-long-space", args=["--x y"]),
+        # a non-UTF-8 argv byte reaches Python as a surrogate escape (frozen as {"b": base64})
+        raw("c-nonutf8-missing", args=["x\udcff.json"]),
     ]
 
 
