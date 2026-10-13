@@ -1,7 +1,8 @@
 {
  "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
  "Qwen/Qwen3-Reranker-0.6B": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
- "mixedbread-ai/mxbai-rerank-base-v2": "3ea9d4dffa7d12a4f366be8e275c349de9fc9865",
- "Alibaba-NLP/gte-multilingual-reranker-base": "8215cf04918ba6f7b6a62bb44238ce2953d8831c",
- "Alibaba-NLP/new-impl": "40ced75c3017eb27626c9d4ea981bde21a2662f4"
+ "Alibaba-NLP/gte-reranker-modernbert-base": "f7481e6055501a30fb19d090657df9ec1f79ab2c",
+ "Qwen/Qwen3-Embedding-0.6B": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+ "convaiinnovations/laya": "7b928d828b7b0e022f929d9bd2e44165aa270148",
+ "BAAI/bge-m3": "5617a9f61b028005a4858fdac845db406aefb181"
 }
