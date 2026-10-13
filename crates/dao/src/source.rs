@@ -78,32 +78,57 @@ pub fn validate_origin(origin: &str) -> Result<(), String> {
     ))
 }
 
+/// Wall-clock limit for one git call (a remote that accepts and never answers must not hang).
+const GIT_TIMEOUT_S: u64 = 300;
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "protocol.ext.allow=never",
-        ])
-        .args(args)
-        .current_dir(dir)
-        // never act on a repository named by the caller's environment (hooks, wrappers)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .env_remove("GIT_CONFIG_PARAMETERS")
-        .env_remove("GIT_CONFIG_COUNT")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_NAMESPACE")
-        .env_remove("GIT_CEILING_DIRECTORIES")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| format!("cannot run git: {e}"))?;
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "core.askPass=",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "http.lowSpeedLimit=1000",
+        "-c",
+        "http.lowSpeedTime=30",
+    ])
+    .args(args)
+    .current_dir(dir)
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+    // never act on a repository, config, credential prompt or transport named by the caller's
+    // environment (hooks, wrappers, IDE terminals): drop every GIT_* and askpass variable, then
+    // let git itself enforce the transport allow-list after URL rewrites and redirects
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy();
+        if k.starts_with("GIT_") || k == "SSH_ASKPASS" {
+            cmd.env_remove(k.as_ref());
+        }
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "https:file");
+    let mut child = cmd.spawn().map_err(|e| format!("cannot run git: {e}"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(GIT_TIMEOUT_S);
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "git {} timed out after {GIT_TIMEOUT_S}s",
+                args.first().unwrap_or(&"")
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -134,29 +159,37 @@ pub fn fetch_git(origin: &str, rev: &str, dest: &Path) -> Result<String, String>
     Ok(commit)
 }
 
-/// The commit `rev` names on `origin` right now (`git ls-remote`, no clone, hooks impossible).
-/// A full 40-hex `rev` is returned as is: a pinned commit has no upstream to follow.
-pub fn remote_commit(origin: &str, rev: &str) -> Result<String, String> {
+/// True for a full commit id (SHA-1 or SHA-256 object format).
+pub fn is_full_commit(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64) && rev.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Every ref `origin` advertises right now (`git ls-remote`, no clone, hooks impossible).
+pub fn remote_refs(origin: &str) -> Result<Vec<(String, String)>, String> {
     validate_origin(origin)?;
-    if rev.starts_with('-') || rev.is_empty() {
-        return Err(format!("invalid revision: {rev}"));
+    let out = git(&std::env::temp_dir(), &["ls-remote", "--", origin])?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(c, r)| (c.to_string(), r.to_string()))
+        .collect())
+}
+
+/// The commit `rev` names among `refs`, in the order `git fetch <origin> <rev>` resolves a
+/// short name (so intake and upstream agree): the exact ref, refs/<rev>, refs/tags/<rev>
+/// (peeled), refs/heads/<rev>, refs/remotes/<rev>, refs/remotes/<rev>/HEAD.
+pub fn resolve_ref(refs: &[(String, String)], rev: &str) -> Option<String> {
+    if is_full_commit(rev) {
+        return Some(rev.to_ascii_lowercase());
     }
-    if rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Ok(rev.to_ascii_lowercase());
-    }
-    let out = git(&std::env::temp_dir(), &["ls-remote", "--", origin, rev])?;
-    // prefer the exact branch, then the exact (peeled) tag, then HEAD
-    let refs: Vec<(&str, &str)> = out.lines().filter_map(|l| l.split_once('\t')).collect();
-    let pick = |name: &str| {
-        refs.iter()
-            .find(|(_, r)| *r == name)
-            .map(|(c, _)| c.to_string())
-    };
-    pick(&format!("refs/heads/{rev}"))
-        .or_else(|| pick(&format!("refs/tags/{rev}^{{}}")))
-        .or_else(|| pick(&format!("refs/tags/{rev}")))
-        .or_else(|| pick(rev))
-        .ok_or_else(|| format!("{origin}: no ref named {rev}"))
+    let pick = |name: &str| refs.iter().find(|(_, r)| r == name).map(|(c, _)| c.clone());
+    let tag = |name: String| pick(&format!("{name}^{{}}")).or_else(|| pick(&name));
+    pick(rev)
+        .or_else(|| pick(&format!("refs/{rev}")))
+        .or_else(|| tag(format!("refs/tags/{rev}")))
+        .or_else(|| pick(&format!("refs/heads/{rev}")))
+        .or_else(|| pick(&format!("refs/remotes/{rev}")))
+        .or_else(|| pick(&format!("refs/remotes/{rev}/HEAD")))
 }
 
 /// Read a small metadata file (license, frontmatter) before quarantine has vetted the tree:

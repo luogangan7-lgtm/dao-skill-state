@@ -29,7 +29,7 @@ fn usage() -> ExitCode {
          writes scans/<digest>.json (BLOCK | UNRESOLVED | REVIEW_REQUIRED | CLEAN) and prints a summary.\n\
   dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
-  dao upstream check --store DIR [--apply]   sources moved since intake; --apply stages them as new candidates\n\
+  dao upstream check --store DIR [--apply] [--allow-local DIR]...   sources moved since intake; --apply stages them as new candidates\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
@@ -147,22 +147,32 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
 /// `dao upstream check --store DIR [--apply]`: report moved sources; with --apply stage each
 /// changed path again as a new candidate (git: the new commit; local: the current tree).
 fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let (mut store, mut apply) = (None, false);
+    let (mut store, mut apply, mut allow) = (None, false, Vec::new());
     let mut it = args.iter();
     if it.next().map(String::as_str) != Some("check") {
-        return Err("usage: dao upstream check --store DIR [--apply]".into());
+        return Err(
+            "usage: dao upstream check --store DIR [--apply] [--allow-local DIR]...".into(),
+        );
     }
     while let Some(a) = it.next() {
         match a.as_str() {
             "--store" => store = Some(PathBuf::from(it.next().ok_or("--store needs a value")?)),
             "--apply" => apply = true,
+            "--allow-local" => {
+                let d = it.next().ok_or("--allow-local needs a directory")?;
+                allow.push(fs::canonicalize(d).map_err(|e| format!("{d}: {e}"))?);
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
     let store = fs::canonicalize(store.ok_or("--store is required")?).map_err(|e| e.to_string())?;
-    let items = upstream::tracked(&store)?;
-    let reports = upstream::check(&items);
+    if allow.iter().any(|a| store.starts_with(a) && *a == store) {
+        return Err("--allow-local must not be the store itself".into());
+    }
+    let (items, mut reports) = upstream::tracked(&store)?;
+    reports.extend(upstream::check(&items, &allow));
     let mut staged = Vec::new();
+    let mut apply_failed = 0usize;
     if apply {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -186,25 +196,39 @@ fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
             let fetch_dir = store
                 .join("tmp")
                 .join(format!("upstream-{}", std::process::id()));
-            let (tree, commit) = if kind == "git" {
+            let fetched = if kind == "git" {
                 let _ = fs::remove_dir_all(&fetch_dir);
-                let c = fetch_git(&origin, &upstream_commit, &fetch_dir).inspect_err(|_| {
-                    let _ = fs::remove_dir_all(&fetch_dir);
-                })?;
-                (fetch_dir.clone(), Some(c))
+                fetch_git(&origin, &upstream_commit, &fetch_dir)
+                    .map(|c| (fetch_dir.clone(), Some(c)))
+            } else if store.starts_with(fs::canonicalize(&origin).unwrap_or_default()) {
+                Err("--store must not be inside a local source tree".to_string())
             } else {
-                (PathBuf::from(&origin), None)
+                Ok((PathBuf::from(&origin), None))
             };
-            for p in paths {
-                let res = stage_all(&tree, &p, false, &store, &kind, &origin, &rev, &commit, now);
-                match res {
-                    Ok((outcomes, _)) => staged.extend(
-                        outcomes
-                            .into_iter()
-                            .map(|o| serde_json::to_value(o).unwrap()),
-                    ),
-                    Err(e) => staged
-                        .push(serde_json::json!({"outcome": "error", "subpath": p, "error": e})),
+            match fetched {
+                // one unreachable source is that source's error, not the run's
+                Err(e) => {
+                    apply_failed += paths.len();
+                    staged.push(serde_json::json!({"outcome": "error", "origin": origin, "paths": paths, "error": e}));
+                }
+                Ok((tree, commit)) => {
+                    for p in paths {
+                        match stage_all(
+                            &tree, &p, false, &store, &kind, &origin, &rev, &commit, now,
+                        ) {
+                            Ok((outcomes, _)) => {
+                                for o in outcomes {
+                                    apply_failed +=
+                                        usize::from(matches!(o, Outcome::Rejected { .. }));
+                                    staged.push(serde_json::to_value(o).unwrap());
+                                }
+                            }
+                            Err(e) => {
+                                apply_failed += 1;
+                                staged.push(serde_json::json!({"outcome": "error", "subpath": p, "error": e}));
+                            }
+                        }
+                    }
                 }
             }
             if kind == "git" {
@@ -217,12 +241,13 @@ fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "tracked": reports.len(), "unchanged": count("unchanged"), "changed": count("changed"),
-            "pinned": count("pinned"), "errors": errors, "reports": reports, "staged": staged,
+            "tracked": items.len(), "unchanged": count("unchanged"), "changed": count("changed"),
+            "pinned": count("pinned"), "skipped": count("skipped"), "errors": errors,
+            "apply_failed": apply_failed, "reports": reports, "staged": staged,
         }))
         .unwrap()
     );
-    Ok(if errors == 0 {
+    Ok(if errors == 0 && apply_failed == 0 {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(2)
