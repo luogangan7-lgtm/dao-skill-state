@@ -342,8 +342,13 @@ fn scratch_root(target: &Path) -> Result<PathBuf, String> {
             ))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&root).map_err(err)?;
-            fs::write(root.join(MARK), b"dao publish scratch\n").map_err(err)?;
+            // marked before it appears under its real name, so a crash never leaves it unmarked
+            let new = target.join(format!("{SCRATCH}.new-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&new);
+            fs::create_dir(&new)
+                .and_then(|_| fs::write(new.join(MARK), b"dao publish scratch\n"))
+                .and_then(|_| fs::rename(&new, &root))
+                .map_err(err)?;
         }
         Err(e) => return Err(err(e)),
     }
@@ -392,7 +397,8 @@ pub fn apply(
     };
     let changed_since_plan = |dir: &Path| {
         format!(
-            "{CONFLICT}{} changed since planning; nothing more was published",
+            "{CONFLICT}{} changed since planning (edited, or another name that the filesystem \
+             treats as the same, e.g. a case or Unicode variant); nothing more was published",
             dir.display()
         )
     };
@@ -690,6 +696,28 @@ mod tests {
         fs::remove_dir_all(target.join(".dao-publish-tmp")).unwrap();
         assert_eq!(kinds(&run(&store, &target, false).unwrap()), ["s:add"]);
         assert!(target.join(".dao-stage-x").exists());
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn each_swap_is_recorded_before_the_next_can_fail() {
+        let root = std::env::temp_dir().join(format!("dao-publish-rec-{}", std::process::id()));
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+        let (store, d1, d2) = store_with_two_versions(&root);
+        let target = root.join("target");
+        let lock = read_lock(&target).unwrap();
+        let want = BTreeMap::from([("a".to_string(), d1.clone()), ("b".to_string(), d2)]);
+        let acts = plan(&store, &target, &lock, &want);
+        assert_eq!(kinds(&acts), ["a:add", "b:add"]);
+        // b appears after planning: a is already swapped in when the apply stops at b
+        fs::create_dir_all(target.join("b")).unwrap();
+        let e = apply(&store, &target, lock, &want, &acts).unwrap_err();
+        assert!(e.starts_with(CONFLICT), "{e}");
+        let after = read_lock(&target).unwrap();
+        assert_eq!(after.pending, Some(BTreeMap::from([("a".to_string(), d1)])));
+        assert!(after.history.is_empty());
         let _ = crate::quarantine::make_writable(&root);
         let _ = fs::remove_dir_all(&root);
     }
