@@ -220,7 +220,7 @@ fn fsync_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// Durable atomic write: temp file in the same dir, fsync, rename, fsync the dir.
-fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent")?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!(
@@ -241,17 +241,22 @@ fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fsync_dir(dir)
 }
 
-fn pointer_path(store: &Path, name: &str) -> Result<PathBuf, String> {
+/// A skill name that is safe as one path component (champion pointer, published directory).
+pub(crate) fn valid_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
         && !name.starts_with('.');
-    if !ok {
-        return Err(format!(
-            "not a valid skill name for a champion pointer: {name:?}"
-        ));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("not a valid skill name: {name:?}"))
     }
+}
+
+fn pointer_path(store: &Path, name: &str) -> Result<PathBuf, String> {
+    valid_name(name)?;
     Ok(store.join("champions").join(format!("{name}.json")))
 }
 
