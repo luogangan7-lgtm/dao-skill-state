@@ -86,7 +86,11 @@ fn eval_gate(
             ),
         );
     }
-    if (r.top_k, r.floor, r.rel) != crate::eval::policy(r.n_skills) {
+    // floats come back through JSON: equal up to rounding, not bit for bit (serde_json may be
+    // one ulp off without float_roundtrip, which made some registry sizes unadmittable)
+    let (pk, pf, pr) = crate::eval::policy(r.n_skills);
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0);
+    if r.top_k != pk || !close(r.floor, pf) || !close(r.rel, pr) {
         return (
             false,
             format!(
@@ -111,6 +115,31 @@ fn eval_gate(
         .copied()
         .filter(|id| !r.scored.iter().any(|s| s == id))
         .collect();
+    // a scored case that names a subject the registry lacks was decided against nobody
+    // (receipts written before competitors had to be reachable)
+    let half_scored: Vec<&str> = set
+        .cases
+        .iter()
+        .filter(gated)
+        .filter(|c| c.expect.iter().any(|e| e == n) || c.expect_not.iter().any(|e| e == n))
+        .filter(|c| r.scored.contains(&c.id))
+        .filter(|c| {
+            c.expect
+                .iter()
+                .chain(&c.expect_not)
+                .any(|x| r.unreachable.contains(x))
+        })
+        .map(|c| c.id.as_str())
+        .collect();
+    if !half_scored.is_empty() {
+        return (
+            false,
+            format!(
+                "scored cases name subjects missing from the registry (rerun dao eval run): {}",
+                half_scored.join(", ")
+            ),
+        );
+    }
     if !unscored.is_empty() {
         return (
             false,
@@ -743,6 +772,22 @@ mod tests {
         let a = decide(&d('a'), &e);
         let g = a.gates.iter().find(|g| g.name == "scan").unwrap();
         assert!(!g.passed && g.evidence.contains("rescan"), "{g:?}");
+    }
+
+    /// F1: a receipt's floor comes back through JSON text; every registry size must still match
+    /// the policy (serde_json can be one ulp off, e.g. n = 9, 10, 14).
+    #[test]
+    fn the_policy_floor_survives_a_json_round_trip() {
+        for n in 1..200 {
+            let (k, f, rel) = crate::eval::policy(n);
+            let back: f64 = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+            let g = eval_gate_of(&ev(
+                "CLEAN",
+                None,
+                json!({"n_skills": n, "top_k": k, "floor": back, "rel": rel}),
+            ));
+            assert!(!g.evidence.contains("policy"), "n={n}: {g:?}");
+        }
     }
 
     /// S1: the evaluated registry must have held this object's SKILL.md under the name.
