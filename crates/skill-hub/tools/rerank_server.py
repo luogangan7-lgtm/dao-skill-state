@@ -85,9 +85,12 @@ def split(pairs, flat):
 def to_hook_scale(p, tau):
     """Shift a backend's probabilities so its own tuned tau lands on the hook's default
     (HOOK_TAU): monotonic, so rankings and every keep/abstain decision at tau are unchanged."""
-    p = min(max(p, 1e-7), 1 - 1e-7)
+    q = min(max(p, 1e-7), 1 - 1e-7)
     logit = lambda x: math.log(x / (1 - x))
-    return 1 / (1 + math.exp(-(logit(p) - logit(tau) + logit(HOOK_TAU))))
+    y = 1 / (1 + math.exp(-(logit(q) - logit(tau) + logit(HOOK_TAU))))
+    # rounding must not move a score across the threshold: at or above tau stays at or above the
+    # hook's tau, below stays clearly below even after the hook reads it as an f32
+    return max(y, HOOK_TAU) if p >= tau else min(y, HOOK_TAU - 1e-6)
 
 
 class Batcher:
@@ -104,7 +107,9 @@ class Batcher:
     def __call__(self, q, texts):
         job = {"pair": (q, texts), "t": time.monotonic(), "done": threading.Event()}
         self.q.put(job)
-        job["done"].wait()
+        # the model thread only dies on a BaseException; never hang a request forever on it
+        if not job["done"].wait(self.max_wait_s + 120):
+            return None
         if "error" in job:
             raise job["error"]
         return job["out"]  # None: dropped as stale
