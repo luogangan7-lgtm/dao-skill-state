@@ -78,32 +78,77 @@ pub fn validate_origin(origin: &str) -> Result<(), String> {
     ))
 }
 
+/// Run `cmd` (stdout/stderr piped) with a wall-clock limit. Both pipes are drained on their own
+/// threads while waiting: a child that writes more than a pipe buffer must not deadlock.
+pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    let mut child = cmd.spawn().map_err(|e| format!("cannot run: {e}"))?;
+    fn drain<R: Read + Send + 'static>(p: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = p {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let (out_t, err_t) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let status = loop {
+        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("timed out after {secs}s"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out_t.join().unwrap_or_default(),
+        stderr: err_t.join().unwrap_or_default(),
+    })
+}
+
+/// Wall-clock limit for one git call (a remote that accepts and never answers must not hang).
+const GIT_TIMEOUT_S: u64 = 300;
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "protocol.ext.allow=never",
-        ])
-        .args(args)
-        .current_dir(dir)
-        // never act on a repository named by the caller's environment (hooks, wrappers)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .env_remove("GIT_CONFIG_PARAMETERS")
-        .env_remove("GIT_CONFIG_COUNT")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_NAMESPACE")
-        .env_remove("GIT_CEILING_DIRECTORIES")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| format!("cannot run git: {e}"))?;
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "core.askPass=",
+        "-c",
+        "http.lowSpeedLimit=1000",
+        "-c",
+        "http.lowSpeedTime=30",
+    ])
+    .args(args)
+    .current_dir(dir)
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+    // never act on a repository, config, credential prompt or transport named by the caller's
+    // environment (hooks, wrappers, IDE terminals): drop every GIT_* and askpass variable, then
+    // let git itself enforce the transport allow-list after URL rewrites and redirects
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy();
+        if k.starts_with("GIT_") || k == "SSH_ASKPASS" {
+            cmd.env_remove(k.as_ref());
+        }
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "https:file");
+    let out = run_with_timeout(cmd, GIT_TIMEOUT_S)
+        .map_err(|e| format!("git {}: {e}", args.first().unwrap_or(&"")))?;
     if !out.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -132,6 +177,52 @@ pub fn fetch_git(origin: &str, rev: &str, dest: &Path) -> Result<String, String>
         return Err(format!("requested commit {rev} but checked out {commit}"));
     }
     Ok(commit)
+}
+
+/// True for a full commit id (SHA-1 or SHA-256 object format).
+pub fn is_full_commit(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64) && rev.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Refs `origin` advertises right now (`git ls-remote`, no clone, hooks impossible): HEAD,
+/// branches, tags, and whatever else matches one of `revs` (e.g. `refs/pull/1/head`).
+pub fn remote_refs(origin: &str, revs: &[&str]) -> Result<Vec<(String, String)>, String> {
+    validate_origin(origin)?;
+    // not every ref: pull-request refs can run to many thousands of lines; the requested revs
+    // are added as patterns (after `--`, so a rev is never an option)
+    let mut args = vec![
+        "ls-remote",
+        "--",
+        origin,
+        "HEAD",
+        "refs/heads/*",
+        "refs/tags/*",
+    ];
+    args.extend(revs.iter().filter(|r| !r.is_empty()));
+    let out = git(&std::env::temp_dir(), &args)?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(c, r)| (c.to_string(), r.to_string()))
+        .collect())
+}
+
+/// The commit `rev` names among `refs`, in the order `git fetch <origin> <rev>` resolves a
+/// short name (so intake and upstream agree): the exact ref, refs/<rev>, refs/tags/<rev>,
+/// refs/heads/<rev>, refs/remotes/<rev>, refs/remotes/<rev>/HEAD. An annotated tag is
+/// peeled (`^{}`) under any of these spellings, as fetch checks out the tag's commit.
+pub fn resolve_ref(refs: &[(String, String)], rev: &str) -> Option<String> {
+    if is_full_commit(rev) {
+        return Some(rev.to_ascii_lowercase());
+    }
+    let pick = |name: &str| refs.iter().find(|(_, r)| r == name).map(|(c, _)| c.clone());
+    let peeled = |name: String| pick(&format!("{name}^{{}}")).or_else(|| pick(&name));
+    peeled(rev.to_string())
+        .or_else(|| peeled(format!("refs/{rev}")))
+        .or_else(|| peeled(format!("refs/tags/{rev}")))
+        .or_else(|| peeled(format!("refs/heads/{rev}")))
+        .or_else(|| peeled(format!("refs/remotes/{rev}")))
+        .or_else(|| peeled(format!("refs/remotes/{rev}/HEAD")))
 }
 
 /// Read a small metadata file (license, frontmatter) before quarantine has vetted the tree:

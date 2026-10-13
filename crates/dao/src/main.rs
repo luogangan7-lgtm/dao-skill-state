@@ -2,11 +2,12 @@
 //!
 //! Role: entry point; routes subcommands to modules. Stage 1 (this crate's first card):
 //! `dao intake` = source pinning + quarantine into a content-addressed store.
-//! Depends on: source, quarantine. Called by: users, CI, later DAO stages (scan, normalize).
+//! Depends on: source, quarantine, scan, normalize, relations, eval, admission, upstream, check, assess. Called by: users, CI, later DAO stages (scan, normalize).
 //! Invariants: exit 0 when the command ran (rejected skills are a normal outcome, listed in
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
 mod admission;
+mod assess;
 mod check;
 mod eval;
 mod normalize;
@@ -15,6 +16,7 @@ mod quarantine;
 mod relations;
 mod scan;
 mod source;
+mod upstream;
 
 use quarantine::{stage, Limits, Outcome};
 use source::{detect_license, fetch_git, read_vetted, SourceLock};
@@ -31,12 +33,14 @@ fn usage() -> ExitCode {
          writes scans/<digest>.json (BLOCK | UNRESOLVED | REVIEW_REQUIRED | CLEAN) and prints a summary.\n\
   dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
+  dao upstream check --store DIR [--apply] [--allow-local DIR]...   sources moved since intake; --apply stages them as new candidates\n\
   dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao admit --store DIR --digest D   gates: object, scan (CLEAN or approved REVIEW), card, eval; exit 1 if refused\n\
-  dao promote --store DIR --digest D | rollback --store DIR --name N | recover --store DIR   champion pointers via the journal\n\
+  dao promote --store DIR --digest D | rollback --store DIR --name N [--from D] | recover --store DIR   champion pointers via the journal\n\
   dao publish --store DIR --target DIR [--apply] [--rollback]   champions -> <target>/<name>/, versioned in <target>/.dao-publication.json (dry run without --apply; exit 1 on conflicts)\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
+  dao assess FILE   (Rust port of check_assessment.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
     ExitCode::from(2)
@@ -105,6 +109,9 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    if local.is_some() && rev.is_some() {
+        return Err("--rev applies only to --git".into());
+    }
     if let Some(g) = &git {
         source::validate_origin(g)?; // before touching the filesystem
     }
@@ -148,6 +155,126 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
     });
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     Ok(ExitCode::SUCCESS)
+}
+
+/// `dao upstream check --store DIR [--apply]`: report moved sources; with --apply stage each
+/// changed path again as a new candidate (git: the new commit; local: the current tree).
+fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (mut store, mut apply, mut allow) = (None, false, Vec::new());
+    let mut it = args.iter();
+    if it.next().map(String::as_str) != Some("check") {
+        return Err(
+            "usage: dao upstream check --store DIR [--apply] [--allow-local DIR]...".into(),
+        );
+    }
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--store" => store = Some(PathBuf::from(it.next().ok_or("--store needs a value")?)),
+            "--apply" => apply = true,
+            "--allow-local" => {
+                let d = it.next().ok_or("--allow-local needs a directory")?;
+                allow.push(fs::canonicalize(d).map_err(|e| format!("{d}: {e}"))?);
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let store = fs::canonicalize(store.ok_or("--store is required")?).map_err(|e| e.to_string())?;
+    if allow.contains(&store) {
+        return Err("--allow-local must not be the store itself".into());
+    }
+    let (items, mut reports) = upstream::tracked(&store)?;
+    reports.extend(upstream::check(&items, &allow));
+    let mut staged = Vec::new();
+    let mut apply_failed = 0usize;
+    if apply {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // one fetch per (origin, upstream commit); every changed path under it is staged
+        let mut groups: std::collections::BTreeMap<
+            (String, String, Option<String>, String),
+            Vec<String>,
+        > = Default::default();
+        for r in reports.iter().filter(|r| r.status == "changed") {
+            let key = (
+                r.kind.clone(),
+                r.origin.clone(),
+                r.requested_rev.clone(),
+                r.upstream.clone().unwrap_or_default(),
+            );
+            groups.entry(key).or_default().push(r.subpath.clone());
+        }
+        for ((kind, origin, rev, upstream_commit), paths) in groups {
+            let fetch_dir = store
+                .join("tmp")
+                .join(format!("upstream-{}", std::process::id()));
+            // a local path is re-checked against --allow-local now and read only through the
+            // canonical path it resolves to (a symlink retargeted since the check is not followed)
+            let src = if Path::new(&origin).is_absolute() {
+                upstream::local_allowed(&origin, &allow)
+                    .unwrap_or_else(|| Err(format!("{origin}: local origin no longer allowed")))
+            } else {
+                Ok(PathBuf::from(&origin))
+            };
+            let fetched = src.and_then(|src| {
+                if kind == "git" {
+                    let _ = fs::remove_dir_all(&fetch_dir);
+                    fetch_git(&src.to_string_lossy(), &upstream_commit, &fetch_dir)
+                        .map(|c| (fetch_dir.clone(), Some(c)))
+                } else if store.starts_with(&src) {
+                    Err("--store must not be inside a local source tree".to_string())
+                } else {
+                    Ok((src, None))
+                }
+            });
+            match fetched {
+                // one unreachable source is that source's error, not the run's
+                Err(e) => {
+                    apply_failed += paths.len();
+                    staged.push(serde_json::json!({"outcome": "error", "origin": origin, "paths": paths, "error": e}));
+                }
+                Ok((tree, commit)) => {
+                    for p in paths {
+                        match stage_all(
+                            &tree, &p, false, &store, &kind, &origin, &rev, &commit, now,
+                        ) {
+                            Ok((outcomes, _)) => {
+                                for o in outcomes {
+                                    apply_failed +=
+                                        usize::from(matches!(o, Outcome::Rejected { .. }));
+                                    staged.push(serde_json::to_value(o).unwrap());
+                                }
+                            }
+                            Err(e) => {
+                                apply_failed += 1;
+                                staged.push(serde_json::json!({"outcome": "error", "subpath": p, "error": e}));
+                            }
+                        }
+                    }
+                }
+            }
+            if kind == "git" {
+                let _ = fs::remove_dir_all(&fetch_dir);
+            }
+        }
+    }
+    let count = |s: &str| reports.iter().filter(|r| r.status == s).count();
+    let errors = count("error");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "tracked": items.len(), "unchanged": count("unchanged"), "changed": count("changed"),
+            "pinned": count("pinned"), "skipped": count("skipped"), "errors": errors,
+            "apply_failed": apply_failed, "reports": reports, "staged": staged,
+        }))
+        .unwrap()
+    );
+    Ok(if errors == 0 && apply_failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -361,6 +488,25 @@ fn load_cards(store: &Path) -> Result<(Vec<normalize::Card>, Vec<String>), Strin
     Ok((cards, skipped))
 }
 
+/// The eval set the store generates now. relations.json is derived from the cards, so it must
+/// equal a fresh `relations::build` or the set would be built from stale confusable pairs.
+fn current_set(store: &Path) -> Result<eval::Set, String> {
+    let (cards, _) = load_cards(store)?;
+    let rels: Vec<relations::Relation> = serde_json::from_slice(
+        &fs::read(store.join("relations.json"))
+            .map_err(|e| format!("run dao relations first: {e}"))?,
+    )
+    .map_err(|e| format!("relations.json: {e}"))?;
+    if rels != relations::build(&cards) {
+        return Err("relations.json is stale (cards changed): run dao relations".into());
+    }
+    let set = eval::generate(&cards, &rels);
+    if set.subjects.is_empty() {
+        return Err("no usable cards: nothing to evaluate".into());
+    }
+    Ok(set)
+}
+
 /// Write JSON atomically (sibling temp file + rename; the temp file never survives a failure).
 fn write_json(path: &Path, v: &impl serde::Serialize) -> Result<(), String> {
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
@@ -401,19 +547,7 @@ fn eval_cmd(args: &[String]) -> Result<ExitCode, String> {
     let store = PathBuf::from(opt.get("--store").ok_or("--store is required")?);
     let dir = store.join("evals");
     // the set is a pure function of the store; regenerating it is the only trustworthy freeze
-    let regenerate = || -> Result<eval::Set, String> {
-        let (cards, _) = load_cards(&store)?;
-        let rels: Vec<relations::Relation> = serde_json::from_slice(
-            &fs::read(store.join("relations.json"))
-                .map_err(|e| format!("run dao relations first: {e}"))?,
-        )
-        .map_err(|e| format!("relations.json: {e}"))?;
-        let set = eval::generate(&cards, &rels);
-        if set.subjects.is_empty() {
-            return Err("no usable cards: nothing to evaluate".into());
-        }
-        Ok(set)
-    };
+    let regenerate = || current_set(&store);
     if sub == "gen" {
         let set = regenerate()?;
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -461,18 +595,16 @@ fn eval_cmd(args: &[String]) -> Result<ExitCode, String> {
             Err(format!("{k} must be a finite number ≥ 0"))
         }
     };
-    let top_k: usize = opt.get("--top-k").map_or(Ok(3), |v| {
+    let n_skills = ids.len();
+    let (policy_k, policy_floor, policy_rel) = eval::policy(n_skills);
+    let top_k: usize = opt.get("--top-k").map_or(Ok(policy_k), |v| {
         v.parse()
             .map_err(|_| "--top-k must be a positive integer".to_string())
     })?;
     if top_k == 0 {
         return Err("--top-k must be a positive integer".into());
     }
-    let n_skills = ids.len();
-    let (floor, rel) = (
-        num("--floor", eval::hook_floor(n_skills))?,
-        num("--rel", 0.5)?,
-    );
+    let (floor, rel) = (num("--floor", policy_floor)?, num("--rel", policy_rel)?);
     let search = eval::skill_hub(searcher.clone(), registry.clone(), top_k);
     let scored = eval::run(&set, &search, &ids, top_k, floor, rel)?;
     let mut r = eval::receipt(
@@ -537,11 +669,18 @@ fn admit_decision(store: &Path, digest: &str) -> Result<admission::Admission, St
             .find(|f| f.path == "SKILL.md")
             .map(|f| f.sha256.clone())
     });
+    // the manifest must hash to the digest (as scan checks), not merely claim it
     let object_ok = match &manifest {
-        Some(m) if m.digest == digest => {
-            quarantine::verify_object(&store.join("objects").join(digest), m)
+        Some(m) => {
+            let mut sorted = m.files.clone();
+            sorted.sort_by(|a, b| a.path.cmp(&b.path));
+            if m.digest != digest || sorted != m.files || quarantine::digest_of(&sorted) != digest {
+                Err("manifest does not hash to this digest".into())
+            } else {
+                quarantine::verify_object(&store.join("objects").join(digest), m)
+            }
         }
-        _ => Err("no manifest for this digest".into()),
+        None => Err("no manifest for this digest".into()),
     };
     let scan: Option<scan::Receipt> = read(store.join("scans").join(format!("{digest}.json")))
         .and_then(|v| serde_json::from_value(v).ok());
@@ -550,17 +689,14 @@ fn admit_decision(store: &Path, digest: &str) -> Result<admission::Admission, St
         .and_then(|v| serde_json::from_value(v).ok());
     // the eval set as the store generates it now, whether the stored one equals it, and the
     // newest receipt for that set
-    let eval = (|| -> Option<(eval::Set, bool, Option<eval::Receipt>)> {
-        let (cards, _) = load_cards(store).ok()?;
-        let rels: Vec<relations::Relation> =
-            serde_json::from_slice(&fs::read(store.join("relations.json")).ok()?).ok()?;
-        let fresh_set = eval::generate(&cards, &rels);
+    let eval = current_set(store).map(|fresh_set| {
         let stored: Option<eval::Set> =
             read(store.join("evals/set.json")).and_then(|v| serde_json::from_value(v).ok());
         let fresh = stored.as_ref() == Some(&fresh_set);
         let mut receipts: Vec<(std::time::SystemTime, eval::Receipt)> =
             fs::read_dir(store.join("evals"))
-                .ok()?
+                .into_iter()
+                .flatten()
                 .flatten()
                 .filter(|e| e.file_name().to_string_lossy().starts_with("receipt-"))
                 .filter_map(|e| {
@@ -571,8 +707,8 @@ fn admit_decision(store: &Path, digest: &str) -> Result<admission::Admission, St
                 })
                 .collect();
         receipts.sort_by_key(|(t, _)| *t);
-        Some((fresh_set, fresh, receipts.pop().map(|(_, r)| r)))
-    })();
+        (fresh_set, fresh, receipts.pop().map(|(_, r)| r))
+    });
     Ok(admission::decide(
         digest,
         &admission::Evidence {
@@ -606,7 +742,7 @@ fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
 /// --name N`, `dao recover --store DIR`. `DAO_FAULT=after_prepare|after_pointer` simulates a
 /// crash for recovery drills.
 fn champion_cmd(cmd: &str, args: &[String]) -> Result<ExitCode, String> {
-    let o = opts(args, &["--store", "--digest", "--name"])?;
+    let o = opts(args, &["--store", "--digest", "--name", "--from"])?;
     let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
     let fault = match std::env::var("DAO_FAULT").as_deref() {
         Ok("after_prepare") => admission::Fault::AfterPrepare,
@@ -640,7 +776,11 @@ fn champion_cmd(cmd: &str, args: &[String]) -> Result<ExitCode, String> {
         }
         _ => {
             let name = o.get("--name").ok_or("--name is required")?;
-            admission::move_champion(&store, name, None, fault)?
+            let from = o.get("--from").map(String::as_str);
+            if let Some(f) = from.filter(|f| !scan::is_digest(f)) {
+                return Err(format!("not a digest: {f}"));
+            }
+            admission::rollback(&store, name, from, fault)?
         }
     };
     println!(
@@ -752,8 +892,12 @@ fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn main() -> ExitCode {
-    let Ok(args) = std::env::args_os()
-        .skip(1)
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "assess") {
+        return ExitCode::from(assess::main(&raw[1..])); // its paths may be non-UTF-8, like Python's
+    }
+    let Ok(args) = raw
+        .into_iter()
         .map(|a| a.into_string())
         .collect::<Result<Vec<String>, _>>()
     else {
@@ -762,6 +906,7 @@ fn main() -> ExitCode {
     };
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
+        Some("upstream") => upstream_cmd(&args[1..]),
         Some("scan") => scan_cmd(&args[1..]),
         Some("normalize") => normalize_cmd(&args[1..]),
         Some("relations") => relations_cmd(&args[1..]),
@@ -822,9 +967,9 @@ mod tests {
             registry_sha256: "r".into(),
             searcher_sha256: "s".into(),
             n_skills: 1,
-            top_k: 3,
-            floor: 0.0,
-            rel: 0.5,
+            top_k: eval::policy(1).0,
+            floor: eval::policy(1).1,
+            rel: eval::policy(1).2,
             gated: eval::GATED.iter().map(|s| s.to_string()).collect(),
             kinds: Default::default(),
             failures: vec![],
@@ -891,6 +1036,54 @@ mod tests {
             admission::champion(&store, "demo").unwrap().unwrap().digest,
             digest
         );
-        let _ = fs::remove_dir_all(store.parent().unwrap());
+        cleanup(&store);
+    }
+
+    /// Objects are read-only: make the tree writable, remove it, and check it is gone.
+    fn cleanup(store: &Path) {
+        let root = store.parent().unwrap();
+        quarantine::make_writable(root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(!root.exists());
+    }
+
+    fn gate(a: &admission::Admission, name: &str) -> admission::Gate {
+        a.gates.iter().find(|g| g.name == name).unwrap().clone()
+    }
+
+    /// Codex: relations.json is derived; a stale one must not feed a "fresh" set.
+    #[test]
+    fn stale_relations_refuse_admission() {
+        let (store, digest) = admittable_store("rel");
+        let fake = r#"[{"kind":"family","a":"demo","b":"other","evidence":"x"}]"#;
+        fs::write(store.join("relations.json"), fake).unwrap();
+        let g = gate(&admit_decision(&store, &digest).unwrap(), "eval");
+        assert!(!g.passed && g.evidence.contains("dao relations"), "{g:?}");
+        cleanup(&store);
+    }
+
+    /// Codex: the object gate recomputes the digest from the manifest; a copy of a real object
+    /// under another digest name (self-consistent files, manifest claiming the new digest) fails.
+    #[test]
+    fn the_object_gate_recomputes_the_digest() {
+        let (store, digest) = admittable_store("obj");
+        let fake = "e".repeat(64);
+        let (src, dst) = (
+            store.join("objects").join(&digest),
+            store.join("objects").join(&fake),
+        );
+        fs::create_dir_all(&dst).unwrap();
+        for f in fs::read_dir(&src).unwrap().flatten() {
+            fs::copy(f.path(), dst.join(f.file_name())).unwrap();
+        }
+        let m = fs::read_to_string(store.join(format!("manifests/{digest}.json"))).unwrap();
+        fs::write(
+            store.join(format!("manifests/{fake}.json")),
+            m.replace(&digest, &fake),
+        )
+        .unwrap();
+        let g = gate(&admit_decision(&store, &fake).unwrap(), "object");
+        assert!(!g.passed && g.evidence.contains("hash"), "{g:?}");
+        cleanup(&store);
     }
 }

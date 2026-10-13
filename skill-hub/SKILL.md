@@ -13,7 +13,7 @@ Hosted skills are installed on disk but hidden from the resident skill list to s
    ```bash
    skill-hub search --top-k 3 -- 小红书 图文 xiaohongshu note
    ```
-2. Pick the candidate whose description fits. If no candidate fits, or the top score is low and unrelated, continue without a hosted skill and say so. Do not force a match.
+2. Pick the candidate whose description fits. Results are listed best first. `score` is the lexical (BM25) score. When dense recall ran, the order follows `rrf` (lexical + semantic fused), so a lower `score` can rank above a higher one. If no candidate fits, or every candidate is weak and unrelated, continue without a hosted skill and say so. Do not force a match.
 3. Load the chosen skill by its exact `id`:
    ```bash
    skill-hub get <id>
