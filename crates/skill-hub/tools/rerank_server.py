@@ -25,6 +25,8 @@ downloads it, at the pinned revision.
 import argparse
 import json
 import math
+import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Bounds on work, not just bytes: one model pass per text.
@@ -78,7 +80,11 @@ def qwen3_scorer(dev):
     def score(q, texts):
         # query and document are cut separately (a long query can't crowd out the candidate);
         # the suffix always ends at the yes/no answer position
-        q_ids = ids(" " + q)[: max(budget // 2, 1)]
+        # a long prompt keeps its head and its tail, like the hook's bound_prompt (a request written
+        # after a long paste survives); short prompts, as evaluated, are untouched
+        q_ids, room = ids(" " + q), max(budget // 2, 2)
+        if len(q_ids) > room:
+            q_ids = q_ids[: room // 2] + q_ids[len(q_ids) - (room - room // 2):]
         rows = [pre + head + q_ids + mid + ids(" " + t)[: max(budget - len(q_ids), 1)] + suf for t in texts]
         enc = tok.pad({"input_ids": rows}, padding=True, return_tensors="pt").to(dev)
         with torch.no_grad():
@@ -109,7 +115,17 @@ def main():
     ap.add_argument("--max-length", type=int, default=512, help="cross-encoders only")
     a = ap.parse_args()
     dev = device()
-    score = qwen3_scorer(dev) if a.model == QWEN else cross_encoder_scorer(a.model, a.max_length, dev)
+    if dev == "cpu":
+        print("warning: running on CPU; a hook request takes seconds, longer than the hook's default "
+              "SKILL_HUB_RERANK_TIMEOUT_MS=3000, so raise it or the hook falls back", file=sys.stderr, flush=True)
+    model_score = qwen3_scorer(dev) if a.model == QWEN else cross_encoder_scorer(a.model, a.max_length, dev)
+    lock = threading.Lock()
+
+    def score(q, texts):
+        # one forward at a time: requests the hook already gave up on must not pile up in parallel
+        with lock:
+            return model_score(q, texts)
+
     score("warm up", ["warm up"])  # first call pays the load, not the first prompt
 
     class Handler(BaseHTTPRequestHandler):

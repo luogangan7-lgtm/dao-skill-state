@@ -8,6 +8,7 @@ on:
       - crates/skill-hub/tools/rerank_server.py
       - crates/skill-hub/src/hook.rs
       - crates/skill-hub/src/dense.rs
+      - crates/skill-hub/src/main.rs
       - .github/workflows/rerank-e2e.yml
 permissions:
   contents: read
@@ -30,7 +31,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-rerank-server-${{ hashFiles('crates/skill-hub/tools/rerank_server.py') }}
+          key: hf-rerank-server-qwen3-e61197ed  # the pinned model revision
       - name: Build skill-hub
         working-directory: crates/skill-hub
         run: cargo build --release --locked

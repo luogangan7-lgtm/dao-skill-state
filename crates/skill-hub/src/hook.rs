@@ -51,15 +51,15 @@ pub struct Candidate {
     pub dense: Option<f64>,
 }
 
+/// Default threshold for the reference server's model (Qwen3-Reranker-0.6B + skill instruction),
+/// tuned on the D7 dev split and then scored once on held-out data; bge-reranker-v2-m3 needs ~0.02.
+pub const RERANK_TAU: f32 = 0.865;
+
 /// A local reranker that scores (prompt, candidate) pairs; the best is kept if it clears `tau`,
 /// otherwise the hook abstains. D7 round 3 (CI run 38379553491, 112 held-out cases, same RRF
 /// top-10): Qwen3-Reranker-0.6B with a skill-routing instruction chose right on 98/112 against
 /// 88/112 for bge-reranker-v2-m3 (paired exact McNemar p=0.021) and abstained on all 36
 /// chit-chat prompts. `RERANK_TAU` is tuned for that model; other models need their own.
-/// Default threshold for the reference server's model (Qwen3-Reranker-0.6B + skill instruction),
-/// tuned on the D7 dev split; bge-reranker-v2-m3 needs about 0.02.
-pub const RERANK_TAU: f32 = 0.865;
-
 /// Scores for (query, texts), in text order.
 pub type Scorer<'a> = dyn Fn(&str, &[String]) -> Result<Vec<f32>, String> + 'a;
 
