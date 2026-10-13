@@ -60,7 +60,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-cands-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json') }}
+          key: hf-cands-v2-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json') }}  # v2: + Qwen3-Embedding
       - name: Build skill-hub
         working-directory: crates/skill-hub
         run: cargo build --release --locked

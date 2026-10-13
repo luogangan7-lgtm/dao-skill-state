@@ -180,9 +180,23 @@ def summary(rows, tau):
     }
 
 
+def run_name(model, src, k):
+    return f"{model}@{src}@k{k}"
+
+
+def first_rank(lst, gold):
+    """0-based position of the first gold item in a ranked list, None if absent. A case whose
+    expected ids are all missing from the registry has an empty gold set and counts as a miss."""
+    return next((n for n, i in enumerate(lst) if i in gold), None)
+
+
+def recall_at(ranks, k):
+    return sum(1 for r in ranks if r is not None and r < k)
+
+
 def run(bundle_path, model, out, src="bgem3", k="10"):
     k = int(k)
-    name = f"{model}@{src}@k{k}"
+    name = run_name(model, src, k)
     t = time.time()
     fn = load(model)  # before the private data is in this process
     load_s = time.time() - t
@@ -265,19 +279,18 @@ def cands(bundle_path, skill_hub, out):
                 if c["expect"]:
                     gold = {index[e] for e in c["expect"] if e in index}
                     for name, lst in lists.items():
-                        r = next((n for n, i in enumerate(lst) if i in gold), None)
-                        gold_rank.setdefault((split, name), []).append(r)
+                        gold_rank.setdefault((split, name), []).append(first_rank(lst, gold))
             bundle[split]["cands_by_src"] = by_src
     json.dump(bundle, open(out, "w"), ensure_ascii=False)
     # recall@k: share of positives whose gold skill is within the first k of each list
     for (split, name), ranks in sorted(gold_rank.items()):
-        cells = " ".join(f"@{k}={sum(1 for r in ranks if r is not None and r < k)}/{len(ranks)}" for k in RECALL_AT)
+        cells = " ".join(f"@{k}={recall_at(ranks, k)}/{len(ranks)}" for k in RECALL_AT)
         print(f"{split} {name}: {cells}")
 
 
 # --- report ---------------------------------------------------------------------------------
 
-BASELINE = "qwen3rr-skill@bgem3@k10"  # what skill-hub ships after PR #17
+BASELINE = run_name("qwen3rr-skill", "bgem3", 10)  # what skill-hub ships after PR #17
 
 
 def mcnemar(a, b):
@@ -298,7 +311,7 @@ def report(out):
         if f.endswith(".json"):
             r = json.load(open(os.path.join(out, f)))
             res[r["model"]] = r
-    lines = ["| model | tau | dev | **held** | held pos | held abstain | top-1 | ceiling | false abstain "
+    lines = ["| config | tau | dev | **held** | held pos | held abstain | top-1 | ceiling | false abstain "
              "| wrong skill | false fire | p50/p95 ms | load s |", "|" + "---|" * 13]
     order = sorted(res, key=lambda m: -int(res[m]["held"]["all"].split("/")[0]))
     for m in order:
