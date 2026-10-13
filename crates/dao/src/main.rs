@@ -496,7 +496,7 @@ fn current_set(store: &Path) -> Result<eval::Set, String> {
     )
     .map_err(|e| format!("relations.json: {e}"))?;
     if rels != relations::build(&cards) {
-        return Err("relations.json is stale (cards changed): run dao relations".into());
+        return Err("relations.json differs from what dao relations builds from the current cards: run dao relations".into());
     }
     let set = eval::generate(&cards, &rels);
     if set.subjects.is_empty() {
