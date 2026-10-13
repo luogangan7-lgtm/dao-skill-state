@@ -577,7 +577,14 @@ fn py_float(x: f64) -> String {
         .0
         .matches(|c: char| c.is_ascii_digit())
         .count();
-    let s = format!("{x:.*e}", n - 1);
+    // half-even at the shortest length matches Python's tie rule, but at a power of two the
+    // rounding interval is uneven and that string may not read back: keep Rust's then
+    let exact = format!("{x:.*e}", n - 1);
+    let s = if exact.parse::<f64>() == Ok(x) {
+        exact
+    } else {
+        shortest
+    };
     let (mant, exp) = s.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let (sign, mant) = match mant.strip_prefix('-') {
@@ -1440,7 +1447,8 @@ fn arg_kind(a: &str) -> char {
     if let Some(long) = a.strip_prefix("--") {
         let name = long.split('=').next().unwrap_or("");
         return match (
-            !name.is_empty() && "help".starts_with(name),
+            // argparse matches even an empty name (`--=y`) as a prefix of --help
+            "help".starts_with(name),
             long.contains('='),
         ) {
             (true, false) => 'h',
@@ -1546,6 +1554,8 @@ mod tests {
             (123456789.125, "123456789.125"),
             // shortest-digit ties round half-even like repr, not up
             (1e15 + 0.25, "1000000000000000.2"),
+            (2f64.powi(-24), "5.960464477539063e-08"),
+            (6.189700196426902e26, "6.189700196426902e+26"),
             (580932385485918.0 + 0.25, "580932385485918.2"),
             (2f64.powi(49) + 0.25, "562949953421312.2"),
             (1394089528363410.2, "1394089528363410.2"),

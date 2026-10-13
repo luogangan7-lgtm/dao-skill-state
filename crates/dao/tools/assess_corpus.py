@@ -268,7 +268,8 @@ def numbers():
                       ("n-sec-exp", "1.5e-7"), ("n-sec-int-big", "1" + "0" * 300),
                       # repr breaks shortest-digit ties half-even
                       ("n-sec-tie-1e15", "1000000000000000.25"), ("n-sec-tie-5809", "580932385485918.25"),
-                      ("n-sec-tie-2p49", "562949953421312.25"), ("n-sec-tie-1394", "1394089528363410.2")):
+                      ("n-sec-tie-2p49", "562949953421312.25"), ("n-sec-tie-1394", "1394089528363410.2"),
+                      ("n-sec-pow2-m24", "5.960464477539063e-08"), ("n-sec-pow2-89", "6.189700196426902e+26")):
         out.append(raw(name, with_raw(complete(), ["runs", 0, "cost", "seconds"], tok)))
     # literals whose exponent only fits after folding in the digit count (Python: inf, 1.0, 0.0)
     z = (b"0", 700000)
@@ -310,7 +311,7 @@ def cli():
         raw("c-empty-file", (b"", 1)),
         # argparse: -\.?\d with Unicode Nd digits, or a space (long options too), means positional
         raw("c-udigit", args=["-\u0661"]), raw("c-udot", args=["-.\u0661"]), raw("c-udigit-x", args=["-\u0661x"]),
-        raw("c-superscript", args=["-\u00b2"]), raw("c-long-space", args=["--x y"]),
+        raw("c-superscript", args=["-\u00b2"]), raw("c-long-space", args=["--x y"]), raw("c-eq-help", args=["x", "--=y", "-h"]), raw("c-eq-empty", args=["--="]),
         # a non-UTF-8 argv byte reaches Python as a surrogate escape (frozen as {"b": base64})
         raw("c-nonutf8-missing", args=["x\udcff.json"]),
     ]

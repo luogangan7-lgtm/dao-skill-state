@@ -37852,6 +37852,46 @@
 "python_stdout": null
 },
 {
+"name": "n-sec-pow2-m24",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 5.960464477539063e-08, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "29711622ea08be477040757a918291732e6917eb0ebda27010aacd7593b2879f",
+"python_stdout": null
+},
+{
+"name": "n-sec-pow2-89",
+"args": [
+"input.json"
+],
+"files": {
+"input.json": [
+{
+"t": "{\"schema\": \"dao-assessment/v1\", \"identity\": {\"skill\": \"demo\", \"skill_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"task_set_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"model\": \"model\", \"host\": \"local\", \"date\": \"2026-09-08\", \"rubric\": \"r1\"}, \"arms\": [\"baseline\", \"candidate\"], \"repetitions\": 1, \"cases\": [{\"id\": \"p\", \"kind\": \"positive\"}, {\"id\": \"b\", \"kind\": \"boundary\"}], \"isolation\": {\"status\": \"PASS\", \"evidence\": \"isolated\"}, \"runs\": [{\"case_id\": \"p\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 6.189700196426902e+26, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"p\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"baseline\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}, {\"case_id\": \"b\", \"arm\": \"candidate\", \"repetition\": 1, \"status\": \"PASS\", \"trust\": \"PASS\", \"evidence\": \"recorded\", \"cost\": {\"seconds\": 1.0, \"input_tokens\": 10, \"output_tokens\": 2, \"cached_input_tokens\": 0}}]}",
+"n": 1
+}
+]
+},
+"dirs": [],
+"fifos": [],
+"python_exit": 0,
+"python_stderr": "empty",
+"python_stdout_sha256": "2d8444aa8f76cbcf7730b5c0e3a558cc7e10f9337cc989dd37026b5efe584ccb",
+"python_stdout": null
+},
+{
 "name": "n-sec-long-inf",
 "args": [
 "input.json"
@@ -38596,6 +38636,34 @@
 "python_stderr": "empty",
 "python_stdout_sha256": "7721356131047c876b4f22fbe2244c578d265ef82a695b6ff86967f50fe2e865",
 "python_stdout": "{\"status\": \"input_error\", \"errors\": [{\"path\": \"$\", \"message\": \"[Errno 2] No such file or directory: '--x y'\"}]}\n"
+},
+{
+"name": "c-eq-help",
+"args": [
+"x",
+"--=y",
+"-h"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "usage",
+"python_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+"python_stdout": ""
+},
+{
+"name": "c-eq-empty",
+"args": [
+"--="
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "usage",
+"python_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+"python_stdout": ""
 },
 {
 "name": "c-nonutf8-missing",
