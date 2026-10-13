@@ -3,6 +3,8 @@ name: selector-eval
 # Experiments run here, never on a developer machine. The candidate data holds private skill
 # descriptions and prompts, so it is committed encrypted (data.json.enc) and decrypted with the
 # SELECTOR_EVAL_KEY secret; logs, artifacts and the summary carry only aggregate numbers.
+# The secret-bearing jobs run only on a manual dispatch from main (trusted, reviewed code): a pull
+# request could change eval.py to print the decrypted data, so PRs run the rules check only.
 on:
   workflow_dispatch:
   pull_request:
@@ -21,7 +23,8 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest discover -s crates/skill-hub/tools/selector_eval -p 'test_*.py'
   preflight:
-    # fork and Dependabot PRs get no secrets: skip the model jobs instead of failing them
+    # model jobs: manual dispatch on main only, and only when the key is available
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       has_key: ${{ steps.k.outputs.has_key }}
