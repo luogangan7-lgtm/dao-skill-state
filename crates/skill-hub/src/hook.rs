@@ -208,6 +208,8 @@ pub fn decide(
     }
     // the local reranker comes first: it never sends the prompt off the machine
     if let Some(r) = rerank {
+        // the reference server takes at most 16 texts (larger --top-k only reranks the head)
+        let cands = &cands[..cands.len().min(16)];
         let docs: Vec<String> = cands
             .iter()
             .map(|c| {
@@ -331,8 +333,18 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
         tau: std::env::var("SKILL_HUB_RERANK_TAU")
             .ok()
             // a probability threshold: nan, negative or > 1 would mean "never" or "always"
-            .and_then(|v| v.parse::<f32>().ok())
-            .filter(|t| t.is_finite() && (0.0..=1.0).contains(t))
+            .map(|v| {
+                v.parse::<f32>()
+                    .ok()
+                    .filter(|t| t.is_finite() && (0.0..=1.0).contains(t))
+                    .unwrap_or_else(|| {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "skill-hub hook: SKILL_HUB_RERANK_TAU={v:?} is not in [0,1]; using 0.02"
+                        );
+                        0.02
+                    })
+            })
             .unwrap_or(0.02),
     });
     let decision = decide(
