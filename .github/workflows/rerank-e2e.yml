@@ -92,6 +92,33 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-mac-rerank-qwen3-e61197ed-mlx4-5f324548
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            crates/skill-hub/target
+          key: cargo-mac-${{ hashFiles('crates/skill-hub/Cargo.lock') }}
+      - name: Build skill-hub
+        working-directory: crates/skill-hub
+        run: cargo build --release --locked
+      - name: No-model hook under concurrency (BM25 over 2,600 synthetic skills)
+        run: |
+          S="$RUNNER_TEMP/skills"
+          python3 - "$S" <<'PY'
+          import os, random, sys
+          random.seed(7)
+          words = ("rust python sql docker deploy test lint note image video audio pdf excel chart api auth cache "
+                   "queue cli web mobile design copy seo email crm invoice report scrape translate summarize").split()
+          for i in range(2600):
+              d = os.path.join(sys.argv[1], f"skill-{i:04d}")
+              os.makedirs(d)
+              desc = " ".join(random.choice(words) for _ in range(40))
+              open(os.path.join(d, "SKILL.md"), "w").write(f"---\nname: skill-{i:04d}\ndescription: {desc}\n---\n# skill-{i:04d}\n")
+          PY
+          H=crates/skill-hub/target/release/skill-hub
+          "$H" index --root synthetic="$S" --out "$RUNNER_TEMP/reg2600.json"
+          { echo "no-model hook (BM25), 2,600 skills:"; python3 -I crates/skill-hub/tools/rerank_bench.py hook "$H" "$RUNNER_TEMP/reg2600.json"; } | tee hook.txt
+          { echo "## no-model hook under concurrency on macos-latest"; echo; sed 's/^/    /' hook.txt; } >> "$GITHUB_STEP_SUMMARY"
       - name: Measure
         run: |
           {

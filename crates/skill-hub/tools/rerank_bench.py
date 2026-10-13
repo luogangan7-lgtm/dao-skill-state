@@ -2,6 +2,8 @@
 """Concurrency benchmark for rerank_server.py: many agents submitting prompts at the same moment.
 
   rerank_bench.py PORT SERVER_PID [LEVELS]   e.g. rerank_bench.py 8121 4242 1,2,4,8,16,32,64,100
+  rerank_bench.py hook SKILL_HUB REGISTRY [LEVELS]   the no-model hook: N `skill-hub hook`
+                                                       processes started together (BM25 only)
 
 At each level N, N hook-sized requests (a prompt + 10 skill texts of ~400 chars) start together;
 reports per-request latency, how many answered within the hook's default 3 s timeout (the rest
@@ -11,6 +13,7 @@ Synthetic public texts only. Runs in CI (rerank-e2e.yml), not on a developer mac
 Depends on: the standard library and macOS `footprint`/`ps` for memory.
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -76,7 +79,41 @@ def level(port, pid, n):
             f"peak footprint {max(peak):6.0f} MB")
 
 
+def hook_level(binary, registry, n):
+    """N hook processes at once, as N agents submitting prompts; latency and peak RSS per process."""
+    env = {**os.environ, "SKILL_HUB_REGISTRY": registry}
+    for k in ("SKILL_HUB_RERANK", "TYPESAFE_API_KEY"):
+        env.pop(k, None)  # algorithm only
+    procs, t0 = [], time.time()
+    for i in range(n):
+        p = subprocess.Popen([binary, "hook"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, env=env)
+        procs.append((p, time.time()))
+    for i, (p, _) in enumerate(procs):
+        p.stdin.write(json.dumps({"prompt": f"Set up a new Rust CLI tool with clap for argument parsing (agent {i})",
+                                  "hook_event_name": "UserPromptSubmit"}).encode())
+        p.stdin.close()
+    ms, rss, bad = [], [], 0
+    for p, t in procs:
+        _, status, ru = os.wait4(p.pid, 0)
+        p.returncode = os.waitstatus_to_exitcode(status)
+        ms.append((time.time() - t) * 1000)
+        rss.append(ru.ru_maxrss / (1 << 20))  # bytes on macOS
+        bad += p.returncode != 0
+    wall = time.time() - t0
+    ms.sort()
+    pct = lambda q: ms[min(len(ms) - 1, max(0, round(q * len(ms)) - 1))]
+    return (f"N={n:>3}  p50 {pct(.5):>7.0f} ms  p95 {pct(.95):>7.0f} ms  max {ms[-1]:>7.0f} ms  "
+            f"errors {bad}  {n / wall:6.1f} req/s  peak RSS per process {max(rss):5.0f} MB "
+            f"(all {n} together <= {sum(rss):6.0f} MB)")
+
+
 def main():
+    if sys.argv[1] == "hook":
+        levels = [int(x) for x in (sys.argv[4] if len(sys.argv) > 4 else "1,2,4,8,16,32,64,100").split(",")]
+        for n in levels:
+            print(hook_level(sys.argv[2], sys.argv[3], n), flush=True)
+        return
     port, pid = sys.argv[1], int(sys.argv[2])
     levels = [int(x) for x in (sys.argv[3] if len(sys.argv) > 3 else "1,2,4,8,16,32,64,100").split(",")]
     print(f"idle footprint {footprint_mb(pid):.0f} MB", flush=True)

@@ -108,6 +108,7 @@ jobs:
           - {model: srv-fp32, src: bgem3, k: 10, os: macos-latest}
           - {model: srv-fp16, src: bgem3, k: 10, os: macos-latest}
           - {model: srv-mlx4, src: bgem3, k: 10, os: macos-latest}
+          - {model: lexical, src: bgem3, k: 10}  # the hook with no model at all
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -166,7 +167,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## skill-hub selector eval, round 6: shipped server fp32 vs fp16 vs 4-bit MLX on Apple GPU (tau tuned on dev per config, applied once to held-out)"
+            echo "## skill-hub selector eval, round 6: shipped server fp32 vs fp16 vs 4-bit MLX on Apple GPU, and the no-model lexical rule (tau tuned on dev per config, applied once to held-out)"
             echo
             echo "Recall of each retrieval list (gold skill within the first k): ${{ needs.cands.outputs.ceiling }}"
             echo

@@ -40,7 +40,7 @@ LAYA_DESC_CHARS = 150
 # options, the rest of 1,024 for the request (both encoders read far longer inputs)
 LAYA_MAX_LEN, LAYA_HEAD = 1024, 640
 MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td", "jev",
-          "srv-fp32", "srv-fp16", "srv-mlx4"]  # srv-*: the shipped rerank_server.py scorer (Apple GPU)
+          "srv-fp32", "srv-fp16", "srv-mlx4", "lexical"]  # lexical: the hook without any model  # srv-*: the shipped rerank_server.py scorer (Apple GPU)
 # Jev (TypeSafe, hosted): the request skill-hub hook.rs sends (jev_body), with the same limits
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_NONE = "(no skill)"
@@ -222,6 +222,36 @@ def score_split(fn, split):
     return rows
 
 
+HOOK_FLOOR, HOOK_REL = 6.0, 0.5  # hook.rs FLOOR / REL
+
+
+def hook_floor(n):
+    """hook.rs floor_for: the BM25 floor scaled by the registry's maximum idf."""
+    max_idf = lambda x: math.log((x - 1.0 + 0.5) / 1.5 + 1.0)
+    return HOOK_FLOOR * min(max_idf(max(n, 1)) / max_idf(2000.0), 1.0)
+
+
+def lexical_pick(cands, n_skills):
+    """hook.rs lexical(): of the top 3 (fused order), those whose BM25 clears max(floor, REL * top)."""
+    top = max([h["score"] for h in cands] + [0.0])
+    return [h for h in cands[:3] if h["score"] >= max(hook_floor(n_skills), HOOK_REL * top)]
+
+
+def lexical_split(split, n_skills):
+    """The no-model hook: it may inject up to 3 skills. A positive is right when its skill is
+    among them; an abstain case only when nothing is injected. best=1.0 when anything fires."""
+    rows = []
+    for c in split["cases"]:
+        hs = split["cands"][c["id"]]
+        t = time.time()
+        inj = lexical_pick(hs, n_skills)
+        rows.append({"id": c["id"], "pos": bool(c["expect"]), "n_injected": len(inj),
+                     "top_ok": any(h["id"] in c["expect"] for h in inj),
+                     "in_cands": any(h["id"] in c["expect"] for h in hs),
+                     "best": 1.0 if inj else None, "ms": (time.time() - t) * 1000})
+    return rows
+
+
 def picks(r, tau):
     return r["best"] is not None and r["best"] >= tau
 
@@ -275,14 +305,17 @@ def run(bundle_path, model, out, src="bgem3", k="10"):
     k = int(k)
     name = run_name(model, src, k)
     t = time.time()
-    fn = load(model)  # before the private data is in this process
+    fn = None if model == "lexical" else load(model)  # before the private data is in this process
     load_s = time.time() - t
     bundle = json.load(open(bundle_path))
-    if model != "jev":  # a hosted API has nothing to warm up
+    if model not in ("jev", "lexical"):  # nothing to warm up
         fn("warm up", [{"id": "a", "description": "warm up"}, {"id": "b", "description": "other"}])
     for split in ("dev", "held"):  # the chosen retrieval variant and candidate depth
         bundle[split]["cands"] = {cid: hs[:k] for cid, hs in bundle[split]["cands_by_src"][src].items()}
-    dev, held = score_split(fn, bundle["dev"]), score_split(fn, bundle["held"])
+    if model == "lexical":
+        dev, held = (lexical_split(bundle[x], bundle["n_skills"]) for x in ("dev", "held"))
+    else:
+        dev, held = score_split(fn, bundle["dev"]), score_split(fn, bundle["held"])
     tau = tune(dev)
     res = {"model": name, "tau": tau, "load_s": round(load_s, 1),
            "dev": summary(dev, tau), "held": summary(held, tau), "rows": {"dev": dev, "held": held}}
@@ -325,6 +358,7 @@ def cands(bundle_path, skill_hub, out):
             c["prompt"] = bound_prompt(c["prompt"])
     reg = bundle.pop("registry")
     skills = reg["skills"]
+    bundle["n_skills"] = len(skills)  # the hook's lexical floor depends on it
     index = {s["id"]: i for i, s in enumerate(skills)}
     gold_rank = {}  # (split, list name) -> [rank of the first gold id per positive case, or None]
     with tempfile.TemporaryDirectory() as d:
