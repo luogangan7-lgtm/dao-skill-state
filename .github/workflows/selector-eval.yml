@@ -5,6 +5,8 @@ name: selector-eval
 # SELECTOR_EVAL_KEY secret; logs, artifacts and the summary carry only aggregate numbers.
 # The key lives only in the `selector-eval` environment, which only `main` may deploy to: a pull
 # request (even one editing this file) cannot obtain it, so PRs run the rules check only.
+# The `jev` model sends each case's prompt and candidate descriptions to the hosted Jev API
+# (TypeSafe) with the JEV_API secret of the same environment; the owner approved this on 2026-10-13.
 on:
   workflow_dispatch:
   pull_request:
@@ -99,13 +101,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # round 4 (recall): the shipped selector on both retrieval variants at depth 10 and 16
+        # round 5: hosted Jev vs the shipped local selector, same candidates (what the hook sends)
         include:
           - {model: qwen3rr-skill, src: bgem3, k: 10}
-          - {model: qwen3rr-skill, src: bgem3, k: 16}
-          - {model: qwen3rr-skill, src: qwen3emb, k: 10}
-          - {model: qwen3rr-skill, src: qwen3emb, k: 16}
-          - {model: bge, src: bgem3, k: 10}
+          - {model: jev, src: bgem3, k: 10}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -130,6 +129,9 @@ jobs:
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
             -in cands.json.enc -out "$RUNNER_TEMP/cands.json" -pass env:KEY
       - name: Evaluate
+        env:
+          # the Jev key reaches the jev job only; it is sent to api.typesafe.ai and nowhere else
+          JEV_API: ${{ matrix.model == 'jev' && secrets.JEV_API || '' }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
           python crates/skill-hub/tools/selector_eval/eval.py run "$RUNNER_TEMP/cands.json" "${{ matrix.model }}" results \
