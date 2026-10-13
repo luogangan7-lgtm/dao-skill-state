@@ -63,6 +63,8 @@ fn call(
         .find_map(|a| TcpStream::connect_timeout(a, left()?).ok())
         .ok_or("ollama: no loopback address answered")?;
     s.set_write_timeout(left()).map_err(|e| e.to_string())?;
+    // a first bound on reads too, so a read can never outlive the deadline by more than this
+    s.set_read_timeout(left()).map_err(|e| e.to_string())?;
     // HTTP/1.0: the server closes after one response, so no chunked decoding is needed
     write!(
         s,
@@ -77,7 +79,9 @@ fn call(
         let Some(rest) = left() else {
             return Err("ollama: deadline exceeded".into());
         };
-        s.set_read_timeout(Some(rest)).map_err(|e| e.to_string())?;
+        // macOS refuses SO_RCVTIMEO (EINVAL) once the peer has closed; the read then returns
+        // at once, so the error is harmless and must not fail an answer already received
+        let _ = s.set_read_timeout(Some(rest));
         match s.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -195,7 +199,10 @@ pub fn read_sidecar(path: &str, key: &str, n: usize) -> Option<Sidecar> {
     let h: serde_json::Value = serde_json::from_slice(&rest[..nl]).ok()?;
     let (dim, count) = (h["dim"].as_u64()? as usize, h["n"].as_u64()? as usize);
     let data = &rest[nl + 1..];
-    if h["registry"].as_str()? != key || count != n || data.len() != n * dim * 4 {
+    if h["registry"].as_str()? != key
+        || count != n
+        || Some(data.len()) != n.checked_mul(dim).and_then(|x| x.checked_mul(4))
+    {
         return None;
     }
     let vecs: Vec<f32> = data
@@ -265,6 +272,12 @@ mod tests {
         write_sidecar(&p, "k1", "sha256:d", &[vec![1.0, 0.0], vec![0.0, 1.0]]).unwrap();
         assert!(read_sidecar(&p, "k2", 2).is_none(), "another registry");
         assert!(read_sidecar(&p, "k1", 3).is_none(), "another size");
+        let huge = format!("{MAGIC}\n{{\"model\":\"m\",\"digest\":\"d\",\"dim\":{},\"n\":2,\"registry\":\"k1\"}}\n", 1u64 << 62);
+        std::fs::write(&p, huge).unwrap();
+        assert!(
+            read_sidecar(&p, "k1", 2).is_none(),
+            "a header whose size overflows"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -321,6 +334,34 @@ mod tests {
                 .unwrap_err()
                 .contains("too large")
         );
+        // the digest check: tag aliases match, other tags and malformed answers do not
+        // (same test as above: the env var is process-wide, so these must not run in parallel)
+        let serve = |body: &'static str| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut c, _)) = l.accept() {
+                    let _ = c.read(&mut [0u8; 4096]);
+                    let _ = write!(c, "HTTP/1.0 200 OK\r\n\r\n{body}");
+                }
+            });
+            std::env::set_var("SKILL_HUB_OLLAMA", format!("http://127.0.0.1:{port}"));
+        };
+        let soon = || Instant::now() + Duration::from_secs(5);
+        std::env::remove_var("SKILL_HUB_EMBED_MODEL");
+        serve(
+            r#"{"models":[{"name":"x:1","digest":"no"},{"name":"bge-m3:latest","digest":"d1"}]}"#,
+        );
+        assert_eq!(model_digest(soon()).unwrap(), "d1");
+        serve(r#"{"models":[{"name":"bge-m3:567m","digest":"d2"}]}"#);
+        assert!(
+            model_digest(soon()).is_err(),
+            "another tag is another model"
+        );
+        serve(r#"{"models":{"name":"bge-m3"}}"#);
+        assert!(model_digest(soon()).is_err());
+        serve("not json");
+        assert!(model_digest(soon()).is_err());
         std::env::remove_var("SKILL_HUB_OLLAMA");
     }
 }
