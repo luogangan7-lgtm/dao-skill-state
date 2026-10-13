@@ -16,7 +16,6 @@ time other than the model on first use, from the Hugging Face cache or hub).
 """
 import argparse
 import json
-import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Bounds on work, not just bytes: one cross-encoder pass per text, each up to --max-length tokens.
@@ -34,11 +33,14 @@ def main():
     ap.add_argument("--model", default="BAAI/bge-reranker-v2-m3")
     ap.add_argument("--max-length", type=int, default=512)
     a = ap.parse_args()
-    # the model comes from the local cache; don't phone the hub on every start (override to fetch)
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
     from sentence_transformers import CrossEncoder
 
-    model = CrossEncoder(a.model, max_length=a.max_length)
+    # the local cache first, so a normal start never contacts the hub; the hub only on first run
+    try:
+        model = CrossEncoder(a.model, max_length=a.max_length, local_files_only=True)
+    except OSError:
+        print("model not cached; downloading %s once" % a.model, flush=True)
+        model = CrossEncoder(a.model, max_length=a.max_length)
     model.predict([("warm", "up")])  # first call pays the load, not the first prompt
 
     class Handler(BaseHTTPRequestHandler):

@@ -67,7 +67,8 @@ pub fn rerank(query: &str, docs: &[String], deadline: Instant) -> Result<Vec<f32
         let s = r["score"]
             .as_f64()
             .map(|s| s as f32)
-            .filter(|s| s.is_finite());
+            // tau is a probability: a raw logit or anything outside [0,1] is a bad answer
+            .filter(|s| s.is_finite() && (0.0..=1.0).contains(s));
         let slot = out.get_mut(i).ok_or("rerank: index out of range")?;
         if !slot.is_nan() {
             return Err("rerank: duplicate index".into());
@@ -374,6 +375,13 @@ mod tests {
         assert!(rerank("q", &docs, soon())
             .unwrap_err()
             .contains("not every text"));
+        serve(r#"[{"index":0,"score":-5.0},{"index":1,"score":5.0}]"#);
+        assert!(
+            rerank("q", &docs, soon())
+                .unwrap_err()
+                .contains("bad score"),
+            "raw logits"
+        );
         serve(r#"[{"index":0,"score":0.1},{"index":0,"score":0.2}]"#);
         assert!(rerank("q", &docs, soon())
             .unwrap_err()
