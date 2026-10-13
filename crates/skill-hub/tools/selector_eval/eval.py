@@ -39,7 +39,8 @@ LAYA_DESC_CHARS = 150
 # ~16-21 tokens per option for 11 options, so both limits are raised: 640 head tokens for the
 # options, the rest of 1,024 for the request (both encoders read far longer inputs)
 LAYA_MAX_LEN, LAYA_HEAD = 1024, 640
-MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td", "jev"]
+MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td", "jev",
+          "srv-fp32", "srv-fp16", "srv-mlx4"]  # srv-*: the shipped rerank_server.py scorer (Apple GPU)
 # Jev (TypeSafe, hosted): the request skill-hub hook.rs sends (jev_body), with the same limits
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_NONE = "(no skill)"
@@ -167,6 +168,13 @@ def load(model):
             p = agent.predict(q, qs, max_len=LAYA_MAX_LEN, head_max_len=LAYA_HEAD)["answers"]["skill"]["probabilities"]
             return [float(p.get(h["id"], 0.0)) for h in cands]
         return fn
+    if model.startswith("srv-"):
+        # exactly what rerank_server.py serves to the hook, on this machine's Apple GPU
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import rerank_server as rs
+        sc = (rs.qwen3_mlx_scorer() if model == "srv-mlx4"
+              else rs.qwen3_scorer(rs.device(), "float16" if model == "srv-fp16" else "float32"))
+        return lambda q, cands: sc(q, [text(h) for h in cands])
     if model == "jev":
         import http.client
         import urllib.request

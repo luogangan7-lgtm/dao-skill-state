@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - crates/skill-hub/tools/selector_eval/**
+      - crates/skill-hub/tools/rerank_server.py
       - .github/workflows/selector-eval.yml
 permissions:
   contents: read
@@ -96,29 +97,37 @@ jobs:
     needs: [preflight, cands]
     if: github.ref == 'refs/heads/main' && needs.preflight.outputs.has_key == 'true'
     environment: selector-eval
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        # round 5: hosted Jev vs the shipped local selector, same candidates (what the hook sends)
+        # round 6: does the 4-bit MLX (or fp16) server keep the shipped fp32 server's accuracy?
+        # All three run the server's own scorer on the Apple GPU of a macos runner.
         include:
-          - {model: qwen3rr-skill, src: bgem3, k: 10}
-          - {model: jev, src: bgem3, k: 10}
+          - {model: srv-fp32, src: bgem3, k: 10, os: macos-latest}
+          - {model: srv-fp16, src: bgem3, k: 10, os: macos-latest}
+          - {model: srv-mlx4, src: bgem3, k: 10, os: macos-latest}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install (CPU torch)
+      - name: Install (CPU torch on Linux; MPS torch + MLX on macOS)
         run: |
-          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
+          if [ "$RUNNER_OS" = macOS ]; then
+            pip install torch==2.6.0 mlx-lm==0.31.3
+            # the system openssl is LibreSSL; use OpenSSL 3 (preinstalled by Homebrew) for -pbkdf2
+            echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+          else
+            pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
+          fi
           pip install sentence-transformers==5.4.1 transformers==5.5.4
           case "${{ matrix.model }}" in laya-*) pip install laya==0.4.6 ;; esac
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-${{ matrix.model }}-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json') }}
+          key: hf-${{ matrix.model }}-${{ runner.os }}-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json', 'crates/skill-hub/tools/rerank_server.py') }}
       - uses: actions/download-artifact@v4
         with:
           name: selector-cands
@@ -157,7 +166,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## skill-hub selector eval, round 5: hosted Jev vs local selector (tau tuned on dev per config, applied once to held-out)"
+            echo "## skill-hub selector eval, round 6: shipped server fp32 vs fp16 vs 4-bit MLX on Apple GPU (tau tuned on dev per config, applied once to held-out)"
             echo
             echo "Recall of each retrieval list (gold skill within the first k): ${{ needs.cands.outputs.ceiling }}"
             echo
