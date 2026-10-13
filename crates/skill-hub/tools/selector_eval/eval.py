@@ -44,6 +44,7 @@ MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml",
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_NONE = "(no skill)"
 PROMPT_CHARS, DESC_CHARS = 2500, 400
+JEV_OFF_SET = [0]  # answers outside the option set (counted, printed as a number)
 
 
 def bound_prompt(p):
@@ -68,20 +69,17 @@ def jev_body(q, cands, model="jev-latest"):
 
 
 def jev_scores(resp, cands, none):
-    """Per-candidate probability of Jev's answer; [] when Jev abstains (the hook injects nothing),
-    so no tau can make an abstention fire. Anything outside the option set is an error."""
+    """The hook's decision as scores: 1.0 for Jev's choice, 0 elsewhere (the hook has no tau, so
+    any cut in (0, 1] reproduces it); [] when Jev abstains or answers outside the options (the
+    hook then injects nothing / falls back to its lexical rule; counted here as no pick)."""
     ans = resp["answers"]["skill"]
     label = next((ans[k] for k in ("answer", "label", "choice") if isinstance(ans.get(k), str)), None)
-    if label == none:
-        return []
     ids = [h["id"] for h in cands]
-    if label not in ids:
-        raise ValueError("Jev chose an option outside the candidates")
-    probs = ans.get("probabilities") or {}
-    if not isinstance(probs, dict) or not probs:
-        probs = {label: float(ans.get("confidence", 1.0))}
-    return [float(probs.get(i, 0.0)) if i != label else float(probs.get(i, ans.get("confidence", 1.0)))
-            for i in ids]
+    if label == none or label not in ids:
+        if label != none:
+            JEV_OFF_SET[0] += 1
+        return []
+    return [1.0 if i == label else 0.0 for i in ids]
 
 
 def sigmoid(x):
@@ -169,7 +167,7 @@ def load(model):
             return [float(p.get(h["id"], 0.0)) for h in cands]
         return fn
     if model == "jev":
-        import urllib.error
+        import http.client
         import urllib.request
         key = os.environ.get("JEV_API")
         if not key:
@@ -183,7 +181,7 @@ def load(model):
                 try:
                     with urllib.request.urlopen(req, timeout=30) as r:
                         return jev_scores(json.load(r), cands, none)
-                except (urllib.error.URLError, TimeoutError) as e:
+                except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets
                     # status codes only: the body could echo the request
                     code = getattr(e, "code", None)
                     if attempt == 3 or (code is not None and code not in (429, 500, 502, 503, 529)):
@@ -280,6 +278,8 @@ def run(bundle_path, model, out, src="bgem3", k="10"):
     os.makedirs(out, exist_ok=True)
     json.dump(res, open(os.path.join(out, f"{name}.json"), "w"), indent=1)
     print(name, res["dev"]["all"], res["held"]["all"])
+    if model == "jev":
+        print(f"jev answers outside the option set: {JEV_OFF_SET[0]}")
 
 
 # --- candidates -----------------------------------------------------------------------------

@@ -71,16 +71,16 @@ class Rules(unittest.TestCase):
         self.assertEqual(len(body["state"]), 2500)
         self.assertTrue(body["state"].endswith("TAIL"))
 
-    def test_jev_scores_abstain_pick_and_reject(self):
+    def test_jev_scores_follow_the_hook(self):
         c = [{"id": "a"}, {"id": "b"}]
         resp = lambda ans: {"answers": {"skill": ans}}
         self.assertEqual(jev_scores(resp({"choice": "(no skill)"}), c, "(no skill)"), [])
-        self.assertEqual(jev_scores(resp({"choice": "b", "probabilities": {"a": 0.1, "b": 0.8}}), c, "(no skill)"),
-                         [0.1, 0.8])
-        self.assertEqual(jev_scores(resp({"choice": "b", "confidence": 0.7}), c, "(no skill)"), [0.0, 0.7])
-        with self.assertRaises(ValueError):
-            jev_scores(resp({"choice": "zzz"}), c, "(no skill)")
-
+        # the choice wins even when Jev reports a higher probability elsewhere
+        self.assertEqual(jev_scores(resp({"choice": "b", "probabilities": {"a": 0.9, "b": 0.1}}), c, "(no skill)"),
+                         [0.0, 1.0])
+        self.assertEqual(jev_scores(resp({"choice": "zzz"}), c, "(no skill)"), [])
+        rows = [{"pos": True, "top_ok": True, "best": 1.0}, {"pos": False, "top_ok": False, "best": None}]
+        self.assertTrue(all(correct(r, tune(rows)) for r in rows))
 
 if __name__ == "__main__":
     unittest.main()
