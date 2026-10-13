@@ -15,7 +15,8 @@ cross-encoder) still works; set SKILL_HUB_RERANK_TAU=0.02 for bge, since tau is 
 Usage:
   python3 -I rerank_server.py [--port 8121] [--model Qwen/Qwen3-Reranker-0.6B]
   export SKILL_HUB_RERANK=http://127.0.0.1:8121
-Runs on the Apple GPU (MPS) or CUDA when available, else CPU. On CPU a hook request (10
+Runs on the Apple GPU (MPS) or CUDA when available, else CPU. `--backend mlx` serves a 4-bit
+MLX conversion of the same model on Apple Silicon (needs `mlx-lm`). On CPU a hook request (10
 candidates) takes seconds: raise SKILL_HUB_RERANK_TIMEOUT_MS (default 3000) accordingly.
 
 Depends on: torch + transformers (Qwen3) or sentence-transformers (other cross-encoders),
@@ -39,6 +40,8 @@ SOCKET_TIMEOUT_S = 10  # a client that never sends its declared body can't hold 
 
 QWEN = "Qwen/Qwen3-Reranker-0.6B"
 QWEN_REVISION = "e61197ed45024b0ed8a2d74b80b4d909f1255473"  # the commit evaluated in D7 round 3
+QWEN_MLX = "mlx-community/Qwen3-Reranker-0.6B-4bit"
+QWEN_MLX_REVISION = "5f324548f1d20c2b5a450f126fc6ef2fb1126524"
 QWEN_INSTRUCTION = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
                     "should be loaded to carry out the request; small talk or general questions need no skill")
 
@@ -59,18 +62,9 @@ def cached_first(load):
         return load(False)
 
 
-def qwen3_scorer(dev):
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    tok = cached_first(lambda local: AutoTokenizer.from_pretrained(
-        QWEN, padding_side="left", revision=QWEN_REVISION, local_files_only=local))
-    # On MPS the fused (sdpa) attention aborts the whole process on Qwen3's grouped-query
-    # attention (16 query heads over 8 key/value heads: "mps.matmul … failed to infer result type",
-    # torch 2.6, seen on the macos-latest CI runner); eager attention expands the key/value heads
-    # first, which MPS handles. An abort cannot be caught, so it has to be avoided up front.
-    attn = {"attn_implementation": "eager"} if dev == "mps" else {}
-    m = cached_first(lambda local: AutoModelForCausalLM.from_pretrained(
-        QWEN, revision=QWEN_REVISION, dtype=torch.float32, local_files_only=local, **attn)).to(dev).eval()
+def qwen3_rows(tok):
+    """Token rows for Qwen3-Reranker's yes/no judgement, shared by the torch and MLX backends:
+    (yes id, no id, rows(query, texts)). Every row ends at the answer position."""
     yes, no = tok.convert_tokens_to_ids("yes"), tok.convert_tokens_to_ids("no")
     ids = lambda t: tok(t, add_special_tokens=False)["input_ids"]
     pre = ids("<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and "
@@ -82,19 +76,60 @@ def qwen3_scorer(dev):
     mid = ids("\n<Document>:")
     budget = 1024 - len(pre) - len(head) - len(mid) - len(suf)
 
-    def score(q, texts):
+    def rows(q, texts):
         # query and document are cut separately (a long query can't crowd out the candidate);
-        # the suffix always ends at the yes/no answer position
         # a long prompt keeps its head and its tail, like the hook's bound_prompt (a request written
         # after a long paste survives); short prompts, as evaluated, are untouched
         q_ids, room = ids(" " + q), max(budget // 2, 2)
         if len(q_ids) > room:
             q_ids = q_ids[: room // 2] + q_ids[len(q_ids) - (room - room // 2):]
-        rows = [pre + head + q_ids + mid + ids(" " + t)[: max(budget - len(q_ids), 1)] + suf for t in texts]
-        enc = tok.pad({"input_ids": rows}, padding=True, return_tensors="pt").to(dev)
+        return [pre + head + q_ids + mid + ids(" " + t)[: max(budget - len(q_ids), 1)] + suf for t in texts]
+    return yes, no, rows
+
+
+def qwen3_scorer(dev, dtype="float32"):
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    tok = cached_first(lambda local: AutoTokenizer.from_pretrained(
+        QWEN, padding_side="left", revision=QWEN_REVISION, local_files_only=local))
+    # On MPS the fused (sdpa) attention aborts the whole process on Qwen3's grouped-query
+    # attention (16 query heads over 8 key/value heads: "mps.matmul … failed to infer result type",
+    # torch 2.6, seen on the macos-latest CI runner); eager attention expands the key/value heads
+    # first, which MPS handles. An abort cannot be caught, so it has to be avoided up front.
+    attn = {"attn_implementation": "eager"} if dev == "mps" else {}
+    m = cached_first(lambda local: AutoModelForCausalLM.from_pretrained(
+        QWEN, revision=QWEN_REVISION, dtype=getattr(torch, dtype), local_files_only=local, **attn)).to(dev).eval()
+    yes, no, rows = qwen3_rows(tok)
+
+    def score(q, texts):
+        enc = tok.pad({"input_ids": rows(q, texts)}, padding=True, return_tensors="pt").to(dev)
         with torch.no_grad():
             lg = m(**enc, logits_to_keep=1).logits[:, -1, :].float()
         return torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist()
+    return score
+
+
+def qwen3_mlx_scorer():
+    """Qwen3-Reranker-0.6B quantized to 4 bits for Apple's MLX (Apple Silicon only)."""
+    import mlx.core as mx
+    from huggingface_hub import snapshot_download
+    from mlx_lm import load
+    path = cached_first(lambda local: snapshot_download(QWEN_MLX, revision=QWEN_MLX_REVISION,
+                                                        local_files_only=local))
+    m, tok = load(path)
+    yes, no, rows = qwen3_rows(getattr(tok, "_tokenizer", tok))  # the HF tokenizer inside mlx-lm's wrapper
+    # Qwen3-0.6B ties its output layer to the embedding; project only the answer positions, never
+    # the full (rows x tokens x 151k-vocabulary) logits
+    out = m.lm_head if hasattr(m, "lm_head") else m.model.embed_tokens.as_linear
+
+    def score(q, texts):
+        rs = rows(q, texts)
+        # right padding: attention is causal, so a row's last real position never sees the padding
+        n = max(len(r) for r in rs)
+        x = mx.array([r + [0] * (n - len(r)) for r in rs])
+        h = m.model(x)[mx.arange(len(rs)), mx.array([len(r) - 1 for r in rs])]
+        last = out(h.astype(mx.float32))  # float32 answer logits: scores sit near a tuned tau
+        return mx.sigmoid(last[:, yes] - last[:, no]).tolist()  # = softmax([no, yes])[1]
     return score
 
 
@@ -120,13 +155,21 @@ def main():
     ap.add_argument("--model", default=QWEN)
     ap.add_argument("--max-length", type=int, default=512, help="cross-encoders only")
     ap.add_argument("--revision", help="commit of a --model cross-encoder (Qwen3 is always pinned)")
+    ap.add_argument("--backend", choices=["torch", "mlx"], default="torch",
+                    help="mlx: Qwen3 quantized to 4 bits (Apple Silicon, needs mlx-lm)")
+    ap.add_argument("--dtype", choices=["float32", "float16"], default="float32", help="torch Qwen3 only")
     a = ap.parse_args()
-    dev = device()
+    dev = "mlx" if a.backend == "mlx" else device()
     if dev == "cpu":
         print("warning: running on CPU; a hook request takes seconds, longer than the hook's default "
               "SKILL_HUB_RERANK_TIMEOUT_MS=3000, so raise it or the hook falls back", file=sys.stderr, flush=True)
-    model_score = (qwen3_scorer(dev) if a.model == QWEN
-                   else cross_encoder_scorer(a.model, a.max_length, dev, a.revision))
+    if a.backend == "mlx":
+        if a.model != QWEN:
+            raise SystemExit("--backend mlx serves Qwen3 only")
+        model_score = qwen3_mlx_scorer()
+    else:
+        model_score = (qwen3_scorer(dev, a.dtype) if a.model == QWEN
+                       else cross_encoder_scorer(a.model, a.max_length, dev, a.revision))
     lock = threading.Lock()
 
     def score(q, texts):
@@ -169,8 +212,12 @@ def main():
         def log_message(self, *args):  # prompts must not end up in a terminal log
             pass
 
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
-    print("rerank server on http://127.0.0.1:%d (%s, %s)" % (a.port, a.model, dev), flush=True)
+    class Server(ThreadingHTTPServer):
+        request_queue_size = 256  # many agents submitting at once; the default backlog of 5 drops them
+
+    srv = Server(("127.0.0.1", a.port), Handler)
+    print("rerank server on http://127.0.0.1:%d (%s, %s, %s)" % (a.port, a.model, dev,
+          "4bit" if a.backend == "mlx" else a.dtype), flush=True)
     srv.serve_forever()
 
 
