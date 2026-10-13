@@ -71,7 +71,7 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let mut latest: BTreeMap<(String, Option<String>, String), Tracked> = BTreeMap::new();
+    let mut latest: BTreeMap<(String, String, Option<String>, String), Tracked> = BTreeMap::new();
     let mut bad = Vec::new();
     let locks = store.join("locks");
     let dirs = match fs::read_dir(&locks) {
@@ -156,7 +156,13 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
                     v["license"]["sha256"].as_str().map(str::to_string),
                 ),
             };
-            let key = (t.origin.clone(), t.requested_rev.clone(), t.subpath.clone());
+            // kind too: a git and a local intake of the same path are different sources
+            let key = (
+                t.kind.clone(),
+                t.origin.clone(),
+                t.requested_rev.clone(),
+                t.subpath.clone(),
+            );
             let newer = latest.get(&key).is_none_or(|o| {
                 (t.fetched_at_unix, t.written_ns, &t.digest)
                     > (o.fetched_at_unix, o.written_ns, &o.digest)
