@@ -7,6 +7,7 @@ on:
     paths:
       - crates/skill-hub/tools/rerank_server.py
       - crates/skill-hub/tools/rerank_bench.py
+      - crates/skill-hub/tools/test_rerank_server.py
       - crates/skill-hub/src/hook.rs
       - crates/skill-hub/src/dense.rs
       - crates/skill-hub/src/main.rs
@@ -36,6 +37,8 @@ jobs:
       - name: Build skill-hub
         working-directory: crates/skill-hub
         run: cargo build --release --locked
+      - name: Server unit tests (no model)
+        run: python -m unittest discover -s crates/skill-hub/tools -p 'test_rerank_*.py'
       - name: Fixture skills and registry
         run: |
           S="$RUNNER_TEMP/skills"
@@ -139,9 +142,9 @@ jobs:
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
           }
-          bench 8121
-          bench 8122 --dtype float16
-          bench 8123 --backend mlx
+          bench 8121                                       # default on Apple Silicon: MLX, one request per pass
+          bench 8122 --max-batch-rows 64                   # MLX, up to ~6 requests merged per pass
+          bench 8123 --backend torch                       # torch float16 on the Apple GPU
           { echo "## rerank server under concurrency on macos-latest"; echo; sed 's/^/    /' bench.txt; } >> "$GITHUB_STEP_SUMMARY"
       - name: Server logs
         if: failure()

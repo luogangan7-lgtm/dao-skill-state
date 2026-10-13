@@ -174,7 +174,7 @@ def load(model):
         import rerank_server as rs
         sc = (rs.qwen3_mlx_scorer() if model == "srv-mlx4"
               else rs.qwen3_scorer(rs.device(), "float16" if model == "srv-fp16" else "float32"))
-        return lambda q, cands: sc(q, [text(h) for h in cands])
+        return lambda q, cands: sc([(q, [text(h) for h in cands])])[0]  # raw scores: tau tuned here
     if model == "jev":
         import http.client
         import urllib.request

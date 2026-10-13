@@ -15,19 +15,27 @@ cross-encoder) still works; set SKILL_HUB_RERANK_TAU=0.02 for bge, since tau is 
 Usage:
   python3 -I rerank_server.py [--port 8121] [--model Qwen/Qwen3-Reranker-0.6B]
   export SKILL_HUB_RERANK=http://127.0.0.1:8121
-Runs on the Apple GPU (MPS) or CUDA when available, else CPU. `--backend mlx` serves a 4-bit
-MLX conversion of the same model on Apple Silicon (needs `mlx-lm`). On CPU a hook request (10
-candidates) takes seconds: raise SKILL_HUB_RERANK_TIMEOUT_MS (default 3000) accordingly.
+On Apple Silicon with `mlx-lm` installed it serves a 4-bit MLX conversion of the same model
+(D7 round 6: 97/112, as accurate as float16, ~1.3 s per request, 0.9 GB); otherwise torch on
+the Apple GPU (float16), CUDA or CPU. Scores are shifted per variant so the hook's default
+tau fits each. One model thread serves requests in arrival order (--max-batch-rows lets requests
+share a pass on a GPU where that pays; on an M1 it did not); a request that waited past
+--max-wait-ms gets 503 at once and the hook falls back instead of queueing. On CPU a hook request
+(10 candidates) takes seconds: raise SKILL_HUB_RERANK_TIMEOUT_MS (default 3000) accordingly.
 
-Depends on: torch + transformers (Qwen3) or sentence-transformers (other cross-encoders),
-installed by the user. The model loads from the Hugging Face cache; only the first run
+Depends on: mlx-lm (Apple Silicon), or torch + transformers (Qwen3) or sentence-transformers
+(other cross-encoders), installed by the user. The model loads from the Hugging Face cache; only the first run
 downloads it, at the pinned revision.
 """
 import argparse
+import importlib.util
 import json
 import math
+import platform
+import queue
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Bounds on work, not just bytes: one model pass per text.
@@ -42,6 +50,10 @@ QWEN = "Qwen/Qwen3-Reranker-0.6B"
 QWEN_REVISION = "e61197ed45024b0ed8a2d74b80b4d909f1255473"  # the commit evaluated in D7 round 3
 QWEN_MLX = "mlx-community/Qwen3-Reranker-0.6B-4bit"
 QWEN_MLX_REVISION = "5f324548f1d20c2b5a450f126fc6ef2fb1126524"
+HOOK_TAU = 0.865  # skill-hub hook's default SKILL_HUB_RERANK_TAU (hook.rs RERANK_TAU)
+# Each Qwen3 variant's tau tuned on the same dev set (D7 round 6, run 38451676603); the server
+# shifts its scores so that tau reads as HOOK_TAU, and the hook default fits every backend.
+TUNED_TAU = {"mlx": 0.345, "float16": 0.865, "float32": 0.865}
 QWEN_INSTRUCTION = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
                     "should be loaded to carry out the request; small talk or general questions need no skill")
 
@@ -60,6 +72,73 @@ def cached_first(load):
     except OSError:
         print("model not cached; downloading it once", flush=True)
         return load(False)
+
+
+def split(pairs, flat):
+    """Flat per-row scores back into one list per (query, texts) pair."""
+    out, i = [], 0
+    for _, texts in pairs:
+        out.append(flat[i:i + len(texts)])
+        i += len(texts)
+    return out
+
+
+def to_hook_scale(p, tau):
+    """Shift a backend's probabilities so its own tuned tau lands on the hook's default
+    (HOOK_TAU): monotonic, so rankings and every keep/abstain decision at tau are unchanged."""
+    q = min(max(p, 1e-7), 1 - 1e-7)
+    logit = lambda x: math.log(x / (1 - x))
+    y = 1 / (1 + math.exp(-(logit(q) - logit(tau) + logit(HOOK_TAU))))
+    # rounding must not move a score across the threshold: at or above tau stays at or above the
+    # hook's tau, below stays clearly below even after the hook reads it as an f32
+    return max(y, HOOK_TAU) if p >= tau else min(y, HOOK_TAU - 1e-6)
+
+
+class Batcher:
+    """One model thread. Requests that arrive while it is busy run together in the next forward
+    pass (up to max_rows texts), so a burst of agents costs a few passes, not one per agent.
+    A request still waiting after max_wait_s is answered "busy": the hook stopped waiting at
+    its own timeout, so computing it would only delay the requests behind it."""
+
+    def __init__(self, score, max_rows, max_wait_s):
+        self.score, self.max_rows, self.max_wait_s = score, max_rows, max_wait_s
+        self.q = queue.Queue()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def __call__(self, q, texts):
+        job = {"pair": (q, texts), "t": time.monotonic(), "done": threading.Event()}
+        self.q.put(job)
+        # the model thread only dies on a BaseException; never hang a request forever on it
+        if not job["done"].wait(self.max_wait_s + 120):
+            return None
+        if "error" in job:
+            raise job["error"]
+        return job["out"]  # None: dropped as stale
+
+    def _run(self):
+        while True:
+            batch = [self.q.get()]
+            rows = len(batch[0]["pair"][1])
+            while rows < self.max_rows:
+                try:
+                    job = self.q.get_nowait()
+                except queue.Empty:
+                    break
+                batch.append(job)
+                rows += len(job["pair"][1])
+            now = time.monotonic()
+            live = [j for j in batch if now - j["t"] <= self.max_wait_s]
+            for j in batch:
+                j["out"] = None
+            try:
+                if live:
+                    for j, out in zip(live, self.score([j["pair"] for j in live])):
+                        j["out"] = out
+            except Exception as e:  # noqa: BLE001 — reported to each waiting request, never fatal
+                for j in live:
+                    j["error"] = e
+            for j in batch:
+                j["done"].set()
 
 
 def qwen3_rows(tok):
@@ -101,11 +180,12 @@ def qwen3_scorer(dev, dtype="float32"):
         QWEN, revision=QWEN_REVISION, dtype=getattr(torch, dtype), local_files_only=local, **attn)).to(dev).eval()
     yes, no, rows = qwen3_rows(tok)
 
-    def score(q, texts):
-        enc = tok.pad({"input_ids": rows(q, texts)}, padding=True, return_tensors="pt").to(dev)
+    def score(pairs):
+        rs = [r for q, texts in pairs for r in rows(q, texts)]
+        enc = tok.pad({"input_ids": rs}, padding=True, return_tensors="pt").to(dev)
         with torch.no_grad():
             lg = m(**enc, logits_to_keep=1).logits[:, -1, :].float()
-        return torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist()
+        return split(pairs, torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist())
     return score
 
 
@@ -122,14 +202,14 @@ def qwen3_mlx_scorer():
     # the full (rows x tokens x 151k-vocabulary) logits
     out = m.lm_head if hasattr(m, "lm_head") else m.model.embed_tokens.as_linear
 
-    def score(q, texts):
-        rs = rows(q, texts)
+    def score(pairs):
+        rs = [r for q, texts in pairs for r in rows(q, texts)]
         # right padding: attention is causal, so a row's last real position never sees the padding
         n = max(len(r) for r in rs)
         x = mx.array([r + [0] * (n - len(r)) for r in rs])
         h = m.model(x)[mx.arange(len(rs)), mx.array([len(r) - 1 for r in rs])]
         last = out(h.astype(mx.float32))  # float32 answer logits: scores sit near a tuned tau
-        return mx.sigmoid(last[:, yes] - last[:, no]).tolist()  # = softmax([no, yes])[1]
+        return split(pairs, mx.sigmoid(last[:, yes] - last[:, no]).tolist())  # = softmax([no, yes])[1]
     return score
 
 
@@ -140,12 +220,11 @@ def cross_encoder_scorer(name, max_length, dev, revision=None):
                                                 local_files_only=local))
     is_prob = isinstance(getattr(m, "activation_fn", None), torch.nn.Sigmoid)
 
-    def score(q, texts):
-        raw = [float(x) for x in m.predict([(q, t) for t in texts])]
-        if is_prob:
-            return raw
+    def score(pairs):
+        raw = [float(x) for x in m.predict([(q, t) for q, texts in pairs for t in texts])]
         # overflow-safe logistic, so every score is a probability like Qwen3's
-        return [1 / (1 + math.exp(-x)) if x >= 0 else math.exp(x) / (1 + math.exp(x)) for x in raw]
+        return split(pairs, raw if is_prob else
+                     [1 / (1 + math.exp(-x)) if x >= 0 else math.exp(x) / (1 + math.exp(x)) for x in raw])
     return score
 
 
@@ -155,29 +234,46 @@ def main():
     ap.add_argument("--model", default=QWEN)
     ap.add_argument("--max-length", type=int, default=512, help="cross-encoders only")
     ap.add_argument("--revision", help="commit of a --model cross-encoder (Qwen3 is always pinned)")
-    ap.add_argument("--backend", choices=["torch", "mlx"], default="torch",
-                    help="mlx: Qwen3 quantized to 4 bits (Apple Silicon, needs mlx-lm)")
-    ap.add_argument("--dtype", choices=["float32", "float16"], default="float32", help="torch Qwen3 only")
+    ap.add_argument("--backend", choices=["auto", "torch", "mlx"], default="auto",
+                    help="auto: 4-bit MLX on Apple Silicon when mlx-lm is installed, else torch")
+    ap.add_argument("--dtype", choices=["auto", "float32", "float16"], default="auto",
+                    help="torch Qwen3: auto = float16 on the Apple GPU, float32 elsewhere")
+    # PR #23 mac-concurrency (M1 GPU, MLX 4-bit): one request (10 texts) per pass ~1.3 s; six merged
+    # (60 texts) took 6-14 s and more memory, so merging gains nothing there. Default: one request.
+    ap.add_argument("--max-batch-rows", type=int, default=MAX_TEXTS,
+                    help="texts per forward pass when requests arrive together (raise on a large GPU)")
+    ap.add_argument("--max-wait-ms", type=int, default=3000,
+                    help="answer busy (503) when a request waited longer (the hook's default timeout)")
     a = ap.parse_args()
-    dev = "mlx" if a.backend == "mlx" else device()
+    backend = a.backend
+    if backend == "auto":
+        apple = sys.platform == "darwin" and platform.machine() == "arm64"
+        backend = "mlx" if a.model == QWEN and apple and importlib.util.find_spec("mlx_lm") else "torch"
+    dev = "mlx" if backend == "mlx" else device()
+    # D7 round 6: float32 on the Apple GPU scored 88/112 against 98 for float16 and for float32 on
+    # CPU (cause still open), so the Apple GPU defaults to float16
+    dtype = a.dtype if a.dtype != "auto" else ("float16" if dev == "mps" else "float32")
     if dev == "cpu":
         print("warning: running on CPU; a hook request takes seconds, longer than the hook's default "
               "SKILL_HUB_RERANK_TIMEOUT_MS=3000, so raise it or the hook falls back", file=sys.stderr, flush=True)
-    if a.backend == "mlx":
+    if backend == "mlx":
         if a.model != QWEN:
             raise SystemExit("--backend mlx serves Qwen3 only")
-        model_score = qwen3_mlx_scorer()
+        model_score, variant = qwen3_mlx_scorer(), "mlx"
+    elif a.model == QWEN:
+        model_score, variant = qwen3_scorer(dev, dtype), dtype
     else:
-        model_score = (qwen3_scorer(dev, a.dtype) if a.model == QWEN
-                       else cross_encoder_scorer(a.model, a.max_length, dev, a.revision))
-    lock = threading.Lock()
-
-    def score(q, texts):
-        # one forward at a time: requests the hook already gave up on must not pile up in parallel
-        with lock:
-            return model_score(q, texts)
-
-    score("warm up", ["warm up"])  # first call pays the load, not the first prompt
+        model_score, variant = cross_encoder_scorer(a.model, a.max_length, dev, a.revision), None
+    tau = TUNED_TAU.get(variant) if a.model == QWEN else None
+    if tau is not None and tau != HOOK_TAU:
+        raw = model_score
+        model_score = lambda pairs: [[to_hook_scale(p, tau) for p in ps] for ps in raw(pairs)]
+    desc = ("Use when the user asks to scaffold, configure, test or deploy a project; covers setup, "
+            "conventions, common errors and the commands to run, with examples. ") * 3
+    # first calls pay the load and the GPU's shape compilation, not the first prompts
+    model_score([("warm up", ["warm up"])])
+    model_score([("Set up a Rust command-line tool with argument parsing", [desc[:400]] * 10)] * 2)
+    score = Batcher(model_score, a.max_batch_rows, a.max_wait_ms / 1000)
 
     class Handler(BaseHTTPRequestHandler):
         timeout = SOCKET_TIMEOUT_S
@@ -202,6 +298,8 @@ def main():
             except (ValueError, KeyError, TypeError) as e:
                 return self.send_error(400, str(e))
             scores = score(q, texts) if texts else []
+            if scores is None:
+                return self.send_error(503, "busy")
             body = json.dumps([{"index": i, "score": float(s)} for i, s in enumerate(scores)]).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -217,7 +315,7 @@ def main():
 
     srv = Server(("127.0.0.1", a.port), Handler)
     print("rerank server on http://127.0.0.1:%d (%s, %s, %s)" % (a.port, a.model, dev,
-          "4bit" if a.backend == "mlx" else a.dtype), flush=True)
+          "4bit" if backend == "mlx" else dtype), flush=True)
     srv.serve_forever()
 
 
