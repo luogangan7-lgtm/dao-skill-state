@@ -28,9 +28,15 @@ REVISIONS = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__
 QWEN_DEFAULT = "Given a web search query, retrieve relevant passages that answer the query"
 QWEN_SKILL = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
               "should be loaded to carry out the request; small talk or general questions need no skill")
+QWEN_EMB_PROMPT = ("Instruct: Given a user's request to a coding agent, retrieve the skill that should be "
+                   "loaded to carry it out\nQuery:")
 LAYA_QUESTION = ("Which skill should a coding agent load to carry out this request? "
                  "Choose none when the request needs no skill or no listed skill fits.")
-LAYA_DESC_CHARS = 150  # ten labels plus descriptions must fit Laya's question head
+LAYA_DESC_CHARS = 150
+# Laya splits its question head evenly across options; the shipped head (192/256 tokens) leaves
+# ~16-21 tokens per option for 11 options, so both limits are raised: 640 head tokens for the
+# options, the rest of 1,024 for the request (both encoders read far longer inputs)
+LAYA_MAX_LEN, LAYA_HEAD = 1024, 640
 MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td"]
 
 
@@ -70,7 +76,7 @@ def load(model):
         m = SentenceTransformer(r, device="cpu", revision=REVISIONS[r])
 
         def fn(q, cands):
-            qv = m.encode([q], prompt_name="query", normalize_embeddings=True)
+            qv = m.encode([q], prompt=QWEN_EMB_PROMPT, normalize_embeddings=True)
             dv = m.encode([text(h) for h in cands], normalize_embeddings=True)
             return [float(x) for x in (dv @ qv[0])]  # cosine
         return fn
@@ -114,11 +120,8 @@ def load(model):
             none = "none" if all(h["id"] != "none" for h in cands) else "no_skill_needed"
             crit = {h["id"]: h["description"][:LAYA_DESC_CHARS] for h in cands}
             crit[none] = "no skill is needed: small talk, a general question, or none of these skills fits"
-            ans = agent.predict(q, {"skill": {"type": "choice", "instructions": LAYA_QUESTION,
-                                              "criteria": crit}})["answers"]["skill"]
-            p = ans["probabilities"]
-            if isinstance(p, list):  # same order as the criteria
-                p = dict(zip(crit, p))
+            qs = {"skill": {"type": "choice", "instructions": LAYA_QUESTION, "criteria": crit}}
+            p = agent.predict(q, qs, max_len=LAYA_MAX_LEN, head_max_len=LAYA_HEAD)["answers"]["skill"]["probabilities"]
             return [float(p.get(h["id"], 0.0)) for h in cands]
         return fn
     raise SystemExit(f"unknown model {model}")
@@ -204,6 +207,8 @@ def rrf(lexical, dense, k=60.0):
 def cands(bundle_path, skill_hub, out):
     import tempfile
     from sentence_transformers import SentenceTransformer
+    r = "BAAI/bge-m3"
+    m = SentenceTransformer(r, device="cpu", revision=REVISIONS[r])  # before the private data
     bundle = json.load(open(bundle_path))
     reg = bundle.pop("registry")
     skills = reg["skills"]
@@ -211,17 +216,24 @@ def cands(bundle_path, skill_hub, out):
     with tempfile.TemporaryDirectory() as d:
         reg_path = os.path.join(d, "registry.json")  # no .emb sidecar: skill-hub search is BM25 only
         json.dump(reg, open(reg_path, "w"))
-        r = "BAAI/bge-m3"
-        m = SentenceTransformer(r, device="cpu", revision=REVISIONS[r])
         # skill-hub embed_text: "name: description", first 2000 chars
         sv = m.encode([f'{s["name"]}: {s["description"]}'[:2000] for s in skills], batch_size=32,
                       normalize_embeddings=True, show_progress_bar=False)
         for split in ("dev", "held"):
             out_c = {}
             for c in bundle[split]["cases"]:
-                lex = json.loads(subprocess.run(
-                    [skill_hub, "search", "--registry", reg_path, "--top-k", "50", "--", c["prompt"]],
-                    capture_output=True, text=True, check=True, timeout=120).stdout or "[]")
+                # errors name the case id only: argv holds the private prompt, and a traceback
+                # would put it into a public Actions log
+                try:
+                    p = subprocess.run([skill_hub, "search", "--registry", reg_path, "--top-k", "50",
+                                        "--", c["prompt"]], capture_output=True, text=True, timeout=120)
+                except subprocess.TimeoutExpired:
+                    raise SystemExit(f"skill-hub search timed out on case {c['id']}") from None
+                if p.returncode != 0:
+                    raise SystemExit(f"skill-hub search failed on case {c['id']} (rc={p.returncode})")
+                lex = json.loads(p.stdout or "[]")
+                if any(h.get("id") not in index for h in lex):
+                    raise SystemExit(f"skill-hub returned an unknown id on case {c['id']}")
                 lex_idx = [index[h["id"]] for h in lex]
                 bm25 = {index[h["id"]]: h["score"] for h in lex}
                 cos = sv @ m.encode([c["prompt"]], normalize_embeddings=True, show_progress_bar=False)[0]
@@ -251,6 +263,9 @@ def mcnemar(a, b):
 
 def report(out):
     res = {}
+    if not os.path.isdir(out):
+        print("(no results: every model job failed or was skipped)")
+        return
     for f in sorted(os.listdir(out)):
         if f.endswith(".json"):
             r = json.load(open(os.path.join(out, f)))
