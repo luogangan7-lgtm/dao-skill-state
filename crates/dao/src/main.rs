@@ -665,8 +665,12 @@ fn publish_cmd(args: &[String]) -> Result<ExitCode, String> {
     // one writer per target: hold an exclusive lock from reading the publication to writing it
     let _guard = if flag("--apply") {
         fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-        let f =
-            fs::File::create(target.join(".dao-publication.lock")).map_err(|e| e.to_string())?;
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(target.join(".dao-publication.lock"))
+            .map_err(|e| e.to_string())?;
         f.lock()
             .map_err(|e| format!("lock {}: {e}", target.display()))?;
         Some(f)
