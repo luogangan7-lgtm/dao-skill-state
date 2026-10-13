@@ -20,8 +20,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s crates/skill-hub/tools/selector_eval -p 'test_*.py'
+  preflight:
+    # fork and Dependabot PRs get no secrets: skip the model jobs instead of failing them
+    runs-on: ubuntu-latest
+    outputs:
+      has_key: ${{ steps.k.outputs.has_key }}
+    steps:
+      - id: k
+        env:
+          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
+        run: echo "has_key=$([ -n "$KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
   eval:
-    needs: rules
+    needs: [rules, preflight]
+    if: needs.preflight.outputs.has_key == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -58,21 +69,25 @@ jobs:
           python - <<'EOF'
           from huggingface_hub import snapshot_download
           import os
-          snapshot_download("Alibaba-NLP/gte-multilingual-reranker-base")
+          # both repos pinned: the model's config picks the remote code, new-impl holds it
+          snapshot_download("Alibaba-NLP/gte-multilingual-reranker-base", revision=os.environ["GTE_REVISION"])
           p = snapshot_download("Alibaba-NLP/new-impl")
           got = os.path.basename(p)
           want = "40ced75c3017eb27626c9d4ea981bde21a2662f4"
           assert got == want, f"new-impl moved to {got}; inspect it before running"
           EOF
           echo "HF_HUB_OFFLINE=1" >> "$GITHUB_ENV"
+        env:
+          GTE_REVISION: 8215cf04918ba6f7b6a62bb44238ce2953d8831c
       - name: Decrypt data
         env:
           KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
         run: |
-          test -n "$KEY" || { echo "SELECTOR_EVAL_KEY is not available (fork PR?)"; exit 1; }
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
             -in crates/skill-hub/tools/selector_eval/data.json.enc -out "$RUNNER_TEMP/bundle.json" -pass env:KEY
       - name: Evaluate
+        env:
+          GTE_REVISION: 8215cf04918ba6f7b6a62bb44238ce2953d8831c
         run: |
           mkdir -p results
           python crates/skill-hub/tools/selector_eval/eval.py "$RUNNER_TEMP/bundle.json" "${{ matrix.model }}" results \
@@ -85,8 +100,8 @@ jobs:
           path: results/
           retention-days: 14
   report:
-    needs: eval
-    if: always()
+    needs: [preflight, eval]
+    if: always() && needs.preflight.outputs.has_key == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
