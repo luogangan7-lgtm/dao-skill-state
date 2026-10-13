@@ -591,6 +591,7 @@ mod tests {
 
     #[test]
     fn the_prompt_reaches_jev_only_when_the_local_reranker_fails() {
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (curl, dir) = fake_curl(
             "rerank-first",
             r#"echo '{"answers":{"skill":{"answer":"a"}}}'"#,
@@ -632,6 +633,7 @@ mod tests {
 
     #[test]
     fn jev_pick_is_used_and_key_stays_out_of_argv() {
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (curl, dir) = fake_curl("ok", r#"echo '{"answers":{"skill":{"answer":"b"}}}'"#);
         let jev = Jev {
             key: "sk-secret-123".into(),
@@ -655,6 +657,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn jev_none_injects_nothing_and_failure_falls_back() {
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (curl, d1) = fake_curl(
             "none",
             r#"echo '{"answers":{"skill":{"answer":"(no skill)"}}}'"#,
