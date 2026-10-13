@@ -64,8 +64,13 @@ def qwen3_scorer(dev):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = cached_first(lambda local: AutoTokenizer.from_pretrained(
         QWEN, padding_side="left", revision=QWEN_REVISION, local_files_only=local))
+    # On MPS the fused (sdpa) attention aborts the whole process on Qwen3's grouped-query
+    # attention (16 query heads over 8 key/value heads: "mps.matmul … failed to infer result type",
+    # torch 2.6, seen on the macos-latest CI runner); eager attention expands the key/value heads
+    # first, which MPS handles. An abort cannot be caught, so it has to be avoided up front.
+    attn = {"attn_implementation": "eager"} if dev == "mps" else {}
     m = cached_first(lambda local: AutoModelForCausalLM.from_pretrained(
-        QWEN, revision=QWEN_REVISION, dtype=torch.float32, local_files_only=local)).to(dev).eval()
+        QWEN, revision=QWEN_REVISION, dtype=torch.float32, local_files_only=local, **attn)).to(dev).eval()
     yes, no = tok.convert_tokens_to_ids("yes"), tok.convert_tokens_to_ids("no")
     ids = lambda t: tok(t, add_special_tokens=False)["input_ids"]
     pre = ids("<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and "
@@ -93,10 +98,11 @@ def qwen3_scorer(dev):
     return score
 
 
-def cross_encoder_scorer(name, max_length, dev):
+def cross_encoder_scorer(name, max_length, dev, revision=None):
     import torch
     from sentence_transformers import CrossEncoder
-    m = cached_first(lambda local: CrossEncoder(name, max_length=max_length, device=dev, local_files_only=local))
+    m = cached_first(lambda local: CrossEncoder(name, max_length=max_length, device=dev, revision=revision,
+                                                local_files_only=local))
     is_prob = isinstance(getattr(m, "activation_fn", None), torch.nn.Sigmoid)
 
     def score(q, texts):
@@ -113,12 +119,14 @@ def main():
     ap.add_argument("--port", type=int, default=8121)
     ap.add_argument("--model", default=QWEN)
     ap.add_argument("--max-length", type=int, default=512, help="cross-encoders only")
+    ap.add_argument("--revision", help="commit of a --model cross-encoder (Qwen3 is always pinned)")
     a = ap.parse_args()
     dev = device()
     if dev == "cpu":
         print("warning: running on CPU; a hook request takes seconds, longer than the hook's default "
               "SKILL_HUB_RERANK_TIMEOUT_MS=3000, so raise it or the hook falls back", file=sys.stderr, flush=True)
-    model_score = qwen3_scorer(dev) if a.model == QWEN else cross_encoder_scorer(a.model, a.max_length, dev)
+    model_score = (qwen3_scorer(dev) if a.model == QWEN
+                   else cross_encoder_scorer(a.model, a.max_length, dev, a.revision))
     lock = threading.Lock()
 
     def score(q, texts):
