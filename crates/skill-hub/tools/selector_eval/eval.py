@@ -1,30 +1,43 @@
 #!/usr/bin/env python3
 """Selector experiment for `skill-hub hook` (D7): which local model best picks one skill or none.
 
-Runs in CI only (`.github/workflows/selector-eval.yml`). Every selector sees the same frozen
-candidates (skill-hub RRF top-10 per prompt). The threshold `tau` is tuned on the dev split only
-and then applied once to the held-out split, so held-out numbers are not fitted.
+Runs in CI only (`.github/workflows/selector-eval.yml`); nothing here runs on a developer machine.
 
-Input: the decrypted bundle (`data.json.enc` holds private skill descriptions and prompts; the
-key is the SELECTOR_EVAL_KEY Actions secret):
-  {"dev"|"held": {"cases": [{id, prompt, expect: [ids]}], "cands": {case_id: [{id, description, score}]}}}
-Output: results/<model>.json (per-case rows) and a markdown row on stdout.
+  eval.py cands  BUNDLE SKILL_HUB OUT   rebuild every case's top-10 candidates the way skill-hub
+                                        ranks them: BM25 top-50 (the skill-hub binary) fused by
+                                        RRF (K=60) with bge-m3 dense top-200, as in dense.rs
+  eval.py run    BUNDLE MODEL OUT_DIR   score one selector; tau is tuned on dev only, then
+                                        applied once to the held-out split
+  eval.py report OUT_DIR                markdown table + paired exact McNemar tests
 
-Usage: python eval.py BUNDLE MODEL OUT_DIR    MODEL in: bge qwen3rr qwen3rr-skill mxbai gte
+Bundle (decrypted from data.json.enc; key = SELECTOR_EVAL_KEY in the `selector-eval` environment):
+  {"registry": <skill-hub registry>, "dev"|"held": {"cases": [{id, prompt, expect: [ids]}],
+   "cands": {case_id: [{id, description, score}]}}}   ("cands" is added by the `cands` step)
+Rows, artifacts and the summary carry case ids and numbers only, never skill names or prompts.
 """
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 
-# Every evaluated repository at a fixed commit, so reruns compare the same weights, configs and
-# tokenizers (and gte's config, which chooses its remote code, cannot change underneath us).
+# Every evaluated repository at a fixed commit, so reruns compare the same weights and tokenizers.
 REVISIONS = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "revisions.json")))
 
 QWEN_DEFAULT = "Given a web search query, retrieve relevant passages that answer the query"
 QWEN_SKILL = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
               "should be loaded to carry out the request; small talk or general questions need no skill")
+QWEN_EMB_PROMPT = ("Instruct: Given a user's request to a coding agent, retrieve the skill that should be "
+                   "loaded to carry it out\nQuery:")
+LAYA_QUESTION = ("Which skill should a coding agent load to carry out this request? "
+                 "Choose none when the request needs no skill or no listed skill fits.")
+LAYA_DESC_CHARS = 150
+# Laya splits its question head evenly across options; the shipped head (192/256 tokens) leaves
+# ~16-21 tokens per option for 11 options, so both limits are raised: 640 head tokens for the
+# options, the rest of 1,024 for the request (both encoders read far longer inputs)
+LAYA_MAX_LEN, LAYA_HEAD = 1024, 640
+MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td"]
 
 
 def sigmoid(x):
@@ -32,77 +45,84 @@ def sigmoid(x):
     return 1 / (1 + math.exp(-x)) if x >= 0 else math.exp(x) / (1 + math.exp(x))
 
 
-def load(model):
-    """A function (query, docs) -> relevance in [0, 1] for each doc."""
-    import torch
-    import transformers
-    # transformers 5 renamed torch_dtype to dtype; gte's remote code needs 4.x
-    f32 = {("dtype" if int(transformers.__version__.split(".")[0]) >= 5 else "torch_dtype"): torch.float32}
-    if model == "bge":
-        from sentence_transformers import CrossEncoder
-        r = "BAAI/bge-reranker-v2-m3"
-        m = CrossEncoder(r, max_length=512, device="cpu", revision=REVISIONS[r])
-        return lambda q, docs: [float(x) for x in m.predict([(q, d) for d in docs])]
-    if model == "mxbai":
-        from sentence_transformers import CrossEncoder
-        r = "mixedbread-ai/mxbai-rerank-base-v2"
-        m = CrossEncoder(r, device="cpu", revision=REVISIONS[r])
-        # one scale for every case, decided from the model's configured activation: if predict
-        # already applies a sigmoid the scores are probabilities, otherwise they are raw logits
-        act = getattr(m, "activation_fn", None)
-        is_prob = isinstance(act, torch.nn.Sigmoid)
-        print(f"mxbai activation_fn={act} -> {'as is' if is_prob else 'sigmoid'}", file=sys.stderr)
+def text(h, n=400):
+    return f'{h["id"]}: {h["description"][:n]}'
 
-        def fn(q, docs):
-            raw = [float(x) for x in m.predict([(q, d) for d in docs])]
-            return raw if is_prob else [sigmoid(x) for x in raw]
+
+def cross_encoder(repo, **kw):
+    """A sentence-transformers cross-encoder scored on one probability scale for every case."""
+    import torch
+    from sentence_transformers import CrossEncoder
+    m = CrossEncoder(repo, device="cpu", revision=REVISIONS[repo], **kw)
+    is_prob = isinstance(getattr(m, "activation_fn", None), torch.nn.Sigmoid)
+    print(f"{repo} activation -> {'as is' if is_prob else 'sigmoid'}", file=sys.stderr)
+
+    def fn(q, cands):
+        raw = [float(x) for x in m.predict([(q, text(h)) for h in cands])]
+        return raw if is_prob else [sigmoid(x) for x in raw]
+    return fn
+
+
+def load(model):
+    """A function (query, candidates) -> one score per candidate (higher = better)."""
+    import torch
+    if model == "bge":
+        return cross_encoder("BAAI/bge-reranker-v2-m3", max_length=512)
+    if model == "gte-mbert":
+        return cross_encoder("Alibaba-NLP/gte-reranker-modernbert-base", max_length=512)
+    if model == "qwen3emb":
+        from sentence_transformers import SentenceTransformer
+        r = "Qwen/Qwen3-Embedding-0.6B"
+        m = SentenceTransformer(r, device="cpu", revision=REVISIONS[r])
+
+        def fn(q, cands):
+            qv = m.encode([q], prompt=QWEN_EMB_PROMPT, normalize_embeddings=True)
+            dv = m.encode([text(h) for h in cands], normalize_embeddings=True)
+            return [float(x) for x in (dv @ qv[0])]  # cosine
         return fn
     if model in ("qwen3rr", "qwen3rr-skill"):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         instruction = QWEN_SKILL if model == "qwen3rr-skill" else QWEN_DEFAULT
         r = "Qwen/Qwen3-Reranker-0.6B"
         tok = AutoTokenizer.from_pretrained(r, padding_side="left", revision=REVISIONS[r])
-        m = AutoModelForCausalLM.from_pretrained(r, revision=REVISIONS[r], **f32).eval()
+        m = AutoModelForCausalLM.from_pretrained(r, revision=REVISIONS[r], dtype=torch.float32).eval()
         yes, no = tok.convert_tokens_to_ids("yes"), tok.convert_tokens_to_ids("no")
         pre = ("<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the "
                "Instruct provided. Note that the answer can only be \"yes\" or \"no\".<|im_end|>\n<|im_start|>user\n")
         suf = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-
-        pre_ids = tok(pre, add_special_tokens=False)["input_ids"]
-        suf_ids = tok(suf, add_special_tokens=False)["input_ids"]
         ids = lambda t: tok(t, add_special_tokens=False)["input_ids"]
+        pre_ids, suf_ids = ids(pre), ids(suf)
         # pieces split before a space so " text" merges like whole-string tokenization does
         head_ids = ids(f"<Instruct>: {instruction}\n<Query>:")
         mid_ids = ids("\n<Document>:")
         budget = 1024 - len(pre_ids) - len(head_ids) - len(mid_ids) - len(suf_ids)
 
-        def fn(q, docs):
-            # query and document are cut separately, so a long query can never crowd out the
-            # candidate (scores stay candidate-dependent), and the suffix always ends at the
-            # yes/no answer position
+        def fn(q, cands):
+            # query and document are cut separately (a long query can't crowd out the candidate);
+            # the suffix always ends at the yes/no answer position
             q_ids = ids(" " + q)[: max(budget // 2, 1)]
-            rows = [pre_ids + head_ids + q_ids + mid_ids + ids(" " + d)[: max(budget - len(q_ids), 1)] + suf_ids
-                    for d in docs]
+            rows = [pre_ids + head_ids + q_ids + mid_ids + ids(" " + text(h))[: max(budget - len(q_ids), 1)]
+                    + suf_ids for h in cands]
             enc = tok.pad({"input_ids": rows}, padding=True, return_tensors="pt")
             with torch.no_grad():
                 lg = m(**enc, logits_to_keep=1).logits[:, -1, :]  # only the answer position
             return torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist()
         return fn
-    if model == "gte":
-        # remote code (Alibaba-NLP/new-impl) is pinned by the workflow: it downloads that repo, checks
-        # the commit, then loads with HF_HUB_OFFLINE=1 so nothing newer can be fetched and run
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-        r = "Alibaba-NLP/gte-multilingual-reranker-base"
-        rev = REVISIONS[r]  # the inspected snapshot; its config chooses the remote code
-        tok = AutoTokenizer.from_pretrained(r, revision=rev)
-        m = AutoModelForSequenceClassification.from_pretrained(r, revision=rev, trust_remote_code=True,
-                                                               code_revision=REVISIONS["Alibaba-NLP/new-impl"],
-                                                               **f32).eval()
+    if model in ("laya-ml", "laya-en", "laya-td"):
+        import laya
+        r = "convaiinnovations/laya"
+        sub = {"laya-ml": "multilingual", "laya-en": None, "laya-td": "typed-decisions"}[model]
+        agent = laya.load(r, device="cpu", subfolder=sub, revision=REVISIONS[r])
 
-        def fn(q, docs):
-            enc = tok([[q, d] for d in docs], padding=True, truncation=True, max_length=512, return_tensors="pt")
-            with torch.no_grad():
-                return torch.sigmoid(m(**enc).logits.view(-1).float()).tolist()
+        def fn(q, cands):
+            # one typed choice over the candidates plus an explicit "none" (a choice's probabilities
+            # are conditional on the option set, so abstaining needs an option of its own)
+            none = "none" if all(h["id"] != "none" for h in cands) else "no_skill_needed"
+            crit = {h["id"]: h["description"][:LAYA_DESC_CHARS] for h in cands}
+            crit[none] = "no skill is needed: small talk, a general question, or none of these skills fits"
+            qs = {"skill": {"type": "choice", "instructions": LAYA_QUESTION, "criteria": crit}}
+            p = agent.predict(q, qs, max_len=LAYA_MAX_LEN, head_max_len=LAYA_HEAD)["answers"]["skill"]["probabilities"]
+            return [float(p.get(h["id"], 0.0)) for h in cands]
         return fn
     raise SystemExit(f"unknown model {model}")
 
@@ -112,13 +132,13 @@ def score_split(fn, split):
     for c in split["cases"]:
         hs = split["cands"][c["id"]]
         t = time.time()
-        s = fn(c["prompt"], [f'{h["id"]}: {h["description"][:400]}' for h in hs]) if hs else []
+        s = fn(c["prompt"], hs) if hs else []
         ms = (time.time() - t) * 1000
         # ties go to the earlier (retrieval-ranked) candidate, as in the hook
         best = max(range(len(s)), key=lambda i: (s[i], -i)) if s else None
-        # no skill names or prompts in the rows: artifacts of a public repo are downloadable
         rows.append({"id": c["id"], "pos": bool(c["expect"]),
                      "top_ok": bool(s) and hs[best]["id"] in c["expect"],
+                     "in_cands": any(h["id"] in c["expect"] for h in hs),
                      "best": s[best] if s else None, "ms": ms})
     return rows
 
@@ -134,8 +154,9 @@ def correct(r, tau):
 def tune(rows):
     """tau with the most correct dev cases; ties -> the widest gap, at its geometric middle."""
     vals = sorted({r["best"] for r in rows if r["best"] is not None})
-    cuts = [0.0] + [math.sqrt(a * b) if a > 0 and b > 0 else (a + b) / 2 for a, b in zip(vals, vals[1:])] + [1.0]
-    gap = {c: (min([v for v in vals if v >= c] or [1.0]) - max([v for v in vals if v < c] or [0.0])) for c in cuts}
+    lo, hi = min(vals + [0.0]), max(vals + [1.0])
+    cuts = [lo] + [math.sqrt(a * b) if a > 0 and b > 0 else (a + b) / 2 for a, b in zip(vals, vals[1:])] + [hi + 1e-9]
+    gap = {c: (min([v for v in vals if v >= c] or [hi]) - max([v for v in vals if v < c] or [lo])) for c in cuts}
     return max(cuts, key=lambda c: (sum(correct(r, c) for r in rows), gap[c]))
 
 
@@ -149,6 +170,7 @@ def summary(rows, tau):
         "pos": f'{sum(correct(r, tau) for r in pos)}/{len(pos)}',
         "abstain": f'{sum(correct(r, tau) for r in neg)}/{len(neg)}',
         "top1": f'{sum(r["top_ok"] for r in pos)}/{len(pos)}',
+        "ceiling": f'{sum(r.get("in_cands", True) for r in pos)}/{len(pos)}',
         "false_abstain": sum(1 for r in pos if not picks(r, tau)),
         "wrong_skill": sum(1 for r in picked if r["pos"] and not r["top_ok"]),
         "false_fire": sum(1 for r in picked if not r["pos"]),
@@ -156,24 +178,122 @@ def summary(rows, tau):
     }
 
 
-def main():
-    bundle_path, model, out = sys.argv[1:4]
+def run(bundle_path, model, out):
     t = time.time()
     fn = load(model)  # before the private data is in this process
     load_s = time.time() - t
     bundle = json.load(open(bundle_path))
-    fn("warm up", ["warm up"])
+    fn("warm up", [{"id": "a", "description": "warm up"}, {"id": "b", "description": "other"}])
     dev, held = score_split(fn, bundle["dev"]), score_split(fn, bundle["held"])
     tau = tune(dev)
     res = {"model": model, "tau": tau, "load_s": round(load_s, 1),
-           "dev": summary(dev, tau), "held": summary(held, tau),
-           "rows": {"dev": dev, "held": held}}
+           "dev": summary(dev, tau), "held": summary(held, tau), "rows": {"dev": dev, "held": held}}
     os.makedirs(out, exist_ok=True)
     json.dump(res, open(os.path.join(out, f"{model}.json"), "w"), indent=1)
-    d, h = res["dev"], res["held"]
-    print(f'| {model} | {tau:.4g} | {d["all"]} | **{h["all"]}** | {h["pos"]} | {h["abstain"]} | {h["top1"]} '
-          f'| {h["false_abstain"]} | {h["wrong_skill"]} | {h["false_fire"]} | {h["p50_ms"]} / {h["p95_ms"]} | {res["load_s"]} |')
+    print(model, res["dev"]["all"], res["held"]["all"])
+
+
+# --- candidates -----------------------------------------------------------------------------
+
+def rrf(lexical, dense, k=60.0):
+    """Same as skill-hub dense.rs: 1/(K + rank + 1) summed over both lists, ties by index."""
+    score = {}
+    for lst in (lexical, dense):
+        for r, i in enumerate(lst):
+            score[i] = score.get(i, 0.0) + 1.0 / (k + r + 1.0)
+    return sorted(score, key=lambda i: (-score[i], i))
+
+
+def cands(bundle_path, skill_hub, out):
+    import tempfile
+    from sentence_transformers import SentenceTransformer
+    r = "BAAI/bge-m3"
+    m = SentenceTransformer(r, device="cpu", revision=REVISIONS[r])  # before the private data
+    bundle = json.load(open(bundle_path))
+    reg = bundle.pop("registry")
+    skills = reg["skills"]
+    index = {s["id"]: i for i, s in enumerate(skills)}
+    with tempfile.TemporaryDirectory() as d:
+        reg_path = os.path.join(d, "registry.json")  # no .emb sidecar: skill-hub search is BM25 only
+        json.dump(reg, open(reg_path, "w"))
+        # skill-hub embed_text: "name: description", first 2000 chars
+        sv = m.encode([f'{s["name"]}: {s["description"]}'[:2000] for s in skills], batch_size=32,
+                      normalize_embeddings=True, show_progress_bar=False)
+        for split in ("dev", "held"):
+            out_c = {}
+            for c in bundle[split]["cases"]:
+                # errors name the case id only: argv holds the private prompt, and a traceback
+                # would put it into a public Actions log
+                try:
+                    p = subprocess.run([skill_hub, "search", "--registry", reg_path, "--top-k", "50",
+                                        "--", c["prompt"]], capture_output=True, text=True, timeout=120)
+                except subprocess.TimeoutExpired:
+                    raise SystemExit(f"skill-hub search timed out on case {c['id']}") from None
+                if p.returncode != 0:
+                    raise SystemExit(f"skill-hub search failed on case {c['id']} (rc={p.returncode})")
+                lex = json.loads(p.stdout or "[]")
+                if any(h.get("id") not in index for h in lex):
+                    raise SystemExit(f"skill-hub returned an unknown id on case {c['id']}")
+                lex_idx = [index[h["id"]] for h in lex]
+                bm25 = {index[h["id"]]: h["score"] for h in lex}
+                cos = sv @ m.encode([c["prompt"]], normalize_embeddings=True, show_progress_bar=False)[0]
+                dense = sorted(range(len(skills)), key=lambda i: (-cos[i], i))[:200]
+                top = rrf(lex_idx, dense)[:10] if c["prompt"].strip() else lex_idx[:10]
+                out_c[c["id"]] = [{"id": skills[i]["id"], "description": skills[i]["description"],
+                                   "score": bm25.get(i, 0.0)} for i in top]
+            bundle[split]["cands"] = out_c
+    json.dump(bundle, open(out, "w"), ensure_ascii=False)
+    for split in ("dev", "held"):
+        cs = bundle[split]["cases"]
+        pos = [c for c in cs if c["expect"]]
+        hit = sum(any(h["id"] in c["expect"] for h in bundle[split]["cands"][c["id"]]) for c in pos)
+        print(f"{split}: {len(cs)} cases, candidate ceiling {hit}/{len(pos)}")
+
+
+# --- report ---------------------------------------------------------------------------------
+
+def mcnemar(a, b):
+    """Exact two-sided McNemar on paired correctness: (wins of a, losses of a, p)."""
+    w = sum(1 for k in a if a[k] and not b[k])
+    l = sum(1 for k in a if b[k] and not a[k])
+    n = w + l
+    p = min(1.0, 2 * sum(math.comb(n, i) for i in range(min(w, l) + 1)) / 2 ** n) if n else 1.0
+    return w, l, p
+
+
+def report(out):
+    res = {}
+    if not os.path.isdir(out):
+        print("(no results: every model job failed or was skipped)")
+        return
+    for f in sorted(os.listdir(out)):
+        if f.endswith(".json"):
+            r = json.load(open(os.path.join(out, f)))
+            res[r["model"]] = r
+    lines = ["| model | tau | dev | **held** | held pos | held abstain | top-1 | ceiling | false abstain "
+             "| wrong skill | false fire | p50/p95 ms | load s |", "|" + "---|" * 13]
+    order = sorted(res, key=lambda m: -int(res[m]["held"]["all"].split("/")[0]))
+    for m in order:
+        r, d, h = res[m], res[m]["dev"], res[m]["held"]
+        lines.append(f'| {m} | {r["tau"]:.4g} | {d["all"]} | **{h["all"]}** | {h["pos"]} | {h["abstain"]} '
+                     f'| {h["top1"]} | {h["ceiling"]} | {h["false_abstain"]} | {h["wrong_skill"]} '
+                     f'| {h["false_fire"]} | {h["p50_ms"]} / {h["p95_ms"]} | {r["load_s"]} |')
+    ok = {m: {x["id"]: correct(x, res[m]["tau"]) for x in res[m]["rows"]["held"]} for m in res}
+    lines += ["", "Paired exact McNemar on held-out (wins / losses of the row model, p):", "",
+              "| model | vs bge | vs best |", "|---|---|---|"]
+    best = order[0] if order else None
+    for m in order:
+        cells = []
+        for ref in ("bge", best):
+            if ref in ok and ref != m:
+                w, l, p = mcnemar(ok[m], ok[ref])
+                cells.append(f"{w} / {l}, p={p:.3f}")
+            else:
+                cells.append("—")
+        lines.append(f"| {m} | {cells[0]} | {cells[1]} |")
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":
-    main()
+    cmd, args = sys.argv[1], sys.argv[2:]
+    {"cands": cands, "run": run, "report": report}[cmd](*args)
