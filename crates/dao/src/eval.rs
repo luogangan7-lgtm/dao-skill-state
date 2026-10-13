@@ -331,6 +331,9 @@ pub fn skill_hub(
     registry: PathBuf,
     top_k: usize,
 ) -> impl Fn(&str) -> Result<Vec<(String, f64)>, String> {
+    // with a sidecar every ranking must be the fused one: a run that silently fell back to BM25
+    // (Ollama down, model re-pulled, stale sidecar) would score something the receipt doesn't name
+    let dense = sidecar(&registry).exists();
     move |prompt: &str| {
         let mut child = Command::new(&bin)
             .args(["search", "--registry"])
@@ -360,6 +363,14 @@ pub fn skill_hub(
         }
         let v: Vec<serde_json::Value> =
             serde_json::from_slice(&out.stdout).map_err(|e| format!("searcher output: {e}"))?;
+        if dense && v.iter().any(|h| h["dense"].is_null()) {
+            return Err(
+                "the registry has a dense sidecar but dense recall did not run (start \
+                        Ollama with the indexed model, re-run `skill-hub index --embed`, or \
+                        remove the sidecar)"
+                    .into(),
+            );
+        }
         v.iter()
             .map(|h| {
                 Ok((
@@ -397,8 +408,24 @@ pub fn resolve_bin(bin: &str) -> Result<PathBuf, String> {
 }
 
 /// Hash the inputs now; `receipt` re-hashes them after the run and refuses if they changed.
+/// The registry hash covers skill-hub's dense sidecar (`<registry>.emb`) when there is one,
+/// because the sidecar changes the ranking.
 pub fn input_hashes(registry: &Path, searcher: &Path) -> Result<(String, String), String> {
-    Ok((sha_file(registry)?, sha_file(searcher)?))
+    let side = sidecar(registry);
+    let reg = if side.exists() {
+        let both = format!("{}\n{}", sha_file(registry)?, sha_file(&side)?);
+        hex(&Sha256::digest(both.as_bytes()))
+    } else {
+        sha_file(registry)?
+    };
+    Ok((reg, sha_file(searcher)?))
+}
+
+/// skill-hub's dense-recall sidecar for a registry.
+pub fn sidecar(registry: &Path) -> PathBuf {
+    let mut s = registry.as_os_str().to_owned();
+    s.push(".emb");
+    PathBuf::from(s)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,6 +480,24 @@ impl Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dense_sidecar_is_part_of_the_registry_identity() {
+        let d = std::env::temp_dir().join(format!("dao-eval-emb-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let (reg, bin) = (d.join("r.json"), d.join("bin"));
+        fs::write(&reg, "{}").unwrap();
+        fs::write(&bin, "x").unwrap();
+        let plain = input_hashes(&reg, &bin).unwrap();
+        fs::write(sidecar(&reg), "v1").unwrap();
+        let with = input_hashes(&reg, &bin).unwrap();
+        fs::write(sidecar(&reg), "v2").unwrap();
+        let other = input_hashes(&reg, &bin).unwrap();
+        assert_ne!(plain.0, with.0);
+        assert_ne!(with.0, other.0);
+        assert_eq!(plain.1, with.1);
+        let _ = fs::remove_dir_all(&d);
+    }
     use crate::normalize::SourceRef;
 
     fn card(name: &str, use_when: &[&str], not_for: &[&str], d: char) -> Card {
