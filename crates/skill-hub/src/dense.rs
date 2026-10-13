@@ -14,7 +14,7 @@
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub const MAGIC: &str = "skill-hub-emb/1";
 
@@ -38,18 +38,19 @@ fn endpoint() -> Result<(String, u16), String> {
     Ok((host.to_string(), port.parse().map_err(|_| "bad port")?))
 }
 
-/// Embed `texts` with the local Ollama; unit-normalised vectors in input order.
-pub fn embed(texts: &[String], timeout: Duration) -> Result<Vec<Vec<f32>>, String> {
+/// One HTTP/1.0 exchange with the local Ollama, bounded by `deadline`; the JSON body.
+fn call(
+    method: &str,
+    path: &str,
+    body: &str,
+    deadline: Instant,
+) -> Result<serde_json::Value, String> {
     let (host, port) = endpoint()?;
-    let deadline = Instant::now() + timeout;
     let left = || {
         deadline
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
     };
-    // keep the model loaded between prompts so the hook does not pay a cold start
-    let body =
-        serde_json::json!({"model": model(), "input": texts, "keep_alive": "30m"}).to_string();
     // every address the name resolves to, loopback only (`localhost` may be ::1 first while
     // Ollama listens on 127.0.0.1); a name resolving off-machine is never contacted
     let addrs: Vec<_> = (host.as_str(), port)
@@ -65,7 +66,7 @@ pub fn embed(texts: &[String], timeout: Duration) -> Result<Vec<Vec<f32>>, Strin
     // HTTP/1.0: the server closes after one response, so no chunked decoding is needed
     write!(
         s,
-        "POST /api/embed HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     )
     .map_err(|e| format!("ollama: {e}"))?;
@@ -95,7 +96,30 @@ pub fn embed(texts: &[String], timeout: Duration) -> Result<Vec<Vec<f32>>, Strin
     if !head.starts_with("HTTP/1.") || !head.split_whitespace().nth(1).is_some_and(|c| c == "200") {
         return Err(format!("ollama: {}", head.lines().next().unwrap_or("")));
     }
-    let v: serde_json::Value = serde_json::from_str(payload).map_err(|e| format!("ollama: {e}"))?;
+    serde_json::from_str(payload).map_err(|e| format!("ollama: {e}"))
+}
+
+/// The content digest of the configured model as Ollama has it installed, so a sidecar can be
+/// bound to the exact weights and not only to a re-pullable tag.
+pub fn model_digest(deadline: Instant) -> Result<String, String> {
+    let v = call("GET", "/api/tags", "", deadline)?;
+    let want = model();
+    v["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["name"].as_str().is_some_and(|n| same_model(n, &want)))
+        .and_then(|m| m["digest"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("ollama: model {want} is not installed"))
+}
+
+/// Embed `texts` with the local Ollama; unit-normalised vectors in input order.
+pub fn embed(texts: &[String], deadline: Instant) -> Result<Vec<Vec<f32>>, String> {
+    // keep the model loaded between prompts so the hook does not pay a cold start
+    let body =
+        serde_json::json!({"model": model(), "input": texts, "keep_alive": "30m"}).to_string();
+    let v = call("POST", "/api/embed", &body, deadline)?;
     let rows = v["embeddings"].as_array().ok_or("ollama: no embeddings")?;
     if rows.len() != texts.len() {
         return Err("ollama: wrong number of embeddings".into());
@@ -135,10 +159,10 @@ pub fn registry_key(ids_and_hashes: &[(String, String)]) -> String {
 }
 
 /// `MAGIC\n{json header}\n` then n × dim little-endian f32.
-pub fn write_sidecar(path: &str, key: &str, vecs: &[Vec<f32>]) -> Result<(), String> {
+pub fn write_sidecar(path: &str, key: &str, digest: &str, vecs: &[Vec<f32>]) -> Result<(), String> {
     let dim = vecs.first().map_or(0, Vec::len);
-    let header =
-        serde_json::json!({"model": model(), "dim": dim, "n": vecs.len(), "registry": key});
+    let header = serde_json::json!({"model": model(), "digest": digest, "dim": dim,
+                                    "n": vecs.len(), "registry": key});
     let mut out = format!("{MAGIC}\n{header}\n").into_bytes();
     for v in vecs {
         if v.len() != dim {
@@ -158,6 +182,7 @@ pub fn write_sidecar(path: &str, key: &str, vecs: &[Vec<f32>]) -> Result<(), Str
 
 pub struct Sidecar {
     pub model: String,
+    pub digest: String,
     pub dim: usize,
     pub vecs: Vec<f32>,
 }
@@ -177,11 +202,14 @@ pub fn read_sidecar(path: &str, key: &str, n: usize) -> Option<Sidecar> {
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
-    if vecs.iter().any(|v| !v.is_finite()) {
-        return None; // a corrupt sidecar must not rank anything
+    // a corrupt sidecar must not rank anything: every value finite, every row unit length
+    let unit = |r: &[f32]| (r.iter().map(|a| a * a).sum::<f32>().sqrt() - 1.0).abs() < 1e-3;
+    if dim == 0 || vecs.iter().any(|v| !v.is_finite()) || !vecs.chunks_exact(dim).all(unit) {
+        return None;
     }
     Some(Sidecar {
         model: h["model"].as_str()?.to_string(),
+        digest: h["digest"].as_str()?.to_string(),
         dim,
         vecs,
     })
@@ -198,8 +226,9 @@ impl Sidecar {
 }
 
 /// Reciprocal-rank fusion of a lexical ranking (best first) and a dense ranking (best first):
-/// score = 1/(K + rank_lex) + 1/(K + rank_dense), K = 60. Returns skill indexes, best first.
-pub fn rrf(lexical: &[usize], dense: &[usize]) -> Vec<usize> {
+/// score = 1/(K + rank_lex) + 1/(K + rank_dense), K = 60. Returns (skill index, fused score),
+/// best first.
+pub fn rrf(lexical: &[usize], dense: &[usize]) -> Vec<(usize, f64)> {
     const K: f64 = 60.0;
     let mut score: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
     for list in [lexical, dense] {
@@ -209,22 +238,31 @@ pub fn rrf(lexical: &[usize], dense: &[usize]) -> Vec<usize> {
     }
     let mut out: Vec<usize> = score.keys().copied().collect();
     out.sort_by(|a, b| score[b].total_cmp(&score[a]).then(a.cmp(b)));
-    out
+    out.into_iter().map(|i| (i, score[&i])).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn rrf_rewards_agreement_and_sidecar_is_bound() {
-        assert_eq!(rrf(&[1, 2, 3], &[2, 4]), vec![2, 1, 4, 3]);
+        let order: Vec<usize> = rrf(&[1, 2, 3], &[2, 4]).iter().map(|h| h.0).collect();
+        assert_eq!(order, vec![2, 1, 4, 3]);
         let dir = std::env::temp_dir().join(format!("skill-hub-emb-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("r.emb").to_string_lossy().into_owned();
-        write_sidecar(&p, "k1", &[vec![1.0, 0.0], vec![0.0, 1.0]]).unwrap();
+        write_sidecar(&p, "k1", "sha256:d", &[vec![1.0, 0.0], vec![0.0, 1.0]]).unwrap();
         let s = read_sidecar(&p, "k1", 2).unwrap();
         assert_eq!(s.cosines(&[1.0, 0.0]), vec![1.0, 0.0]);
+        assert_eq!(s.digest, "sha256:d");
+        write_sidecar(&p, "k1", "sha256:d", &[vec![2.0, 0.0], vec![0.0, 1.0]]).unwrap();
+        assert!(
+            read_sidecar(&p, "k1", 2).is_none(),
+            "a row that is not unit length"
+        );
+        write_sidecar(&p, "k1", "sha256:d", &[vec![1.0, 0.0], vec![0.0, 1.0]]).unwrap();
         assert!(read_sidecar(&p, "k2", 2).is_none(), "another registry");
         assert!(read_sidecar(&p, "k1", 3).is_none(), "another size");
         let _ = std::fs::remove_dir_all(dir);
@@ -233,12 +271,14 @@ mod tests {
     #[test]
     fn prompts_never_leave_the_machine() {
         std::env::set_var("SKILL_HUB_OLLAMA", "http://example.com:11434");
-        assert!(embed(&["x".into()], Duration::from_millis(50))
-            .unwrap_err()
-            .contains("non-loopback"));
+        assert!(
+            embed(&["x".into()], Instant::now() + Duration::from_millis(50))
+                .unwrap_err()
+                .contains("non-loopback")
+        );
         std::env::set_var("SKILL_HUB_OLLAMA", "http://127.0.0.1:1");
         assert!(
-            embed(&["x".into()], Duration::from_millis(50)).is_err(),
+            embed(&["x".into()], Instant::now() + Duration::from_millis(50)).is_err(),
             "down → error, caller falls back"
         );
         // a server that dribbles bytes is cut off at the overall deadline, not per read
@@ -256,7 +296,7 @@ mod tests {
         });
         std::env::set_var("SKILL_HUB_OLLAMA", format!("http://localhost:{port}"));
         let t0 = Instant::now();
-        let e = embed(&["x".into()], Duration::from_millis(600)).unwrap_err();
+        let e = embed(&["x".into()], Instant::now() + Duration::from_millis(600)).unwrap_err();
         assert!(
             t0.elapsed() < Duration::from_secs(3),
             "{e} after {:?}",
@@ -276,9 +316,11 @@ mod tests {
             }
         });
         std::env::set_var("SKILL_HUB_OLLAMA", format!("http://127.0.0.1:{port}"));
-        assert!(embed(&["x".into()], Duration::from_secs(20))
-            .unwrap_err()
-            .contains("too large"));
+        assert!(
+            embed(&["x".into()], Instant::now() + Duration::from_secs(20))
+                .unwrap_err()
+                .contains("too large")
+        );
         std::env::remove_var("SKILL_HUB_OLLAMA");
     }
 }
