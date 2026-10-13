@@ -166,7 +166,7 @@ fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let store = fs::canonicalize(store.ok_or("--store is required")?).map_err(|e| e.to_string())?;
-    if allow.iter().any(|a| store.starts_with(a) && *a == store) {
+    if allow.contains(&store) {
         return Err("--allow-local must not be the store itself".into());
     }
     let (items, mut reports) = upstream::tracked(&store)?;
