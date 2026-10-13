@@ -78,6 +78,40 @@ pub fn validate_origin(origin: &str) -> Result<(), String> {
     ))
 }
 
+/// Run `cmd` (stdout/stderr piped) with a wall-clock limit. Both pipes are drained on their own
+/// threads while waiting: a child that writes more than a pipe buffer must not deadlock.
+pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    let mut child = cmd.spawn().map_err(|e| format!("cannot run: {e}"))?;
+    fn drain<R: Read + Send + 'static>(p: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = p {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let (out_t, err_t) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let status = loop {
+        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("timed out after {secs}s"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out_t.join().unwrap_or_default(),
+        stderr: err_t.join().unwrap_or_default(),
+    })
+}
+
 /// Wall-clock limit for one git call (a remote that accepts and never answers must not hang).
 const GIT_TIMEOUT_S: u64 = 300;
 
@@ -115,20 +149,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ALLOW_PROTOCOL", "https:file");
-    let mut child = cmd.spawn().map_err(|e| format!("cannot run git: {e}"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(GIT_TIMEOUT_S);
-    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "git {} timed out after {GIT_TIMEOUT_S}s",
-                args.first().unwrap_or(&"")
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let out = run_with_timeout(cmd, GIT_TIMEOUT_S)
+        .map_err(|e| format!("git {}: {e}", args.first().unwrap_or(&"")))?;
     if !out.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -167,7 +189,18 @@ pub fn is_full_commit(rev: &str) -> bool {
 /// Every ref `origin` advertises right now (`git ls-remote`, no clone, hooks impossible).
 pub fn remote_refs(origin: &str) -> Result<Vec<(String, String)>, String> {
     validate_origin(origin)?;
-    let out = git(&std::env::temp_dir(), &["ls-remote", "--", origin])?;
+    // HEAD, branches and tags only: pull-request refs can run to many thousands of lines
+    let out = git(
+        &std::env::temp_dir(),
+        &[
+            "ls-remote",
+            "--",
+            origin,
+            "HEAD",
+            "refs/heads/*",
+            "refs/tags/*",
+        ],
+    )?;
     Ok(out
         .lines()
         .filter_map(|l| l.split_once('\t'))
