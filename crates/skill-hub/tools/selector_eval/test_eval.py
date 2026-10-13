@@ -1,7 +1,7 @@
 """The scoring rules of eval.py (no models needed). Runs in CI only."""
 import unittest
 
-from eval import BASELINE, correct, first_rank, mcnemar, recall_at, rrf, run_name, summary, tune
+from eval import BASELINE, correct, first_rank, jev_body, jev_scores, mcnemar, recall_at, rrf, run_name, summary, tune
 
 
 def row(pos, top_ok, best):
@@ -60,6 +60,26 @@ class Rules(unittest.TestCase):
     def test_the_baseline_is_the_shipped_configuration(self):
         self.assertEqual(BASELINE, run_name("qwen3rr-skill", "bgem3", 10))
         self.assertEqual(BASELINE, "qwen3rr-skill@bgem3@k10")
+
+    def test_jev_body_matches_the_hook(self):
+        long = "h" * 3000 + "TAIL"
+        none, body = jev_body(long, [{"id": "a", "description": "d" * 500}, {"id": "(no skill)", "description": ""}])
+        self.assertEqual(none, "(no skill)*")
+        crit = body["questions"]["skill"]["criteria"]
+        self.assertEqual((len(crit["a"]), crit["(no skill)"]), (400, "(no skill)"))
+        self.assertIn(none, crit)
+        self.assertEqual(len(body["state"]), 2500)
+        self.assertTrue(body["state"].endswith("TAIL"))
+
+    def test_jev_scores_abstain_pick_and_reject(self):
+        c = [{"id": "a"}, {"id": "b"}]
+        resp = lambda ans: {"answers": {"skill": ans}}
+        self.assertEqual(jev_scores(resp({"choice": "(no skill)"}), c, "(no skill)"), [])
+        self.assertEqual(jev_scores(resp({"choice": "b", "probabilities": {"a": 0.1, "b": 0.8}}), c, "(no skill)"),
+                         [0.1, 0.8])
+        self.assertEqual(jev_scores(resp({"choice": "b", "confidence": 0.7}), c, "(no skill)"), [0.0, 0.7])
+        with self.assertRaises(ValueError):
+            jev_scores(resp({"choice": "zzz"}), c, "(no skill)")
 
 
 if __name__ == "__main__":

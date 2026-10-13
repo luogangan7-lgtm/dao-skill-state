@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Selector experiment for `skill-hub hook` (D7): which local model best picks one skill or none.
+"""Selector experiment for `skill-hub hook` (D7): which model (local, or hosted Jev) best picks one skill or none.
 
 Runs in CI only (`.github/workflows/selector-eval.yml`); nothing here runs on a developer machine.
 
@@ -39,7 +39,49 @@ LAYA_DESC_CHARS = 150
 # ~16-21 tokens per option for 11 options, so both limits are raised: 640 head tokens for the
 # options, the rest of 1,024 for the request (both encoders read far longer inputs)
 LAYA_MAX_LEN, LAYA_HEAD = 1024, 640
-MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td"]
+MODELS = ["bge", "qwen3rr", "qwen3rr-skill", "gte-mbert", "qwen3emb", "laya-ml", "laya-en", "laya-td", "jev"]
+# Jev (TypeSafe, hosted): the request skill-hub hook.rs sends (jev_body), with the same limits
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+JEV_NONE = "(no skill)"
+PROMPT_CHARS, DESC_CHARS = 2500, 400
+
+
+def bound_prompt(p):
+    """hook.rs bound_prompt: head and tail of a long prompt, PROMPT_CHARS at most."""
+    gap = "\n…\n"
+    if len(p) <= PROMPT_CHARS:
+        return p
+    keep = PROMPT_CHARS - len(gap)
+    return p[: keep // 2] + gap + p[len(p) - (keep - keep // 2):]
+
+
+def jev_body(q, cands, model="jev-latest"):
+    none = JEV_NONE
+    while any(h["id"] == none for h in cands):
+        none += "*"
+    crit = {h["id"]: h["description"][:DESC_CHARS] or h["id"] for h in cands}
+    crit[none] = "No listed skill clearly fits this request; answer directly without a skill."
+    return none, {"model": model, "state": bound_prompt(q), "questions": {"skill": {
+        "type": "choice", "criteria": crit,
+        "instructions": "Which skill should an AI agent load to handle this request? "
+                        f"Choose {none} if no listed skill clearly fits."}}}
+
+
+def jev_scores(resp, cands, none):
+    """Per-candidate probability of Jev's answer; [] when Jev abstains (the hook injects nothing),
+    so no tau can make an abstention fire. Anything outside the option set is an error."""
+    ans = resp["answers"]["skill"]
+    label = next((ans[k] for k in ("answer", "label", "choice") if isinstance(ans.get(k), str)), None)
+    if label == none:
+        return []
+    ids = [h["id"] for h in cands]
+    if label not in ids:
+        raise ValueError("Jev chose an option outside the candidates")
+    probs = ans.get("probabilities") or {}
+    if not isinstance(probs, dict) or not probs:
+        probs = {label: float(ans.get("confidence", 1.0))}
+    return [float(probs.get(i, 0.0)) if i != label else float(probs.get(i, ans.get("confidence", 1.0)))
+            for i in ids]
 
 
 def sigmoid(x):
@@ -126,6 +168,28 @@ def load(model):
             p = agent.predict(q, qs, max_len=LAYA_MAX_LEN, head_max_len=LAYA_HEAD)["answers"]["skill"]["probabilities"]
             return [float(p.get(h["id"], 0.0)) for h in cands]
         return fn
+    if model == "jev":
+        import urllib.error
+        import urllib.request
+        key = os.environ.get("JEV_API")
+        if not key:
+            raise SystemExit("JEV_API is not set")
+
+        def fn(q, cands):
+            none, body = jev_body(q, cands)
+            req = urllib.request.Request(JEV_URL, data=json.dumps(body).encode(), method="POST", headers={
+                "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+            for attempt in range(4):
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        return jev_scores(json.load(r), cands, none)
+                except (urllib.error.URLError, TimeoutError) as e:
+                    # status codes only: the body could echo the request
+                    code = getattr(e, "code", None)
+                    if attempt == 3 or (code is not None and code not in (429, 500, 502, 503, 529)):
+                        raise RuntimeError(f"Jev call failed (HTTP {code})") from None
+                    time.sleep(2 ** attempt * 2)
+        return fn
     raise SystemExit(f"unknown model {model}")
 
 
@@ -134,7 +198,11 @@ def score_split(fn, split):
     for c in split["cases"]:
         hs = split["cands"][c["id"]]
         t = time.time()
-        s = fn(c["prompt"], hs) if hs else []
+        try:
+            s = fn(c["prompt"], hs) if hs else []
+        except Exception as e:  # the case id only: a traceback could carry the private prompt
+            raise SystemExit(f"selector failed on case {c['id']}: {type(e).__name__}: "
+                             f"{e if isinstance(e, RuntimeError) else ''}") from None
         ms = (time.time() - t) * 1000
         # ties go to the earlier (retrieval-ranked) candidate, as in the hook
         best = max(range(len(s)), key=lambda i: (s[i], -i)) if s else None
@@ -201,7 +269,8 @@ def run(bundle_path, model, out, src="bgem3", k="10"):
     fn = load(model)  # before the private data is in this process
     load_s = time.time() - t
     bundle = json.load(open(bundle_path))
-    fn("warm up", [{"id": "a", "description": "warm up"}, {"id": "b", "description": "other"}])
+    if model != "jev":  # a hosted API has nothing to warm up
+        fn("warm up", [{"id": "a", "description": "warm up"}, {"id": "b", "description": "other"}])
     for split in ("dev", "held"):  # the chosen retrieval variant and candidate depth
         bundle[split]["cands"] = {cid: hs[:k] for cid, hs in bundle[split]["cands_by_src"][src].items()}
     dev, held = score_split(fn, bundle["dev"]), score_split(fn, bundle["held"])
