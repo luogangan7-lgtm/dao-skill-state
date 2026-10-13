@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Why does Qwen3-Reranker in float32 on the Apple GPU (MPS) score lower than on CPU? (D7 round 6:
+88/112 vs 98.) Compares P(yes) for the same public, synthetic rows across: CPU float32 (reference),
+MPS float32, MPS float16; each batched with left padding (as served) and one row at a time (no
+padding). Prints numbers only. Runs in CI (rerank-e2e.yml), not on a developer machine.
+
+Depends on: torch, transformers, rerank_server.py (the served prompt rows).
+"""
+import sys
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+import rerank_server as rs
+
+QUERIES = ["Set up a new Rust CLI tool with clap for argument parsing",
+           "帮我把这些文案和图片整理成一篇小红书笔记",
+           "Thanks, that is all for now",
+           "Speed up this slow SQL query that joins orders and customers"]
+TEXTS = ["rust-cli-scaffold: Scaffold a Rust command-line application with cargo and clap argument parsing.",
+         "xiaohongshu-note: Prepare a Xiaohongshu (小红书) image-text note package from existing copy and images.",
+         "sql-query-tuning: Diagnose and speed up slow SQL queries with indexes and EXPLAIN plans.",
+         "pdf-merge: Merge, split and reorder PDF files. " + "Handles bookmarks and page ranges. " * 6,
+         "a: b"]
+
+
+def scores(dev, dtype, attn, batched):
+    tok = AutoTokenizer.from_pretrained(rs.QWEN, padding_side="left", revision=rs.QWEN_REVISION)
+    m = AutoModelForCausalLM.from_pretrained(rs.QWEN, revision=rs.QWEN_REVISION, dtype=dtype,
+                                             attn_implementation=attn).to(dev).eval()
+    yes, no, rows = rs.qwen3_rows(tok)
+
+    def run(rr):
+        enc = tok.pad({"input_ids": rr}, padding=True, return_tensors="pt").to(dev)
+        with torch.no_grad():
+            lg = m(**enc, logits_to_keep=1).logits[:, -1, :].float()
+        return (lg[:, yes] - lg[:, no]).cpu().tolist()  # logit of P(yes)
+    out = []
+    for q in QUERIES:
+        rr = rows(q, TEXTS)
+        out += run(rr) if batched else [run([r])[0] for r in rr]
+    return out
+
+
+def main():
+    ref = scores("cpu", torch.float32, "eager", True)
+    ref1 = scores("cpu", torch.float32, "eager", False)
+    print(f"cpu fp32 batched vs one-by-one: max |dlogit| {max(abs(a - b) for a, b in zip(ref, ref1)):.4f}")
+    if not torch.backends.mps.is_available():
+        sys.exit("no MPS")
+    for name, dtype in (("fp32", torch.float32), ("fp16", torch.float16)):
+        for batched in (True, False):
+            s = scores("mps", dtype, "eager", batched)
+            d = [a - b for a, b in zip(s, ref)]
+            print(f"mps {name} {'batched' if batched else 'one-by-one'}: max |dlogit| {max(map(abs, d)):.4f} "
+                  f"mean dlogit {sum(d) / len(d):+.4f}  "
+                  f"P(yes) flips at 0.865: {sum((x > 1.857) != (y > 1.857) for x, y in zip(s, ref))}/{len(d)}")
+    # per padded row: is the error tied to how much left padding a row got?
+    s = scores("mps", torch.float32, "eager", True)
+    for qi, q in enumerate(QUERIES):
+        lens = [len(r) for r in rs.qwen3_rows(AutoTokenizer.from_pretrained(
+            rs.QWEN, revision=rs.QWEN_REVISION))[2](q, TEXTS)]
+        n = max(lens)
+        cells = " ".join(f"pad{n - L}:{s[qi * len(TEXTS) + i] - ref[qi * len(TEXTS) + i]:+.3f}"
+                         for i, L in enumerate(lens))
+        print(f"mps fp32 query {qi}: {cells}")
+
+
+if __name__ == "__main__":
+    main()
