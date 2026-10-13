@@ -12,7 +12,7 @@
 //!   registry and searcher hashes, so a number always names exactly what produced it.
 //! - Routing correctness only: this measures whether the right skill is put in front of the
 //!   model, not whether the skill then does the task well (that is a separate gate, G4).
-//! - `should_not` is informational: its prompts are the card's own exclusion sentences, which
+//! - Decision (D2): `should_not` is informational: its prompts are the card's own exclusion sentences, which
 //!   share the skill's vocabulary, so retrieval keeps the skill and the model must apply the
 //!   exclusion. Admission gates on trigger / choose / abstain, not on should_not.
 
@@ -294,8 +294,13 @@ pub fn run(
         let k = kinds
             .get_mut(&c.kind)
             .ok_or(format!("unknown case kind {}", c.kind))?;
-        // an expected skill the registry cannot return is a broken case, not a routing failure
-        if c.expect.iter().any(|e| !known_ids.contains(e)) {
+        // a named skill the registry cannot return is a broken case, not a routing result: an
+        // absent expected skill cannot be kept, and an absent competitor (choose) cannot lose
+        if c.expect
+            .iter()
+            .chain(&c.expect_not)
+            .any(|e| !known_ids.contains(e))
+        {
             k.unreachable += 1;
             continue;
         }
@@ -338,6 +343,12 @@ pub const GATED: [&str; 3] = ["should_abstain", "should_choose", "should_trigger
 pub fn hook_floor(n: usize) -> f64 {
     let max_idf = |n: f64| ((n - 1.0 + 0.5) / 1.5 + 1.0).ln();
     6.0 * (max_idf(n.max(1) as f64) / max_idf(2000.0)).min(1.0)
+}
+
+/// The production hook's keep policy for a registry of `n` skills: (top_k, floor, rel). `dao
+/// eval run` defaults to it and admission accepts only receipts produced under it.
+pub fn policy(n: usize) -> (usize, f64, f64) {
+    (3, hook_floor(n), 0.5)
 }
 
 /// The skill-hub `search` contract as a searcher.
@@ -564,6 +575,12 @@ mod tests {
         assert_eq!(
             (k["should_trigger"].total, k["should_trigger"].unreachable),
             (1, 1)
+        );
+        // a choose case whose competitor is missing from the registry is not scored either:
+        // leaving the sibling out must not let the candidate win its choose case for free
+        assert_eq!(
+            (k["should_choose"].total, k["should_choose"].unreachable),
+            (0, 2)
         );
         // all four kinds are always reported
         assert_eq!(k.len(), 4);

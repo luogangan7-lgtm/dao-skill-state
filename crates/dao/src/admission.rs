@@ -17,6 +17,9 @@
 //!   (over-triggering on abstain / another skill's choose prompt counts against it).
 //! - `promote` re-runs this decision from the evidence on disk; the admissions/ file is a
 //!   record, never an input.
+//! - Known limit (trusted-store model): scan, eval and approval receipts are unsigned JSON.
+//!   Admission proves consistency between them and the objects, not who wrote them; anyone who
+//!   can write the store can forge evidence. Signing is out of scope until stores are shared.
 //! - A champion pointer (`champions/<name>.json`) only moves through the journal:
 //!   prepare (journal entry, fsync) → pointer (tmp + fsync + rename + dir fsync) → commit
 //!   (journal entry updated). `recover` finishes or aborts any prepared entry by looking at the
@@ -53,7 +56,8 @@ pub struct Evidence {
     pub approval: Option<serde_json::Value>,
     pub card: Option<crate::normalize::Card>,
     /// (set as regenerated from the store, whether the stored set equals it, receipt for it)
-    pub eval: Option<(crate::eval::Set, bool, Option<crate::eval::Receipt>)>,
+    /// Err: why no current set could be generated (no cards, stale relations, …).
+    pub eval: Result<(crate::eval::Set, bool, Option<crate::eval::Receipt>), String>,
     /// sha256 of the object's SKILL.md per its manifest (compared with the evaluated registry).
     pub entry_sha256: Option<String>,
 }
@@ -79,6 +83,15 @@ fn eval_gate(
                 "receipt schema {} is not {} (rerun dao eval run)",
                 r.schema,
                 crate::eval::RECEIPT_SCHEMA
+            ),
+        );
+    }
+    if (r.top_k, r.floor, r.rel) != crate::eval::policy(r.n_skills) {
+        return (
+            false,
+            format!(
+                "receipt keep rule top_k {} floor {} rel {} is not the hook policy {:?} for {} skills (rerun dao eval run without overrides)",
+                r.top_k, r.floor, r.rel, crate::eval::policy(r.n_skills), r.n_skills
             ),
         );
     }
@@ -181,6 +194,20 @@ pub fn decide(digest: &str, ev: &Evidence) -> Admission {
         Some(r) if r.digest != digest => {
             gate("scan", false, "scan receipt is for another digest".into())
         }
+        Some(r)
+            if r.scanner != crate::scan::SCANNER_VERSION
+                || r.rules_sha256 != crate::scan::rules_sha256() =>
+        {
+            gate(
+                "scan",
+                false,
+                format!(
+                    "scan receipt is from {} rules {}, not the current scanner: rescan (dao scan)",
+                    r.scanner,
+                    short(&r.rules_sha256)
+                ),
+            )
+        }
         Some(r) => {
             use crate::scan::Verdict::*;
             let approved = ev.approval.as_ref().is_some_and(|a| {
@@ -218,9 +245,9 @@ pub fn decide(digest: &str, ev: &Evidence) -> Admission {
         Some(c) => gate("card", c.status == "ok", format!("status {}", c.status)),
     }
     match (&ev.eval, &name) {
-        (None, _) => gate("eval", false, "no eval set (run dao eval gen / run)".into()),
+        (Err(why), _) => gate("eval", false, why.clone()),
         (_, None) => gate("eval", false, "no name to evaluate".into()),
-        (Some((set, fresh, receipt)), Some(n)) => {
+        (Ok((set, fresh, receipt)), Some(n)) => {
             let subject = set.subjects.get(n);
             let (ok, why) = if !fresh {
                 (
@@ -274,6 +301,9 @@ pub struct Entry {
     pub to: String,
     /// prepared | committed | aborted
     pub state: String,
+    /// promote | rollback (empty in entries written before it was recorded)
+    #[serde(default)]
+    pub op: String,
 }
 
 /// Where a simulated crash happens (tests and `DAO_FAULT`): after the journal prepare, after
@@ -347,7 +377,10 @@ struct Lock(PathBuf);
 impl Lock {
     fn take(store: &Path) -> Result<Lock, String> {
         let p = store.join("journal.lock");
-        fs::create_dir_all(store).map_err(|e| e.to_string())?;
+        // never create the store: a mistyped --store must fail, not start an empty store
+        if !store.is_dir() {
+            return Err(format!("{}: no such store", store.display()));
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
@@ -357,9 +390,16 @@ impl Lock {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     if std::time::Instant::now() > deadline {
+                        let pid = fs::read_to_string(&p).unwrap_or_default();
+                        let age = fs::metadata(&p)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.elapsed().ok())
+                            .map_or("unknown age".into(), |d| format!("{}s old", d.as_secs()));
                         return Err(format!(
-                            "{} is held by another dao process; if none is running, remove it and run dao recover",
-                            p.display()
+                            "{} is held by pid {} ({age}); if that process is gone, remove the file and run dao recover",
+                            p.display(),
+                            if pid.trim().is_empty() { "?" } else { pid.trim() }
                         ));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -440,7 +480,9 @@ fn recover_locked(store: &Path) -> Result<Vec<Entry>, String> {
         if e.state != "prepared" {
             continue;
         }
-        let now = champion(store, &e.name)?.map(|p| p.digest);
+        let now = champion(store, &e.name)
+            .map_err(|err| format!("{}: {err}", path.display()))?
+            .map(|p| p.digest);
         e.state = if now.as_deref() == Some(e.to.as_str()) {
             "committed"
         } else {
@@ -453,26 +495,48 @@ fn recover_locked(store: &Path) -> Result<Vec<Entry>, String> {
     Ok(done)
 }
 
-/// Move `name`'s champion to `to` (promotion), or with `to = None` back to the previous champion
-/// (rollback), through the journal. Recovery runs first, under the lock: when it completes an
-/// interrupted move of this name, a rollback returns that move instead of stepping back again,
-/// so retrying a rollback that crashed after its pointer write steps back exactly once.
+/// Move `name`'s champion to `to` (promotion), or with `to = None` one step back from the
+/// current champion (rollback, same as `rollback(store, name, None, fault)`).
 pub fn move_champion(
     store: &Path,
     name: &str,
     to: Option<&str>,
     fault: Fault,
 ) -> Result<Entry, String> {
+    move_inner(store, name, to, None, fault)
+}
+
+/// Roll `name` back exactly one step from the champion current after recovery. With
+/// `from = Some(d)` it is a compare-and-swap: refused unless the current champion is `d`, so a
+/// caller retrying after a crash names the champion it meant to leave and never steps twice.
+pub fn rollback(
+    store: &Path,
+    name: &str,
+    from: Option<&str>,
+    fault: Fault,
+) -> Result<Entry, String> {
+    move_inner(store, name, None, from, fault)
+}
+
+fn move_inner(
+    store: &Path,
+    name: &str,
+    to: Option<&str>,
+    from: Option<&str>,
+    fault: Fault,
+) -> Result<Entry, String> {
     valid_name(name)?;
     let _lock = Lock::take(store)?;
-    let recovered = recover_locked(store)?;
+    recover_locked(store)?;
     let rollback = to.is_none();
-    if rollback {
-        if let Some(done) = recovered
-            .into_iter()
-            .rfind(|e| e.name == name && e.state == "committed")
-        {
-            return Ok(done);
+    if let Some(f) = from {
+        let now = champion(store, name)?.map(|p| p.digest);
+        if now.as_deref() != Some(f) {
+            return Err(format!(
+                "{name}: the champion is {}, not {} (already rolled back?); nothing changed",
+                now.as_deref().map_or("none", short),
+                short(f)
+            ));
         }
     }
     let target;
@@ -517,6 +581,7 @@ pub fn move_champion(
         from: cur.as_ref().map(|p| p.digest.clone()),
         to: to.into(),
         state: "prepared".into(),
+        op: if rollback { "rollback" } else { "promote" }.into(),
     };
     let jpath = journal_dir(store).join(format!("{seq:08}.json"));
     durable_write(&jpath, &serde_json::to_vec_pretty(&entry).unwrap())?;
@@ -568,7 +633,7 @@ mod tests {
         let a = d('a');
         let mut r = json!({"schema": crate::eval::RECEIPT_SCHEMA, "set_sha256": "h",
             "registry_sha256": "short", "searcher_sha256": "q", "n_skills": 1,
-            "top_k": 3, "floor": 0.0, "rel": 0.5,
+            "top_k": 3, "floor": crate::eval::hook_floor(1), "rel": 0.5,
             "gated": ["should_abstain", "should_choose", "should_trigger"], "kinds": {},
             "failures": [], "unreachable": [], "scored": ["t1", "ab1", "n1"],
             "entries": {"x": d('e')}});
@@ -577,8 +642,9 @@ mod tests {
         }
         Evidence {
             object_ok: Ok(()),
-            scan: serde_json::from_value(json!({"digest": a, "scanner": "s",
-            "rules_sha256": "r", "verdict": verdict, "findings": [],
+            scan: serde_json::from_value(json!({"digest": a,
+            "scanner": crate::scan::SCANNER_VERSION,
+            "rules_sha256": crate::scan::rules_sha256(), "verdict": verdict, "findings": [],
             "findings_truncated": 0, "unresolved": []}))
             .ok(),
             approval,
@@ -587,7 +653,7 @@ mod tests {
             "invocation": [], "headings": [], "body_sha256": "", "frontmatter_sha256": "",
             "files_sha256": "", "tokens": [], "mentions": [], "sources": []}))
             .ok(),
-            eval: Some((
+            eval: Ok((
                 serde_json::from_value(json!({"schema": "s", "subjects": {"x": a},
                 "cases": [
                     {"id": "t1", "kind": "should_trigger", "prompt": "p",
@@ -664,6 +730,21 @@ mod tests {
         assert!(g.passed, "should_not is informational: {g:?}");
     }
 
+    /// Codex: only receipts produced under the production keep policy count (a top_k 1 run
+    /// hides over-triggering); scan receipts from another scanner or rule set need a rescan.
+    #[test]
+    fn off_policy_receipts_and_old_scans_are_refused() {
+        let g = eval_gate_of(&ev("CLEAN", None, json!({"top_k": 1})));
+        assert!(!g.passed && g.evidence.contains("policy"), "{g:?}");
+        let g = eval_gate_of(&ev("CLEAN", None, json!({"floor": 0.0})));
+        assert!(!g.passed, "{g:?}");
+        let mut e = ev("CLEAN", None, json!({}));
+        e.scan.as_mut().unwrap().rules_sha256 = "old".into();
+        let a = decide(&d('a'), &e);
+        let g = a.gates.iter().find(|g| g.name == "scan").unwrap();
+        assert!(!g.passed && g.evidence.contains("rescan"), "{g:?}");
+    }
+
     /// S1: the evaluated registry must have held this object's SKILL.md under the name.
     #[test]
     fn the_evaluated_registry_must_hold_this_content() {
@@ -685,6 +766,7 @@ mod tests {
     fn concurrent_promotions_lose_nothing() {
         let store = std::env::temp_dir().join(format!("dao-adm-conc-{}", std::process::id()));
         let _ = fs::remove_dir_all(&store);
+        fs::create_dir_all(&store).unwrap();
         let digests: Vec<String> = "0123456789abcdef".chars().take(8).map(d).collect();
         std::thread::scope(|s| {
             for x in &digests {
@@ -701,12 +783,54 @@ mod tests {
         let _ = fs::remove_dir_all(&store);
     }
 
+    /// N1(a): a promotion that crashed after its pointer write is recovered as a promotion;
+    /// a later rollback still steps back from it.
+    #[test]
+    fn rollback_after_a_recovered_promotion_still_rolls_back() {
+        let store = std::env::temp_dir().join(format!("dao-adm-n1a-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&store);
+        fs::create_dir_all(&store).unwrap();
+        let (a, b) = (d('a'), d('b'));
+        move_champion(&store, "skill", Some(&a), Fault::None).unwrap();
+        assert!(move_champion(&store, "skill", Some(&b), Fault::AfterPointer).is_err());
+        let e = move_champion(&store, "skill", None, Fault::None).unwrap();
+        assert_eq!((e.to.as_str(), e.op.as_str()), (a.as_str(), "rollback"));
+        assert_eq!(champion(&store, "skill").unwrap().unwrap().digest, a);
+        let _ = fs::remove_dir_all(&store);
+    }
+
+    /// N1(b): d with history [c,b,a]; a rollback crashes after its pointer write (now c), an
+    /// explicit recover runs, and the caller retries "roll back from d": refused, still c.
+    #[test]
+    fn a_retried_rollback_from_names_its_origin_and_steps_once() {
+        let store = std::env::temp_dir().join(format!("dao-adm-n1b-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&store);
+        fs::create_dir_all(&store).unwrap();
+        let ds: Vec<String> = "abcd".chars().map(d).collect();
+        for x in &ds {
+            move_champion(&store, "skill", Some(x), Fault::None).unwrap();
+        }
+        assert!(rollback(&store, "skill", Some(&ds[3]), Fault::AfterPointer).is_err());
+        recover(&store).unwrap();
+        let e = rollback(&store, "skill", Some(&ds[3]), Fault::None).unwrap_err();
+        assert!(e.contains("not"), "{e}");
+        assert_eq!(champion(&store, "skill").unwrap().unwrap().digest, ds[2]);
+        // without --from every rollback steps exactly one back from the current pointer
+        rollback(&store, "skill", None, Fault::None).unwrap();
+        assert_eq!(champion(&store, "skill").unwrap().unwrap().digest, ds[1]);
+        // a CAS that matches proceeds
+        rollback(&store, "skill", Some(&ds[1]), Fault::None).unwrap();
+        assert_eq!(champion(&store, "skill").unwrap().unwrap().digest, ds[0]);
+        let _ = fs::remove_dir_all(&store);
+    }
+
     /// An unreadable journal is an error, never an empty journal (fail closed).
     #[test]
     fn an_unreadable_journal_fails_closed() {
         use std::os::unix::fs::PermissionsExt;
         let store = std::env::temp_dir().join(format!("dao-adm-jr-{}", std::process::id()));
         let _ = fs::remove_dir_all(&store);
+        fs::create_dir_all(&store).unwrap();
         assert!(
             recover(&store).unwrap().is_empty(),
             "missing journal = empty"
@@ -716,6 +840,18 @@ mod tests {
         let r = recover(&store);
         fs::set_permissions(journal_dir(&store), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(r.is_err(), "{r:?}");
+        // a journal entry with an invalid name is an error that names the entry's file
+        fs::write(
+            journal_dir(&store).join("00000001.json"),
+            br#"{"seq":1,"name":"../x","from":null,"to":"t","state":"prepared"}"#,
+        )
+        .unwrap();
+        let e = recover(&store).unwrap_err();
+        assert!(e.contains("00000001.json"), "{e}");
+        // a mistyped store is an error, not a new empty store
+        let missing = store.join("nope");
+        assert!(recover(&missing).unwrap_err().contains("no such store"));
+        assert!(!missing.exists());
         let _ = fs::remove_dir_all(&store);
     }
 
@@ -724,6 +860,7 @@ mod tests {
     fn a_case_only_name_collision_is_refused() {
         let store = std::env::temp_dir().join(format!("dao-adm-case-{}", std::process::id()));
         let _ = fs::remove_dir_all(&store);
+        fs::create_dir_all(&store).unwrap();
         move_champion(&store, "skill", Some(&d('a')), Fault::None).unwrap();
         let e = move_champion(&store, "Skill", Some(&d('b')), Fault::None).unwrap_err();
         assert!(e.contains("case"), "{e}");
@@ -768,12 +905,13 @@ mod tests {
             (p.digest.as_str(), p.history.clone()),
             (c.as_str(), vec![b.clone(), a.clone()])
         );
-        // a rollback that crashes after its pointer write, retried, steps back exactly once
-        assert!(move_champion(&store, "skill", None, Fault::AfterPointer).is_err());
-        let e = move_champion(&store, "skill", None, Fault::None).unwrap();
-        assert_eq!((e.to.as_str(), e.state.as_str()), (b.as_str(), "committed"));
+        // a rollback from c that crashes after its pointer write, retried as "from c", is
+        // refused: it already happened, and the champion stays b (one step, not two)
+        assert!(rollback(&store, "skill", Some(&c), Fault::AfterPointer).is_err());
+        assert!(rollback(&store, "skill", Some(&c), Fault::None).is_err());
         assert_eq!(champion(&store, "skill").unwrap().unwrap().digest, b);
-        move_champion(&store, "skill", None, Fault::None).unwrap();
+        let e = rollback(&store, "skill", None, Fault::None).unwrap();
+        assert_eq!((e.to.as_str(), e.op.as_str()), (a.as_str(), "rollback"));
         let p = champion(&store, "skill").unwrap().unwrap();
         assert_eq!((p.digest.as_str(), p.history.len()), (a.as_str(), 0));
         assert!(move_champion(&store, "skill", None, Fault::None).is_err());
