@@ -285,7 +285,7 @@ pub enum Fault {
     AfterPointer,
 }
 
-fn fsync_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn fsync_dir(dir: &Path) -> Result<(), String> {
     fs::File::open(dir)
         .and_then(|d| d.sync_all())
         .map_err(|e| format!("{}: {e}", dir.display()))
