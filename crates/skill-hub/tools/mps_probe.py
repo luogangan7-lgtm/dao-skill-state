@@ -24,7 +24,13 @@ TEXTS = ["rust-cli-scaffold: Scaffold a Rust command-line application with cargo
          "a: b"]
 
 
-def scores(dev, dtype, attn, batched):
+LONG_Q = ("Here is the build log from CI:\n" + "error[E0425]: cannot find value `x` in this scope at src/main.rs:12\n" * 40
+          + "Please fix the build and set up clap argument parsing for the Rust CLI.")
+LONG_T = [t + " " + ("Covers setup, conventions, common errors and the commands to run, with examples. " * 5)
+          for t in TEXTS] * 2  # 10 texts of ~400+ chars, as the hook sends
+
+
+def scores(dev, dtype, attn, batched, queries=None, texts=None):
     tok = AutoTokenizer.from_pretrained(rs.QWEN, padding_side="left", revision=rs.QWEN_REVISION)
     m = AutoModelForCausalLM.from_pretrained(rs.QWEN, revision=rs.QWEN_REVISION, dtype=dtype,
                                              attn_implementation=attn).to(dev).eval()
@@ -36,8 +42,8 @@ def scores(dev, dtype, attn, batched):
             lg = m(**enc, logits_to_keep=1).logits[:, -1, :].float()
         return (lg[:, yes] - lg[:, no]).cpu().tolist()  # logit of P(yes)
     out = []
-    for q in QUERIES:
-        rr = rows(q, TEXTS)
+    for q in queries or QUERIES:
+        rr = rows(q, texts or TEXTS)
         out += run(rr) if batched else [run([r])[0] for r in rr]
     return out
 
@@ -55,6 +61,13 @@ def main():
             print(f"mps {name} {'batched' if batched else 'one-by-one'}: max |dlogit| {max(map(abs, d)):.4f} "
                   f"mean dlogit {sum(d) / len(d):+.4f}  "
                   f"P(yes) flips at 0.865: {sum((x > 1.857) != (y > 1.857) for x, y in zip(s, ref))}/{len(d)}")
+    # hook-sized rows: a ~2,000-char prompt (head and tail kept) against 10 long texts
+    for name, dtype in (("fp32", torch.float32), ("fp16", torch.float16)):
+        lr = scores("cpu", torch.float32, "eager", True, [LONG_Q], LONG_T)
+        s = scores("mps", dtype, "eager", True, [LONG_Q], LONG_T)
+        d = [a - b for a, b in zip(s, lr)]
+        print(f"long rows mps {name}: max |dlogit| {max(map(abs, d)):.4f} mean dlogit {sum(d) / len(d):+.4f} "
+              f"flips at 0.865: {sum((x > 1.857) != (y > 1.857) for x, y in zip(s, lr))}/{len(d)}")
     # per padded row: is the error tied to how much left padding a row got?
     s = scores("mps", torch.float32, "eager", True)
     for qi, q in enumerate(QUERIES):
