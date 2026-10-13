@@ -18,7 +18,7 @@ class Rules(unittest.TestCase):
     def test_a_wrong_top_pick_is_never_correct_and_counts_as_wrong_skill(self):
         rows = [row(True, False, 0.9), row(False, False, 0.5)]
         s = summary(rows, 0.1)
-        self.assertEqual((s["all"], s["wrong_skill"], s["false_abstain"]), ("0/2", 2, 0))
+        self.assertEqual((s["all"], s["wrong_skill"], s["false_fire"], s["false_abstain"]), ("0/2", 1, 1, 0))
         self.assertEqual(summary(rows, 0.95)["all"], "1/2")  # abstaining is right only for chit-chat
 
     def test_no_candidates_means_abstain(self):
