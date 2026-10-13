@@ -11,6 +11,7 @@ mod assess;
 mod check;
 mod eval;
 mod normalize;
+mod publish;
 mod quarantine;
 mod relations;
 mod scan;
@@ -37,6 +38,7 @@ fn usage() -> ExitCode {
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao admit --store DIR --digest D   gates: object, scan (CLEAN or approved REVIEW), card, eval; exit 1 if refused\n\
   dao promote --store DIR --digest D | rollback --store DIR --name N [--from D] | recover --store DIR   champion pointers via the journal\n\
+  dao publish --store DIR --target DIR [--apply] [--rollback]   champions -> <target>/<name>/, versioned in <target>/.dao-publication.json (dry run without --apply; exit 1 on conflicts)\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
   dao assess FILE   (Rust port of check_assessment.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
@@ -788,6 +790,84 @@ fn champion_cmd(cmd: &str, args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `dao publish --store DIR --target DIR [--apply] [--rollback]`: plan (or apply) publishing
+/// every champion, or the previous publication with `--rollback`. Exit 1 when anything conflicts.
+fn publish_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|a| !matches!(a.as_str(), "--apply" | "--rollback"))
+        .cloned()
+        .collect();
+    let o = opts(&rest, &["--store", "--target"])?;
+    let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
+    let target = PathBuf::from(o.get("--target").ok_or("--target is required")?);
+    // one writer per target: hold an exclusive lock from reading the publication to writing it
+    let _guard = if flag("--apply") {
+        // a new target's own entry (and any new ancestors') must survive a power loss too
+        let missing: Vec<PathBuf> = target
+            .ancestors()
+            .take_while(|a| !a.as_os_str().is_empty() && !a.exists())
+            .map(Path::to_path_buf)
+            .collect();
+        fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        for d in &missing {
+            if let Some(parent) = d.parent().filter(|p| !p.as_os_str().is_empty()) {
+                admission::fsync_dir(parent)?;
+            }
+        }
+        let lock_path = target.join(".dao-publication.lock");
+        if fs::symlink_metadata(&lock_path).is_ok_and(|m| !m.is_file()) {
+            return Err(format!("{} is not a regular file", lock_path.display()));
+        }
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| e.to_string())?;
+        f.lock()
+            .map_err(|e| format!("lock {}: {e}", target.display()))?;
+        Some(f)
+    } else {
+        None
+    };
+    let lock = publish::read_lock(&target)?;
+    let want = publish::wanted(&store, &lock, flag("--rollback"))?;
+    let actions = publish::plan(&store, &target, &lock, &want);
+    let mut conflict = actions.iter().any(|a| a.action == "conflict");
+    let mut refused = None;
+    let version = if flag("--apply") && !conflict {
+        match publish::apply(&store, &target, lock.clone(), &want, &actions) {
+            Ok(l) => l.history.last().map(|v| v.version),
+            // found while applying (e.g. a dir edited since planning): same contract as a plan conflict
+            Err(e) if e.starts_with(publish::CONFLICT) => {
+                conflict = true;
+                refused = Some(e[publish::CONFLICT.len()..].to_string());
+                publish::read_lock(&target)?
+                    .history
+                    .last()
+                    .map(|v| v.version)
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        lock.history.last().map(|v| v.version)
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "target": target, "applied": flag("--apply") && !conflict,
+            "version": version, "actions": actions, "refused": refused}))
+        .unwrap()
+    );
+    Ok(if conflict {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
     let (store, digests) = store_and_digests(args)?;
     if !digests.is_empty() || args.iter().any(|a| a == "--all") {
@@ -832,6 +912,7 @@ fn main() -> ExitCode {
         Some("relations") => relations_cmd(&args[1..]),
         Some("eval") => eval_cmd(&args[1..]),
         Some("admit") => admit_cmd(&args[1..]),
+        Some("publish") => publish_cmd(&args[1..]),
         Some("promote" | "rollback" | "recover") => champion_cmd(&args[0], &args[1..]),
         Some("check") if args.len() <= 2 => {
             let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
