@@ -1,0 +1,75 @@
+name: rerank-e2e
+# The reference reranker server (Qwen3-Reranker-0.6B) and the real `skill-hub hook`, end to end,
+# on a few made-up public skills: no private data and no secrets, so it runs on pull requests.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - crates/skill-hub/tools/rerank_server.py
+      - crates/skill-hub/src/hook.rs
+      - crates/skill-hub/src/dense.rs
+      - .github/workflows/rerank-e2e.yml
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash  # -eo pipefail
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (CPU torch)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
+          pip install transformers==5.5.4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-rerank-server-${{ hashFiles('crates/skill-hub/tools/rerank_server.py') }}
+      - name: Build skill-hub
+        working-directory: crates/skill-hub
+        run: cargo build --release --locked
+      - name: Fixture skills and registry
+        run: |
+          S="$RUNNER_TEMP/skills"
+          mk() { mkdir -p "$S/$1"; printf -- '---\nname: %s\ndescription: %s\n---\n# %s\n' "$1" "$2" "$1" > "$S/$1/SKILL.md"; }
+          mk rust-cli-scaffold "Scaffold a Rust command-line application with cargo and clap argument parsing."
+          mk xiaohongshu-note "Prepare a Xiaohongshu (小红书) image-text note package from existing copy and images."
+          mk sql-query-tuning "Diagnose and speed up slow SQL queries with indexes and EXPLAIN plans."
+          crates/skill-hub/target/release/skill-hub index --root fixture="$S" --out "$RUNNER_TEMP/reg.json"
+      - name: Start the reference server
+        run: |
+          python3 -I crates/skill-hub/tools/rerank_server.py --port 8121 > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 120); do
+            curl -sf -m 5 -X POST http://127.0.0.1:8121/rerank -d '{"query":"x","texts":["y"]}' > /dev/null && break
+            sleep 5
+          done
+          curl -sf -m 60 -X POST http://127.0.0.1:8121/rerank \
+            -d '{"query":"Set up a new Rust CLI tool with clap","texts":["sql-query-tuning: slow SQL queries","rust-cli-scaffold: Rust command-line application with clap"]}' \
+            | tee scores.json
+          # probabilities, and the Rust skill above the SQL one
+          jq -e 'length == 2 and all(.[]; .score >= 0 and .score <= 1) and (.[1].score > .[0].score)' scores.json
+      - name: Hook picks and abstains through the reranker
+        env:
+          SKILL_HUB_REGISTRY: ${{ runner.temp }}/reg.json
+          SKILL_HUB_RERANK: http://127.0.0.1:8121
+          SKILL_HUB_RERANK_TIMEOUT_MS: "120000"  # CPU runner; the default 3000 suits a GPU
+          SKILL_HUB_HOOK_LOG: ${{ runner.temp }}/hook.log
+        run: |
+          H=crates/skill-hub/target/release/skill-hub
+          hook() { jq -cn --arg p "$1" '{prompt: $p, hook_event_name: "UserPromptSubmit"}' | "$H" hook > /dev/null; tail -1 "$SKILL_HUB_HOOK_LOG"; }
+          hook "Set up a new Rust CLI tool with clap for argument parsing" | tee a.json
+          jq -e '.via == "rerank" and .picked == ["rust-cli-scaffold"]' a.json
+          hook "帮我把这些文案和图片整理成一篇小红书笔记" | tee b.json
+          jq -e '.via == "rerank" and .picked == ["xiaohongshu-note"]' b.json
+          # small talk that still pulls a candidate lexically must be answered with no skill
+          hook "Thanks for the Rust help earlier, that is all for now" | tee c.json
+          jq -e '.via == "rerank-none" and .picked == []' c.json
+      - name: Server log
+        if: always()
+        run: cat "$RUNNER_TEMP/server.log" || true
