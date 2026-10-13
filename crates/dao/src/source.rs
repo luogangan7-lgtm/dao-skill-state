@@ -184,21 +184,22 @@ pub fn is_full_commit(rev: &str) -> bool {
     matches!(rev.len(), 40 | 64) && rev.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Every ref `origin` advertises right now (`git ls-remote`, no clone, hooks impossible).
-pub fn remote_refs(origin: &str) -> Result<Vec<(String, String)>, String> {
+/// Refs `origin` advertises right now (`git ls-remote`, no clone, hooks impossible): HEAD,
+/// branches, tags, and whatever else matches one of `revs` (e.g. `refs/pull/1/head`).
+pub fn remote_refs(origin: &str, revs: &[&str]) -> Result<Vec<(String, String)>, String> {
     validate_origin(origin)?;
-    // HEAD, branches and tags only: pull-request refs can run to many thousands of lines
-    let out = git(
-        &std::env::temp_dir(),
-        &[
-            "ls-remote",
-            "--",
-            origin,
-            "HEAD",
-            "refs/heads/*",
-            "refs/tags/*",
-        ],
-    )?;
+    // not every ref: pull-request refs can run to many thousands of lines; the requested revs
+    // are added as patterns (after `--`, so a rev is never an option)
+    let mut args = vec![
+        "ls-remote",
+        "--",
+        origin,
+        "HEAD",
+        "refs/heads/*",
+        "refs/tags/*",
+    ];
+    args.extend(revs.iter().filter(|r| !r.is_empty()));
+    let out = git(&std::env::temp_dir(), &args)?;
     Ok(out
         .lines()
         .filter_map(|l| l.split_once('\t'))
@@ -207,20 +208,21 @@ pub fn remote_refs(origin: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 /// The commit `rev` names among `refs`, in the order `git fetch <origin> <rev>` resolves a
-/// short name (so intake and upstream agree): the exact ref, refs/<rev>, refs/tags/<rev>
-/// (peeled), refs/heads/<rev>, refs/remotes/<rev>, refs/remotes/<rev>/HEAD.
+/// short name (so intake and upstream agree): the exact ref, refs/<rev>, refs/tags/<rev>,
+/// refs/heads/<rev>, refs/remotes/<rev>, refs/remotes/<rev>/HEAD. An annotated tag is
+/// peeled (`^{}`) under any of these spellings, as fetch checks out the tag's commit.
 pub fn resolve_ref(refs: &[(String, String)], rev: &str) -> Option<String> {
     if is_full_commit(rev) {
         return Some(rev.to_ascii_lowercase());
     }
     let pick = |name: &str| refs.iter().find(|(_, r)| r == name).map(|(c, _)| c.clone());
-    let tag = |name: String| pick(&format!("{name}^{{}}")).or_else(|| pick(&name));
-    pick(rev)
-        .or_else(|| pick(&format!("refs/{rev}")))
-        .or_else(|| tag(format!("refs/tags/{rev}")))
-        .or_else(|| pick(&format!("refs/heads/{rev}")))
-        .or_else(|| pick(&format!("refs/remotes/{rev}")))
-        .or_else(|| pick(&format!("refs/remotes/{rev}/HEAD")))
+    let peeled = |name: String| pick(&format!("{name}^{{}}")).or_else(|| pick(&name));
+    peeled(rev.to_string())
+        .or_else(|| peeled(format!("refs/{rev}")))
+        .or_else(|| peeled(format!("refs/tags/{rev}")))
+        .or_else(|| peeled(format!("refs/heads/{rev}")))
+        .or_else(|| peeled(format!("refs/remotes/{rev}")))
+        .or_else(|| peeled(format!("refs/remotes/{rev}/HEAD")))
 }
 
 /// Read a small metadata file (license, frontmatter) before quarantine has vetted the tree:
