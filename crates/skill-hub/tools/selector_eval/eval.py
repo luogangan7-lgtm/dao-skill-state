@@ -52,9 +52,15 @@ def load(model):
                "Instruct provided. Note that the answer can only be \"yes\" or \"no\".<|im_end|>\n<|im_start|>user\n")
         suf = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
+        pre_ids = tok(pre, add_special_tokens=False)["input_ids"]
+        suf_ids = tok(suf, add_special_tokens=False)["input_ids"]
+        budget = 1024 - len(pre_ids) - len(suf_ids)
+
         def fn(q, docs):
-            texts = [f"{pre}<Instruct>: {instruction}\n<Query>: {q}\n<Document>: {d}{suf}" for d in docs]
-            enc = tok(texts, padding=True, truncation=True, max_length=1024, return_tensors="pt")
+            # truncate only the query/document body: the suffix ends at the yes/no answer position
+            bodies = [tok(f"<Instruct>: {instruction}\n<Query>: {q}\n<Document>: {d}", add_special_tokens=False,
+                          truncation=True, max_length=budget)["input_ids"] for d in docs]
+            enc = tok.pad({"input_ids": [pre_ids + b + suf_ids for b in bodies]}, padding=True, return_tensors="pt")
             with torch.no_grad():
                 lg = m(**enc).logits[:, -1, :]
             return torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist()
@@ -64,8 +70,9 @@ def load(model):
         # the commit, then loads with HF_HUB_OFFLINE=1 so nothing newer can be fetched and run
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         r = "Alibaba-NLP/gte-multilingual-reranker-base"
-        tok = AutoTokenizer.from_pretrained(r)
-        m = AutoModelForSequenceClassification.from_pretrained(r, trust_remote_code=True,
+        rev = os.environ["GTE_REVISION"]  # the inspected snapshot; its config chooses the remote code
+        tok = AutoTokenizer.from_pretrained(r, revision=rev)
+        m = AutoModelForSequenceClassification.from_pretrained(r, revision=rev, trust_remote_code=True,
                                                                **f32).eval()
 
         def fn(q, docs):
