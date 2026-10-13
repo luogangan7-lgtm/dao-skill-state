@@ -71,13 +71,18 @@ def load(model):
 
         pre_ids = tok(pre, add_special_tokens=False)["input_ids"]
         suf_ids = tok(suf, add_special_tokens=False)["input_ids"]
-        budget = 1024 - len(pre_ids) - len(suf_ids)
+        ids = lambda t: tok(t, add_special_tokens=False)["input_ids"]
+        head_ids = ids(f"<Instruct>: {instruction}\n<Query>: ")
+        mid_ids = ids("\n<Document>: ")
+        budget = 1024 - len(pre_ids) - len(head_ids) - len(mid_ids) - len(suf_ids)
 
         def fn(q, docs):
-            # truncate only the query/document body: the suffix ends at the yes/no answer position
-            bodies = [tok(f"<Instruct>: {instruction}\n<Query>: {q}\n<Document>: {d}", add_special_tokens=False,
-                          truncation=True, max_length=budget)["input_ids"] for d in docs]
-            enc = tok.pad({"input_ids": [pre_ids + b + suf_ids for b in bodies]}, padding=True, return_tensors="pt")
+            # query and document are cut separately, so a long query can never crowd out the
+            # candidate (scores stay candidate-dependent), and the suffix always ends at the
+            # yes/no answer position
+            q_ids = ids(q)[: budget // 2]
+            rows = [pre_ids + head_ids + q_ids + mid_ids + ids(d)[: budget - len(q_ids)] + suf_ids for d in docs]
+            enc = tok.pad({"input_ids": rows}, padding=True, return_tensors="pt")
             with torch.no_grad():
                 lg = m(**enc).logits[:, -1, :]
             return torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist()
