@@ -1,7 +1,7 @@
 """The scoring rules of eval.py (no models needed). Runs in CI only."""
 import unittest
 
-from eval import BASELINE, correct, first_rank, jev_body, jev_scores, mcnemar, recall_at, rrf, run_name, summary, tune
+from eval import BASELINE, correct, hook_floor, lexical_pick, first_rank, jev_body, jev_scores, mcnemar, recall_at, rrf, run_name, summary, tune
 
 
 def row(pos, top_ok, best):
@@ -81,6 +81,15 @@ class Rules(unittest.TestCase):
         self.assertEqual(jev_scores(resp({"choice": "zzz"}), c, "(no skill)"), [])
         rows = [{"pos": True, "top_ok": True, "best": 1.0}, {"pos": False, "top_ok": False, "best": None}]
         self.assertTrue(all(correct(r, tune(rows)) for r in rows))
+    def test_lexical_rule_matches_the_hook(self):
+        self.assertAlmostEqual(hook_floor(2000), 6.0)
+        self.assertLess(hook_floor(10), 6.0)
+        self.assertAlmostEqual(hook_floor(100000), 6.0)  # capped at FLOOR
+        c = [{"id": i, "score": s} for i, s in (("a", 20.0), ("b", 9.0), ("c", 12.0), ("d", 19.0))]
+        # top 3 only; b is under REL * top (10); d is 4th
+        self.assertEqual([h["id"] for h in lexical_pick(c, 2000)], ["a", "c"])
+        self.assertEqual(lexical_pick([{"id": "a", "score": 5.0}], 2000), [])  # under the floor
+
 
 if __name__ == "__main__":
     unittest.main()
