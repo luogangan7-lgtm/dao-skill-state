@@ -24,19 +24,6 @@ import shutil
 import subprocess
 import sys
 
-ap = argparse.ArgumentParser()
-ap.add_argument("--dao", required=True)
-ap.add_argument("--checker", required=True)
-ap.add_argument("--work", required=True)
-ap.add_argument("--corpus", action="append", default=[])
-ap.add_argument("--generated", action="store_true")
-ap.add_argument("--freeze")
-ap.add_argument("--known", default="", help="comma-separated case dirs whose difference is documented")
-a = ap.parse_args()
-
-spec = importlib.util.spec_from_file_location("check_skill", a.checker)
-py = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(py)
 
 
 def run_py(path):
@@ -199,60 +186,79 @@ def materialize(root, cases):
     return out
 
 
-shutil.rmtree(a.work, ignore_errors=True)
-os.makedirs(a.work)
-groups = []
-if a.generated:
-    cases = gen()
-    groups.append(("generated", cases, materialize(os.path.join(a.work, "gen"), cases)))
-for c in a.corpus:
-    dirs = sorted(os.path.join(c, d) for d in os.listdir(c) if os.path.isdir(os.path.join(c, d)))
-    groups.append((c, None, dirs))
-# CLI edge paths (relative forms, missing, file-as-dir)
-special = [os.path.join(a.work, "missing-dir"), os.path.join(a.work, "gen", "00000", ".", "")] if a.generated else []
+def main():
+    global a, py
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dao", required=True)
+    ap.add_argument("--checker", required=True)
+    ap.add_argument("--work", required=True)
+    ap.add_argument("--corpus", action="append", default=[])
+    ap.add_argument("--generated", action="store_true")
+    ap.add_argument("--freeze")
+    ap.add_argument("--known", default="", help="comma-separated case dirs whose difference is documented")
+    a = ap.parse_args()
 
-ok = True
-fixtures = []
-known = set(filter(None, a.known.split(",")))
-for name, cases, dirs in groups:
-    stats = {"same": 0, "py_crash": 0, "diff": 0}
-    for i, d in enumerate(dirs):
+    spec = importlib.util.spec_from_file_location("check_skill", a.checker)
+    py = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(py)
+    shutil.rmtree(a.work, ignore_errors=True)
+    os.makedirs(a.work)
+    groups = []
+    if a.generated:
+        cases = gen()
+        groups.append(("generated", cases, materialize(os.path.join(a.work, "gen"), cases)))
+    for c in a.corpus:
+        dirs = sorted(os.path.join(c, d) for d in os.listdir(c) if os.path.isdir(os.path.join(c, d)))
+        groups.append((c, None, dirs))
+    # CLI edge paths (relative forms, missing, file-as-dir)
+    special = [os.path.join(a.work, "missing-dir"), os.path.join(a.work, "gen", "00000", ".", "")] if a.generated else []
+
+    ok = True
+    fixtures = []
+    known = set(filter(None, a.known.split(",")))
+    for name, cases, dirs in groups:
+        stats = {"same": 0, "py_crash": 0, "diff": 0}
+        for i, d in enumerate(dirs):
+            pc, po = run_py(d)
+            rc, ro = run_rs(d)
+            if pc == "PY_CRASH":
+                explained = rc == 1 and '"invalid YAML frontmatter' in ro
+                stats["py_crash"] += 1
+                if not explained:
+                    ok = False
+                    print(f"UNEXPLAINED {name} {d}: python crashed ({po}); rust exit {rc}")
+            elif (pc, po) == (rc, ro):
+                stats["same"] += 1
+            elif os.path.basename(d) in known:
+                stats.setdefault("known", 0)
+                stats["known"] += 1
+            else:
+                stats["diff"] += 1
+                ok = False
+                if stats["diff"] <= 15:
+                    print(f"DIFF {name} {d}\n  py {pc}: {po.strip()[:400]}\n  rs {rc}: {ro.strip()[:400]}")
+            if cases is not None and len(cases[i][1]) <= 64 * 1024:  # big inputs stay live-only
+                dname, raw = cases[i]
+                fixtures.append({"dir": dname, "skill_md_b64": base64.b64encode(raw).decode(),
+                                 "python_exit": pc, "python_stdout": po.replace(d, "{DIR}") if pc != "PY_CRASH" else None})
+        print(f"{name}: n={len(dirs)} {stats}")
+    for d in special:
         pc, po = run_py(d)
         rc, ro = run_rs(d)
-        if pc == "PY_CRASH":
-            explained = rc == 1 and '"invalid YAML frontmatter' in ro
-            stats["py_crash"] += 1
-            if not explained:
-                ok = False
-                print(f"UNEXPLAINED {name} {d}: python crashed ({po}); rust exit {rc}")
-        elif (pc, po) == (rc, ro):
-            stats["same"] += 1
-        elif os.path.basename(d) in known:
-            stats.setdefault("known", 0)
-            stats["known"] += 1
-        else:
-            stats["diff"] += 1
-            ok = False
-            if stats["diff"] <= 15:
-                print(f"DIFF {name} {d}\n  py {pc}: {po.strip()[:400]}\n  rs {rc}: {ro.strip()[:400]}")
-        if cases is not None and len(cases[i][1]) <= 64 * 1024:  # big inputs stay live-only
-            dname, raw = cases[i]
-            fixtures.append({"dir": dname, "skill_md_b64": base64.b64encode(raw).decode(),
-                             "python_exit": pc, "python_stdout": po.replace(d, "{DIR}") if pc != "PY_CRASH" else None})
-    print(f"{name}: n={len(dirs)} {stats}")
-for d in special:
-    pc, po = run_py(d)
-    rc, ro = run_rs(d)
-    same = (pc, po) == (rc, ro)
-    ok &= same
-    print(f"special {d!r}: {'same' if same else f'DIFF py={pc} {po[:200]!r} rs={rc} {ro[:200]!r}'}")
-if a.freeze:
-    with open(a.freeze, "w") as f:
-        json.dump(fixtures, f, ensure_ascii=False, indent=0)
-    import hashlib, platform, yaml
-    with open(a.freeze.replace(".json", ".meta.json"), "w") as f:
-        json.dump({"python": platform.python_version(), "pyyaml": yaml.__version__,
-                   "checker_sha256": hashlib.sha256(open(a.checker, "rb").read()).hexdigest(),
-                   "cases": len(fixtures)}, f, indent=1)
-    print(f"froze {len(fixtures)} cases -> {a.freeze}")
-sys.exit(0 if ok else 1)
+        same = (pc, po) == (rc, ro)
+        ok &= same
+        print(f"special {d!r}: {'same' if same else f'DIFF py={pc} {po[:200]!r} rs={rc} {ro[:200]!r}'}")
+    if a.freeze:
+        with open(a.freeze, "w") as f:
+            json.dump(fixtures, f, ensure_ascii=False, indent=0)
+        import hashlib, platform, yaml
+        with open(a.freeze.replace(".json", ".meta.json"), "w") as f:
+            json.dump({"python": platform.python_version(), "pyyaml": yaml.__version__,
+                       "checker_sha256": hashlib.sha256(open(a.checker, "rb").read()).hexdigest(),
+                       "cases": len(fixtures)}, f, indent=1)
+        print(f"froze {len(fixtures)} cases -> {a.freeze}")
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

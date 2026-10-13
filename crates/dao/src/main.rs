@@ -2,10 +2,11 @@
 //!
 //! Role: entry point; routes subcommands to modules. Stage 1 (this crate's first card):
 //! `dao intake` = source pinning + quarantine into a content-addressed store.
-//! Depends on: source, quarantine. Called by: users, CI, later DAO stages (scan, normalize).
+//! Depends on: source, quarantine, scan, normalize, relations, check, assess. Called by: users, CI, later DAO stages (scan, normalize).
 //! Invariants: exit 0 when the command ran (rejected skills are a normal outcome, listed in
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
+mod assess;
 mod check;
 mod eval;
 mod normalize;
@@ -34,6 +35,7 @@ fn usage() -> ExitCode {
   dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
+  dao assess FILE   (Rust port of check_assessment.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
     ExitCode::from(2)
@@ -630,8 +632,12 @@ fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn main() -> ExitCode {
-    let Ok(args) = std::env::args_os()
-        .skip(1)
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "assess") {
+        return ExitCode::from(assess::main(&raw[1..])); // its paths may be non-UTF-8, like Python's
+    }
+    let Ok(args) = raw
+        .into_iter()
         .map(|a| a.into_string())
         .collect::<Result<Vec<String>, _>>()
     else {
