@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const SET_SCHEMA: &str = "dao-eval-set/1";
-pub const RECEIPT_SCHEMA: &str = "dao-eval-receipt/1";
+/// /2 (D2 review): receipts record which cases were scored and the registry entry hash of each
+/// subject; /1 receipts lack both and are refused, so an unscored case can never pass.
+pub const RECEIPT_SCHEMA: &str = "dao-eval-receipt/2";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Case {
@@ -243,12 +245,20 @@ pub struct Receipt {
     /// Case ids that failed, with the kept hits, for diagnosis.
     pub failures: Vec<(String, Vec<String>)>,
     /// Subject names the registry has no id for (their cases were not scored).
-    #[serde(default)]
     pub unreachable: Vec<String>,
+    /// Ids of the cases that were actually scored; a case not listed here never passes.
+    pub scored: Vec<String>,
+    /// Subject name → the evaluated registry's `entry_sha256` (SKILL.md) for that id, so
+    /// admission can check the registry held this candidate's content.
+    pub entries: BTreeMap<String, String>,
 }
 
-/// Per-kind scores and the failed case ids with the hits that were kept.
-pub type Scored = (BTreeMap<String, KindScore>, Vec<(String, Vec<String>)>);
+/// Per-kind scores, the failed case ids with the hits that were kept, and the scored case ids.
+pub type Scored = (
+    BTreeMap<String, KindScore>,
+    Vec<(String, Vec<String>)>,
+    Vec<String>,
+);
 
 /// `(id, score)` hits for one prompt from the searcher.
 pub type Searcher<'a> = dyn Fn(&str) -> Result<Vec<(String, f64)>, String> + 'a;
@@ -279,6 +289,7 @@ pub fn run(
         })
         .collect();
     let mut failures = Vec::new();
+    let mut scored = Vec::new();
     for c in &set.cases {
         let k = kinds
             .get_mut(&c.kind)
@@ -304,11 +315,12 @@ pub fn run(
         };
         k.total += 1;
         k.passed += usize::from(ok);
+        scored.push(c.id.clone());
         if !ok {
             failures.push((c.id.clone(), kept));
         }
     }
-    Ok((kinds, failures))
+    Ok((kinds, failures, scored))
 }
 
 /// Every kind is always reported; only these gate admission (should_not is informational).
@@ -431,7 +443,9 @@ pub fn receipt(
         gated: GATED.iter().map(|s| s.to_string()).collect(),
         kinds: scored.0,
         failures: scored.1,
+        scored: scored.2,
         unreachable: Vec::new(),
+        entries: BTreeMap::new(),
     })
 }
 
@@ -531,13 +545,13 @@ mod tests {
                 vec![]
             })
         };
-        let (k, f) = run(&s, &perfect, &known, 3, 6.0, 0.5).unwrap();
+        let (k, f, _) = run(&s, &perfect, &known, 3, 6.0, 0.5).unwrap();
         assert!(f.is_empty(), "{f:?}");
         assert_eq!(k["should_abstain"].passed, 10);
         let hijack = |_: &str| -> Result<Vec<(String, f64)>, String> {
             Ok(vec![("deploy".into(), 20.0), ("deploy-k8s".into(), 19.0)])
         };
-        let (k, _) = run(&s, &hijack, &known, 3, 6.0, 0.5).unwrap();
+        let (k, _, _) = run(&s, &hijack, &known, 3, 6.0, 0.5).unwrap();
         assert_eq!(k["should_choose"].passed, 1);
         assert_eq!(k["should_abstain"].passed, 0);
         assert_eq!(
@@ -546,7 +560,7 @@ mod tests {
         );
         // a subject missing from the registry is unreachable, not a routing failure
         let only: std::collections::HashSet<String> = ["deploy"].map(String::from).into();
-        let (k, _) = run(&s, &perfect, &only, 3, 6.0, 0.5).unwrap();
+        let (k, _, _) = run(&s, &perfect, &only, 3, 6.0, 0.5).unwrap();
         assert_eq!(
             (k["should_trigger"].total, k["should_trigger"].unreachable),
             (1, 1)
