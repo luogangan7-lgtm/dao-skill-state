@@ -774,6 +774,27 @@ mod tests {
         assert!(!g.passed && g.evidence.contains("rescan"), "{g:?}");
     }
 
+    /// A legacy receipt that scored a choose case although its competitor was unreachable.
+    #[test]
+    fn a_case_scored_against_a_missing_competitor_is_refused() {
+        let mut e = ev(
+            "CLEAN",
+            None,
+            json!({"scored": ["t1", "ab1", "n1", "c1"], "unreachable": ["y"]}),
+        );
+        let (set, _, _) = e.eval.as_mut().unwrap();
+        set.cases.push(
+            serde_json::from_value(json!({"id": "c1", "kind": "should_choose", "prompt": "p",
+                "expect": ["x"], "expect_not": ["y"], "source": "family"}))
+            .unwrap(),
+        );
+        let g = eval_gate_of(&e);
+        assert!(
+            !g.passed && g.evidence.contains("missing from the registry"),
+            "{g:?}"
+        );
+    }
+
     /// F1: a receipt's floor comes back through JSON text; every registry size must still match
     /// the policy (serde_json can be one ulp off, e.g. n = 9, 10, 14).
     #[test]
