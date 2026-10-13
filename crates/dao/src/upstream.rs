@@ -237,7 +237,14 @@ pub fn check(items: &[Tracked], allow_local: &[PathBuf]) -> Vec<Report> {
                     }
                     ("git", Some(rev)) => refs
                         .entry(&t.origin)
-                        .or_insert_with(|| remote_refs(&t.origin, &revs[t.origin.as_str()]))
+                        .or_insert_with(|| {
+                            // a local origin is read through the path that passed --allow-local
+                            let at = match &local {
+                                Some(Some(Ok(p))) => p.to_string_lossy().into_owned(),
+                                _ => t.origin.clone(),
+                            };
+                            remote_refs(&at, &revs[t.origin.as_str()])
+                        })
                         .as_ref()
                         .map_err(Clone::clone)
                         .and_then(|rs| {
@@ -530,6 +537,12 @@ mod tests {
         fs::remove_dir_all(store.join("locks")).unwrap();
         fs::write(store.join("locks"), "x").unwrap();
         assert!(tracked(&store).is_err());
+        // store objects are read-only; make them writable so the temp tree is really removed
+        let _ = Command::new("chmod")
+            .args(["-R", "u+w"])
+            .arg(&root)
+            .status();
         let _ = fs::remove_dir_all(&root);
+        assert!(!root.exists());
     }
 }
