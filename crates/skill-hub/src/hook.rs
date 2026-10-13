@@ -51,10 +51,15 @@ pub struct Candidate {
     pub dense: Option<f64>,
 }
 
-/// A local cross-encoder that scores (prompt, candidate) pairs; the best is kept if it clears
-/// `tau`, otherwise the hook abstains. D7 (held-out 40 cases, same RRF top-10): bge-reranker-v2-m3
-/// with tau 0.02 chose right on 31/40 against 24/40 for the lexical rule, mostly by abstaining
-/// on chit-chat (10/12 vs 5/12); ~1.2 s per prompt on CPU.
+/// A local reranker that scores (prompt, candidate) pairs; the best is kept if it clears `tau`,
+/// otherwise the hook abstains. D7 round 3 (CI run 38379553491, 112 held-out cases, same RRF
+/// top-10): Qwen3-Reranker-0.6B with a skill-routing instruction chose right on 98/112 against
+/// 88/112 for bge-reranker-v2-m3 (paired exact McNemar p=0.021) and abstained on all 36
+/// chit-chat prompts. `RERANK_TAU` is tuned for that model; other models need their own.
+/// Default threshold for the reference server's model (Qwen3-Reranker-0.6B + skill instruction),
+/// tuned on the D7 dev split; bge-reranker-v2-m3 needs about 0.02.
+pub const RERANK_TAU: f32 = 0.865;
+
 /// Scores for (query, texts), in text order.
 pub type Scorer<'a> = dyn Fn(&str, &[String]) -> Result<Vec<f32>, String> + 'a;
 
@@ -343,12 +348,12 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
                     .unwrap_or_else(|| {
                         let _ = writeln!(
                             std::io::stderr(),
-                            "skill-hub hook: SKILL_HUB_RERANK_TAU={v:?} is not in [0,1]; using 0.02"
+                            "skill-hub hook: SKILL_HUB_RERANK_TAU={v:?} is not in [0,1]; using {RERANK_TAU}"
                         );
-                        0.02
+                        RERANK_TAU
                     })
             })
-            .unwrap_or(0.02),
+            .unwrap_or(RERANK_TAU),
     });
     let decision = decide(
         &cands,
