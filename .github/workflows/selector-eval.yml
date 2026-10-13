@@ -1,0 +1,107 @@
+name: selector-eval
+# D7 experiment: which local model best picks one skill (or none) for `skill-hub hook`.
+# Experiments run here, never on a developer machine. The candidate data holds private skill
+# descriptions and prompts, so it is committed encrypted (data.json.enc) and decrypted with the
+# SELECTOR_EVAL_KEY secret; logs, artifacts and the summary carry only aggregate numbers.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - crates/skill-hub/tools/selector_eval/**
+      - .github/workflows/selector-eval.yml
+permissions:
+  contents: read
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s crates/skill-hub/tools/selector_eval -p 'test_*.py'
+  eval:
+    needs: rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model: bge
+            deps: sentence-transformers==5.4.1 transformers==5.5.4
+          - model: qwen3rr
+            deps: transformers==5.5.4
+          - model: qwen3rr-skill
+            deps: transformers==5.5.4
+          - model: mxbai
+            deps: sentence-transformers==5.4.1 transformers==5.5.4
+          # gte's remote code (Alibaba-NLP/new-impl) does not run under transformers 5
+          - model: gte
+            deps: transformers==4.48.3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (CPU torch)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
+          pip install ${{ matrix.deps }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ matrix.model }}-v1
+      - name: Pin gte remote code to the inspected commit
+        if: matrix.model == 'gte'
+        run: |
+          python - <<'EOF'
+          from huggingface_hub import snapshot_download
+          import os
+          snapshot_download("Alibaba-NLP/gte-multilingual-reranker-base")
+          p = snapshot_download("Alibaba-NLP/new-impl")
+          got = os.path.basename(p)
+          want = "40ced75c3017eb27626c9d4ea981bde21a2662f4"
+          assert got == want, f"new-impl moved to {got}; inspect it before running"
+          EOF
+          echo "HF_HUB_OFFLINE=1" >> "$GITHUB_ENV"
+      - name: Decrypt data
+        env:
+          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
+        run: |
+          test -n "$KEY" || { echo "SELECTOR_EVAL_KEY is not available (fork PR?)"; exit 1; }
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in crates/skill-hub/tools/selector_eval/data.json.enc -out "$RUNNER_TEMP/bundle.json" -pass env:KEY
+      - name: Evaluate
+        run: |
+          mkdir -p results
+          python crates/skill-hub/tools/selector_eval/eval.py "$RUNNER_TEMP/bundle.json" "${{ matrix.model }}" results \
+            > "results/${{ matrix.model }}.md"
+          cat "results/${{ matrix.model }}.md"
+          rm -f "$RUNNER_TEMP/bundle.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selector-eval-${{ matrix.model }}
+          path: results/
+          retention-days: 14
+  report:
+    needs: eval
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selector-eval-*
+          merge-multiple: true
+          path: results
+      - name: Summary
+        run: |
+          {
+            echo "## skill-hub selector eval (tau tuned on dev, applied once to held-out)"
+            echo
+            echo "| model | tau | dev | held | held pos | held abstain | top-1 | false abstain | wrong skill | p50/p95 ms | load s |"
+            echo "|---|---|---|---|---|---|---|---|---|---|---|"
+            cat results/*.md 2>/dev/null || echo "| (no results) |"
+            echo
+            echo "Reference (earlier local run, D7): bge 31/40, BM25 rule 24/40, qwen3:1.7b 26/40."
+          } >> "$GITHUB_STEP_SUMMARY"
