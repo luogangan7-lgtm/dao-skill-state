@@ -199,15 +199,25 @@ fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
             let fetch_dir = store
                 .join("tmp")
                 .join(format!("upstream-{}", std::process::id()));
-            let fetched = if kind == "git" {
-                let _ = fs::remove_dir_all(&fetch_dir);
-                fetch_git(&origin, &upstream_commit, &fetch_dir)
-                    .map(|c| (fetch_dir.clone(), Some(c)))
-            } else if store.starts_with(fs::canonicalize(&origin).unwrap_or_default()) {
-                Err("--store must not be inside a local source tree".to_string())
+            // a local path is re-checked against --allow-local now and read only through the
+            // canonical path it resolves to (a symlink retargeted since the check is not followed)
+            let src = if Path::new(&origin).is_absolute() {
+                upstream::local_allowed(&origin, &allow)
+                    .unwrap_or_else(|| Err(format!("{origin}: local origin no longer allowed")))
             } else {
-                Ok((PathBuf::from(&origin), None))
+                Ok(PathBuf::from(&origin))
             };
+            let fetched = src.and_then(|src| {
+                if kind == "git" {
+                    let _ = fs::remove_dir_all(&fetch_dir);
+                    fetch_git(&src.to_string_lossy(), &upstream_commit, &fetch_dir)
+                        .map(|c| (fetch_dir.clone(), Some(c)))
+                } else if store.starts_with(&src) {
+                    Err("--store must not be inside a local source tree".to_string())
+                } else {
+                    Ok((src, None))
+                }
+            });
             match fetched {
                 // one unreachable source is that source's error, not the run's
                 Err(e) => {

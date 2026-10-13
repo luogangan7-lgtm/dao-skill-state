@@ -9,14 +9,15 @@
 //!   existing object, manifest, card, receipt or champion pointer is modified, nor any lock of
 //!   another ref; the one exception is a ref moved back to a commit it had before, whose own
 //!   lock for that commit is rewritten with a new fetch time. A newer upstream is a candidate
-//!   that must pass admission like any other. Refs outside HEAD, branches and tags (e.g.
-//!   pull/N/head) are not followed.
+//!   that must pass admission like any other. A local source whose license evidence changed
+//!   (same content) is `changed` too: re-applying it rewrites that source's own lock.
 //! - Lock files are store data and may be tampered with: only `<16 hex>.json` regular files of
 //!   at most 64 KiB are read; a bad lock is an error for that item, never for the whole run;
 //!   subpaths must be relative without `..`; local paths (a `local` origin, or a git origin that
 //!   is a local path) are only read when the caller allows their root with `--allow-local`.
-//! - The newest lock per (origin, requested_rev, subpath) is the reference point; pinned
-//!   commits (a full SHA requested) have no upstream and are reported as such.
+//! - The newest lock per (origin, requested_rev, subpath) is the reference point; a timestamp in
+//!   the future (clock skew) counts as unknown (0), so it never outranks a real one. Pinned
+//!   commits (a full SHA requested, matching the locked commit) have no upstream.
 
 use crate::quarantine::{inspect, Limits};
 use crate::source::{remote_refs, resolve_ref, validate_origin};
@@ -37,6 +38,8 @@ pub struct Tracked {
     pub fetched_at_unix: u64,
     /// Lock file mtime (ns): orders two locks written in the same second.
     pub written_ns: u128,
+    /// License evidence recorded at intake (file, sha256): a local source can change it alone.
+    pub license: (Option<String>, Option<String>),
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -71,18 +74,22 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
     let mut latest: BTreeMap<(String, Option<String>, String), Tracked> = BTreeMap::new();
     let mut bad = Vec::new();
     let locks = store.join("locks");
-    let Ok(dirs) = fs::read_dir(&locks) else {
-        return Ok((Vec::new(), Vec::new())); // nothing staged yet
+    let dirs = match fs::read_dir(&locks) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
+        // unreadable is not "nothing tracked": that would silently skip every check
+        Err(e) => return Err(format!("{}: {e}", locks.display())),
     };
-    for d in dirs.flatten() {
+    for d in dirs {
+        let d = d.map_err(|e| format!("{}: {e}", locks.display()))?;
         let digest = d.file_name().to_string_lossy().into_owned();
         if !crate::scan::is_digest(&digest) {
             continue;
         }
-        let Ok(files) = fs::read_dir(d.path()) else {
-            continue;
-        };
-        for f in files.flatten() {
+        let files = fs::read_dir(d.path())
+            .and_then(|fs| fs.collect::<Result<Vec<_>, _>>())
+            .map_err(|e| format!("{}: {e}", d.path().display()))?;
+        for f in files {
             let name = f.file_name().to_string_lossy().into_owned();
             if !lock_name_ok(&name) {
                 continue; // .DS_Store, temp files of an interrupted write, …
@@ -123,13 +130,15 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
                 bad.push(err("no origin".into()));
                 continue;
             };
+            // a time in the future (skewed or restored clock) is unknown, not "newest": clamping
+            // it to now would let it overtake every later lock again on the next run
             let written_ns = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos())
-                // a skewed clock can stamp the file in the future too
-                .min(u128::from(now) * 1_000_000_000 + 999_999_999);
+                .map(|d| d.as_nanos())
+                .filter(|&ns| ns < u128::from(now + 1) * 1_000_000_000)
+                .unwrap_or(0);
             let t = Tracked {
                 kind: v["kind"].as_str().unwrap_or("").into(),
                 origin: origin.into(),
@@ -137,9 +146,15 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
                 commit: v["commit"].as_str().map(str::to_string),
                 subpath: v["subpath"].as_str().unwrap_or("").into(),
                 digest: digest.clone(),
-                // a lock "from the future" (clock skew) must not shadow every later intake
-                fetched_at_unix: v["fetched_at_unix"].as_u64().unwrap_or(0).min(now),
+                fetched_at_unix: v["fetched_at_unix"]
+                    .as_u64()
+                    .filter(|&t| t <= now)
+                    .unwrap_or(0),
                 written_ns,
+                license: (
+                    v["license"]["file"].as_str().map(str::to_string),
+                    v["license"]["sha256"].as_str().map(str::to_string),
+                ),
             };
             let key = (t.origin.clone(), t.requested_rev.clone(), t.subpath.clone());
             let newer = latest.get(&key).is_none_or(|o| {
@@ -154,15 +169,34 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
     Ok((latest.into_values().collect(), bad))
 }
 
-/// Whether a local path may be read: under one of the caller-allowed roots (canonicalized).
-fn local_allowed(path: &str, allow: &[PathBuf]) -> bool {
-    fs::canonicalize(path).is_ok_and(|p| allow.iter().any(|a| p.starts_with(a)))
+/// Whether a local path may be read: `Some(Ok(canonical path))` under one of the
+/// caller-allowed roots; `Some(Err)` if it cannot be resolved but its nearest existing parent is
+/// allowed (vanished or unmounted: an error, not a permission skip); `None` if not allowed.
+/// Read through the returned path only, so a symlink retargeted later is not followed.
+pub fn local_allowed(path: &str, allow: &[PathBuf]) -> Option<Result<PathBuf, String>> {
+    let under = |p: &Path| allow.iter().any(|a| p.starts_with(a));
+    match fs::canonicalize(path) {
+        Ok(p) => under(&p).then_some(Ok(p)),
+        Err(e) => Path::new(path)
+            .ancestors()
+            .skip(1)
+            .find_map(|a| fs::canonicalize(a).ok())
+            .filter(|a| under(a))
+            .map(|_| Err(format!("{path}: {e}"))),
+    }
 }
 
 /// Compare each tracked path with its source now: git by the remote commit of the requested
 /// ref (one `ls-remote` per origin), local by re-inspecting the directory (no copy).
 pub fn check(items: &[Tracked], allow_local: &[PathBuf]) -> Vec<Report> {
-    let mut refs: BTreeMap<String, Result<Vec<(String, String)>, String>> = BTreeMap::new();
+    // the requested revs of each origin are queried with it (refs outside heads/tags included)
+    let mut revs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for t in items {
+        if let ("git", Some(rev)) = (t.kind.as_str(), &t.requested_rev) {
+            revs.entry(&t.origin).or_default().push(rev);
+        }
+    }
+    let mut refs = BTreeMap::new(); // origin -> its ls-remote result
     items
         .iter()
         .map(|t| {
@@ -178,30 +212,48 @@ pub fn check(items: &[Tracked], allow_local: &[PathBuf]) -> Vec<Report> {
                 error: None,
             };
             let is_local_path = Path::new(&t.origin).is_absolute();
+            let local = is_local_path.then(|| local_allowed(&t.origin, allow_local));
+            let mut license_now = None;
             let now: Result<String, String> = if !subpath_ok(&t.subpath) {
                 Err("lock subpath is absolute or contains '..'".into())
-            } else if is_local_path && !local_allowed(&t.origin, allow_local) {
+            } else if let Some(None) = local {
                 r.status = "skipped".into();
                 r.error = Some("local origin not allowed (pass --allow-local <root>)".into());
                 return r;
+            } else if let Some(Some(Err(e))) = local {
+                Err(e)
             } else {
                 match (t.kind.as_str(), &t.requested_rev) {
                     ("git", Some(rev)) if crate::source::is_full_commit(rev) => {
-                        r.status = "pinned".into();
-                        return r;
+                        // a lock whose commit is not the pinned one is inconsistent, not pinned
+                        if t.commit
+                            .as_deref()
+                            .is_some_and(|c| c.eq_ignore_ascii_case(rev))
+                        {
+                            r.status = "pinned".into();
+                            return r;
+                        }
+                        Err(format!("pinned {rev} but the lock records {:?}", t.commit))
                     }
                     ("git", Some(rev)) => refs
-                        .entry(t.origin.clone())
-                        .or_insert_with(|| remote_refs(&t.origin))
-                        .clone()
+                        .entry(&t.origin)
+                        .or_insert_with(|| remote_refs(&t.origin, &revs[t.origin.as_str()]))
+                        .as_ref()
+                        .map_err(Clone::clone)
                         .and_then(|rs| {
-                            resolve_ref(&rs, rev).ok_or(format!("{}: no ref named {rev}", t.origin))
+                            resolve_ref(rs, rev).ok_or(format!("{}: no ref named {rev}", t.origin))
                         }),
                     ("git", None) => Err("git lock without a requested ref".into()),
                     ("local", _) => {
-                        let root = Path::new(&t.origin);
+                        let root = match &local {
+                            Some(Some(Ok(p))) => p.as_path(),
+                            _ => Path::new(&t.origin),
+                        };
                         validate_origin(&t.origin).and_then(|_| {
-                            inspect(&root.join(&t.subpath), root, &Limits::default())
+                            let dir = root.join(&t.subpath);
+                            let l = crate::source::detect_license(root, &dir, None);
+                            license_now = Some((l.file, l.sha256));
+                            inspect(&dir, root, &Limits::default())
                                 .map(|(m, _)| m.digest)
                                 .map_err(|e| e.join("; "))
                         })
@@ -214,7 +266,8 @@ pub fn check(items: &[Tracked], allow_local: &[PathBuf]) -> Vec<Report> {
                     let same = if t.kind == "git" {
                         t.commit.as_deref() == Some(u.as_str())
                     } else {
-                        u == t.digest
+                        // a repo-root LICENSE can change without the skill directory changing
+                        u == t.digest && license_now.as_ref() == Some(&t.license)
                     };
                     if !same {
                         r.status = "changed".into();
@@ -377,6 +430,106 @@ mod tests {
             .args(["-R", "u+w"])
             .arg(&root)
             .status();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn review_round_edge_cases() {
+        let root = std::env::temp_dir().join(format!("dao-upstream-edge-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (repo, store) = (root.join("repo"), root.join("store"));
+        fs::create_dir_all(repo.join("skills/a")).unwrap();
+        fs::write(
+            repo.join("skills/a/SKILL.md"),
+            "---\nname: a\ndescription: one\n---\nv1\n",
+        )
+        .unwrap();
+        fs::write(repo.join("LICENSE"), "MIT License").unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "v1"]);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["tag", "-a", "v1", "-m", "v1"]);
+        git(&repo, &["update-ref", "refs/pull/1/head", "HEAD"]);
+        let origin = repo.to_string_lossy().into_owned();
+        let allow = vec![fs::canonicalize(&root).unwrap()];
+        let run = |extra: &[&str]| {
+            let mut args = vec!["--store".to_string(), store.to_string_lossy().into_owned()];
+            args.extend(extra.iter().map(|s| s.to_string()));
+            crate::intake(&args).unwrap();
+        };
+        // annotated tags under every spelling, and a ref outside heads/tags, match intake
+        for rev in ["v1", "tags/v1", "refs/tags/v1", "refs/pull/1/head"] {
+            run(&["--git", &origin, "--rev", rev, "--path", "skills/a"]);
+        }
+        run(&["--local", &origin, "--path", "skills/a"]);
+        let (items, bad) = tracked(&store).unwrap();
+        assert_eq!((items.len(), bad.len()), (5, 0));
+        let r = check(&items, &allow);
+        assert!(r.iter().all(|x| x.status == "unchanged"), "{r:?}");
+        // a repo-root LICENSE change alone moves the local source
+        fs::write(repo.join("LICENSE"), "GNU GENERAL PUBLIC LICENSE").unwrap();
+        let local: Vec<_> = items
+            .iter()
+            .filter(|t| t.kind == "local")
+            .cloned()
+            .collect();
+        assert_eq!(check(&local, &allow)[0].status, "changed");
+        // a pinned lock whose commit is another one is an error
+        let mut pinned = items.iter().find(|t| t.kind == "git").unwrap().clone();
+        pinned.requested_rev = Some(head.clone());
+        pinned.commit = Some("0".repeat(40));
+        assert_eq!(check(&[pinned], &allow)[0].status, "error");
+        // an allowed local origin that vanished is an error; an unallowed one is skipped
+        let mut gone = local[0].clone();
+        gone.origin = root.join("moved").to_string_lossy().into_owned();
+        assert_eq!(check(&[gone.clone()], &allow)[0].status, "error");
+        assert_eq!(check(&[gone], &[])[0].status, "skipped");
+        // a lock dated in the future does not outrank a real newer one
+        let lock = walk_locks(&store)
+            .into_iter()
+            .find(|(_, b)| String::from_utf8_lossy(b).contains("\"kind\": \"local\""))
+            .unwrap()
+            .0;
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&lock).unwrap()).unwrap();
+        v["fetched_at_unix"] = (u64::MAX / 2).into();
+        let future = lock.with_file_name("fedcba9876543210.json");
+        fs::write(&future, v.to_string()).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(86_400);
+        fs::File::options()
+            .write(true)
+            .open(&future)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let mut real = v.clone();
+        real["fetched_at_unix"] = 1.into();
+        fs::write(&lock, real.to_string()).unwrap();
+        let (items, _) = tracked(&store).unwrap();
+        let t = items.iter().find(|t| t.kind == "local").unwrap();
+        assert_eq!((t.fetched_at_unix, t.written_ns > 0), (1, true));
+        fs::remove_file(&future).unwrap();
+        // a failed --apply (the changed ref no longer has the path) fails the run
+        git(&repo, &["rm", "-rq", "skills"]);
+        git(&repo, &["commit", "-qm", "gone"]);
+        git(&repo, &["update-ref", "refs/pull/1/head", "HEAD"]);
+        let args = [
+            "check",
+            "--store",
+            &store.to_string_lossy(),
+            "--apply",
+            "--allow-local",
+            &root.to_string_lossy(),
+        ]
+        .map(String::from);
+        assert_eq!(
+            crate::upstream_cmd(&args).unwrap(),
+            std::process::ExitCode::from(2)
+        );
+        // an unreadable locks/ is an error, not an empty store
+        fs::remove_dir_all(store.join("locks")).unwrap();
+        fs::write(store.join("locks"), "x").unwrap();
+        assert!(tracked(&store).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 }
