@@ -601,7 +601,7 @@ fn ranked<'a>(reg: &'a Registry, registry_path: &str, query: &str, top_k: usize)
         reg.skills.len(),
     );
     // vectors from another model would compare meaningless numbers
-    let Some(side) = side.filter(|s| s.model == dense::model()) else {
+    let Some(side) = side.filter(|s| dense::same_model(&s.model, &dense::model())) else {
         return plain(lex);
     };
     let ms = std::env::var("SKILL_HUB_EMBED_TIMEOUT_MS")

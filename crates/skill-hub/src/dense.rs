@@ -14,7 +14,7 @@
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const MAGIC: &str = "skill-hub-emb/1";
 
@@ -41,17 +41,27 @@ fn endpoint() -> Result<(String, u16), String> {
 /// Embed `texts` with the local Ollama; unit-normalised vectors in input order.
 pub fn embed(texts: &[String], timeout: Duration) -> Result<Vec<Vec<f32>>, String> {
     let (host, port) = endpoint()?;
-    let body = serde_json::json!({"model": model(), "input": texts}).to_string();
-    let addr = (host.as_str(), port)
+    let deadline = Instant::now() + timeout;
+    let left = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+    };
+    // keep the model loaded between prompts so the hook does not pay a cold start
+    let body =
+        serde_json::json!({"model": model(), "input": texts, "keep_alive": "30m"}).to_string();
+    // every address the name resolves to, loopback only (`localhost` may be ::1 first while
+    // Ollama listens on 127.0.0.1); a name resolving off-machine is never contacted
+    let addrs: Vec<_> = (host.as_str(), port)
         .to_socket_addrs()
         .map_err(|e| e.to_string())?
-        .next()
-        .ok_or("no address")?;
-    let mut s = TcpStream::connect_timeout(&addr, timeout).map_err(|e| format!("ollama: {e}"))?;
-    s.set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
-    s.set_write_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
+        .filter(|a| a.ip().is_loopback())
+        .collect();
+    let mut s = addrs
+        .iter()
+        .find_map(|a| TcpStream::connect_timeout(a, left()?).ok())
+        .ok_or("ollama: no loopback address answered")?;
+    s.set_write_timeout(left()).map_err(|e| e.to_string())?;
     // HTTP/1.0: the server closes after one response, so no chunked decoding is needed
     write!(
         s,
@@ -59,9 +69,25 @@ pub fn embed(texts: &[String], timeout: Duration) -> Result<Vec<Vec<f32>>, Strin
         body.len()
     )
     .map_err(|e| format!("ollama: {e}"))?;
+    // one overall deadline and a size cap, however the server dribbles or floods
     let mut raw = Vec::new();
-    s.read_to_end(&mut raw)
-        .map_err(|e| format!("ollama: {e}"))?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let Some(rest) = left() else {
+            return Err("ollama: deadline exceeded".into());
+        };
+        s.set_read_timeout(Some(rest)).map_err(|e| e.to_string())?;
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                raw.extend_from_slice(&buf[..n]);
+                if raw.len() > MAX_RESPONSE {
+                    return Err("ollama: response too large".into());
+                }
+            }
+            Err(e) => return Err(format!("ollama: {e}")),
+        }
+    }
     let text = String::from_utf8_lossy(&raw);
     let (head, payload) = text
         .split_once("\r\n\r\n")
@@ -76,22 +102,27 @@ pub fn embed(texts: &[String], timeout: Duration) -> Result<Vec<Vec<f32>>, Strin
     }
     rows.iter()
         .map(|r| {
-            let mut x: Vec<f32> = r
-                .as_array()
-                .ok_or("ollama: bad vector")?
-                .iter()
-                .map(|f| f.as_f64().unwrap_or(0.0) as f32)
-                .collect();
-            let n = x
-                .iter()
-                .map(|a| a * a)
-                .sum::<f32>()
-                .sqrt()
-                .max(f32::MIN_POSITIVE);
+            let mut x = Vec::new();
+            for f in r.as_array().ok_or("ollama: bad vector")? {
+                let v = f.as_f64().map(|v| v as f32).filter(|v| v.is_finite());
+                x.push(v.ok_or("ollama: non-finite value in an embedding")?);
+            }
+            let n = x.iter().map(|a| a * a).sum::<f32>().sqrt();
+            if !n.is_finite() || n == 0.0 {
+                return Err("ollama: degenerate embedding".to_string());
+            }
             x.iter_mut().for_each(|a| *a /= n);
             Ok(x)
         })
         .collect()
+}
+
+/// Largest Ollama response read (an index batch of 64 × 1024 floats is ~1.5 MB).
+const MAX_RESPONSE: usize = 32 << 20;
+
+/// `bge-m3` and `bge-m3:latest` name the same Ollama model.
+pub fn same_model(a: &str, b: &str) -> bool {
+    a.trim_end_matches(":latest") == b.trim_end_matches(":latest")
 }
 
 /// Binds a sidecar to the registry it was built for.
@@ -142,10 +173,13 @@ pub fn read_sidecar(path: &str, key: &str, n: usize) -> Option<Sidecar> {
     if h["registry"].as_str()? != key || count != n || data.len() != n * dim * 4 {
         return None;
     }
-    let vecs = data
+    let vecs: Vec<f32> = data
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
+    if vecs.iter().any(|v| !v.is_finite()) {
+        return None; // a corrupt sidecar must not rank anything
+    }
     Some(Sidecar {
         model: h["model"].as_str()?.to_string(),
         dim,
@@ -207,6 +241,44 @@ mod tests {
             embed(&["x".into()], Duration::from_millis(50)).is_err(),
             "down → error, caller falls back"
         );
+        // a server that dribbles bytes is cut off at the overall deadline, not per read
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                for _ in 0..100 {
+                    if c.write_all(b"x").is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        std::env::set_var("SKILL_HUB_OLLAMA", format!("http://localhost:{port}"));
+        let t0 = Instant::now();
+        let e = embed(&["x".into()], Duration::from_millis(600)).unwrap_err();
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "{e} after {:?}",
+            t0.elapsed()
+        );
+        // a flood is capped
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                let chunk = vec![b'x'; 1 << 20];
+                for _ in 0..64 {
+                    if c.write_all(&chunk).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        std::env::set_var("SKILL_HUB_OLLAMA", format!("http://127.0.0.1:{port}"));
+        assert!(embed(&["x".into()], Duration::from_secs(20))
+            .unwrap_err()
+            .contains("too large"));
         std::env::remove_var("SKILL_HUB_OLLAMA");
     }
 }
