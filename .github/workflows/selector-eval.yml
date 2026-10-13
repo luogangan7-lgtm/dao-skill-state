@@ -102,13 +102,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # round 6: does the 4-bit MLX (or fp16) server keep the shipped fp32 server's accuracy?
-        # All three run the server's own scorer on the Apple GPU of a macos runner.
+        # round 7: rerun the round-6 outlier (srv-fp32 on the Apple GPU, 88/112) next to the same
+        # server scorer in float32 on CPU; mps_probe.py found MPS fp32 identical to CPU on synthetic rows
         include:
           - {model: srv-fp32, src: bgem3, k: 10, os: macos-latest}
-          - {model: srv-fp16, src: bgem3, k: 10, os: macos-latest}
-          - {model: srv-mlx4, src: bgem3, k: 10, os: macos-latest}
-          - {model: lexical, src: bgem3, k: 10}  # the hook with no model at all
+          - {model: srv-fp32, src: bgem3, k: 10}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -142,13 +140,14 @@ jobs:
         env:
           # the Jev key reaches the jev job only; it is sent to api.typesafe.ai and nowhere else
           JEV_API: ${{ matrix.model == 'jev' && secrets.JEV_API || '' }}
+          SELECTOR_TAG: ${{ runner.os == 'macOS' && '@mps' || '' }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
           python crates/skill-hub/tools/selector_eval/eval.py run "$RUNNER_TEMP/cands.json" "${{ matrix.model }}" results \
             "${{ matrix.src }}" "${{ matrix.k }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: selector-eval-${{ matrix.model }}-${{ matrix.src }}-k${{ matrix.k }}
+          name: selector-eval-${{ matrix.model }}-${{ matrix.src }}-k${{ matrix.k }}-${{ runner.os }}
           path: results/
           retention-days: 14
   report:
@@ -167,7 +166,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## skill-hub selector eval, round 6: shipped server fp32 vs fp16 vs 4-bit MLX on Apple GPU, and the no-model lexical rule (tau tuned on dev per config, applied once to held-out)"
+            echo "## skill-hub selector eval, round 7: server fp32 on Apple GPU vs CPU (rerun of the round-6 outlier) (tau tuned on dev per config, applied once to held-out)"
             echo
             echo "Recall of each retrieval list (gold skill within the first k): ${{ needs.cands.outputs.ceiling }}"
             echo
