@@ -6,6 +6,7 @@
 //! Invariants: exit 0 when the command ran (rejected skills are a normal outcome, listed in
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
+mod admission;
 mod check;
 mod eval;
 mod normalize;
@@ -31,6 +32,8 @@ fn usage() -> ExitCode {
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
   dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
+  dao admit --store DIR --digest D   gates: object, scan (CLEAN or approved REVIEW), card, eval; exit 1 if refused\n\
+  dao promote --store DIR --digest D | rollback --store DIR --name N | recover --store DIR   champion pointers via the journal\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
@@ -470,13 +473,154 @@ fn eval_cmd(args: &[String]) -> Result<ExitCode, String> {
     );
     let search = eval::skill_hub(searcher.clone(), registry.clone(), top_k);
     let scored = eval::run(&set, &search, &ids, top_k, floor, rel)?;
-    let r = eval::receipt(
+    let mut r = eval::receipt(
         &set, &registry, &searcher, before, n_skills, top_k, floor, rel, scored,
     )?;
+    r.unreachable = set
+        .subjects
+        .keys()
+        .filter(|n| !ids.contains(*n))
+        .cloned()
+        .collect();
     write_json(&dir.join(r.file_name()), &r)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({"receipt": r.file_name(), "set_sha256": r.set_sha256, "registry_sha256": r.registry_sha256, "floor": r.floor, "kinds": r.kinds, "failures": r.failures.len()})).unwrap()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Flags of the form `--key VALUE` into a map, rejecting anything not in `allowed`.
+fn opts<'a>(
+    args: &[String],
+    allowed: &[&'a str],
+) -> Result<std::collections::HashMap<&'a str, String>, String> {
+    let mut m = std::collections::HashMap::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let k = allowed
+            .iter()
+            .find(|k| **k == a.as_str())
+            .ok_or(format!("unknown argument: {a}"))?;
+        m.insert(*k, it.next().ok_or(format!("{k} needs a value"))?.clone());
+    }
+    Ok(m)
+}
+
+/// `dao admit --store DIR --digest D`: write admissions/<D>.json; exit 0 admitted, 1 refused.
+fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let o = opts(args, &["--store", "--digest"])?;
+    let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
+    let digest = o.get("--digest").ok_or("--digest is required")?.clone();
+    if !scan::is_digest(&digest) {
+        return Err(format!("not a digest: {digest}"));
+    }
+    let read = |p: PathBuf| {
+        fs::read(p)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    };
+    let manifest: Option<quarantine::Manifest> =
+        read(store.join("manifests").join(format!("{digest}.json")))
+            .and_then(|v| serde_json::from_value(v).ok());
+    let object_ok = match &manifest {
+        Some(m) if m.digest == digest => {
+            quarantine::verify_object(&store.join("objects").join(&digest), m)
+        }
+        _ => Err("no manifest for this digest".into()),
+    };
+    let scan: Option<scan::Receipt> = read(store.join("scans").join(format!("{digest}.json")))
+        .and_then(|v| serde_json::from_value(v).ok());
+    let approval = read(store.join("approvals").join(format!("{digest}.json")));
+    let card: Option<normalize::Card> = read(store.join("cards").join(format!("{digest}.json")))
+        .and_then(|v| serde_json::from_value(v).ok());
+    // the eval set as the store generates it now, whether the stored one equals it, and the
+    // newest receipt for that set
+    let eval = (|| -> Option<(eval::Set, bool, Option<eval::Receipt>)> {
+        let (cards, _) = load_cards(&store).ok()?;
+        let rels: Vec<relations::Relation> =
+            serde_json::from_slice(&fs::read(store.join("relations.json")).ok()?).ok()?;
+        let fresh_set = eval::generate(&cards, &rels);
+        let stored: Option<eval::Set> =
+            read(store.join("evals/set.json")).and_then(|v| serde_json::from_value(v).ok());
+        let fresh = stored.as_ref() == Some(&fresh_set);
+        let mut receipts: Vec<(std::time::SystemTime, eval::Receipt)> =
+            fs::read_dir(store.join("evals"))
+                .ok()?
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("receipt-"))
+                .filter_map(|e| {
+                    let t = e.metadata().and_then(|m| m.modified()).ok()?;
+                    let r: eval::Receipt =
+                        serde_json::from_slice(&fs::read(e.path()).ok()?).ok()?;
+                    (r.set_sha256 == fresh_set.set_sha256).then_some((t, r))
+                })
+                .collect();
+        receipts.sort_by_key(|(t, _)| *t);
+        Some((fresh_set, fresh, receipts.pop().map(|(_, r)| r)))
+    })();
+    let a = admission::decide(
+        &digest,
+        &admission::Evidence {
+            object_ok,
+            scan,
+            approval,
+            card,
+            eval,
+        },
+    );
+    fs::create_dir_all(store.join("admissions")).map_err(|e| e.to_string())?;
+    write_json(&store.join("admissions").join(format!("{digest}.json")), &a)?;
+    println!("{}", serde_json::to_string_pretty(&a).unwrap());
+    Ok(if a.admitted {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+/// `dao promote --store DIR --digest D` (needs an admitted receipt), `dao rollback --store DIR
+/// --name N`, `dao recover --store DIR`. `DAO_FAULT=after_prepare|after_pointer` simulates a
+/// crash for recovery drills.
+fn champion_cmd(cmd: &str, args: &[String]) -> Result<ExitCode, String> {
+    let o = opts(args, &["--store", "--digest", "--name"])?;
+    let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
+    let fault = match std::env::var("DAO_FAULT").as_deref() {
+        Ok("after_prepare") => admission::Fault::AfterPrepare,
+        Ok("after_pointer") => admission::Fault::AfterPointer,
+        _ => admission::Fault::None,
+    };
+    let entry = match cmd {
+        "recover" => {
+            let done = admission::recover(&store)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({"resolved": done})).unwrap()
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        "promote" => {
+            let digest = o.get("--digest").ok_or("--digest is required")?;
+            let a: admission::Admission = serde_json::from_slice(
+                &fs::read(store.join("admissions").join(format!("{digest}.json")))
+                    .map_err(|e| format!("run dao admit first: {e}"))?,
+            )
+            .map_err(|e| e.to_string())?;
+            if !a.admitted || a.digest != *digest {
+                return Err(format!("{digest} is not admitted"));
+            }
+            let name = a.name.ok_or("admission has no name")?;
+            admission::move_champion(&store, &name, digest, false, fault)?
+        }
+        _ => {
+            let name = o.get("--name").ok_or("--name is required")?;
+            let to = admission::rollback_target(&store, name)?;
+            admission::move_champion(&store, name, &to, true, fault)?
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({"journal": entry})).unwrap()
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -519,6 +663,8 @@ fn main() -> ExitCode {
         Some("normalize") => normalize_cmd(&args[1..]),
         Some("relations") => relations_cmd(&args[1..]),
         Some("eval") => eval_cmd(&args[1..]),
+        Some("admit") => admit_cmd(&args[1..]),
+        Some("promote" | "rollback" | "recover") => champion_cmd(&args[0], &args[1..]),
         Some("check") if args.len() <= 2 => {
             let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
             println!("{}", check::to_json(&r));
