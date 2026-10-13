@@ -551,12 +551,13 @@ fn bm25(docs: &[Vec<String>], q: &[(String, f64)]) -> Vec<f64> {
         .collect()
 }
 
-/// One ranked hit: the skill, its BM25 score (0 when only dense recall found it) and its
-/// cosine similarity when dense recall ran.
+/// One ranked hit: the skill, its BM25 score (0 when only dense recall found it), and when
+/// dense recall ran its cosine similarity and the RRF score that decided its rank.
 pub(crate) struct Hit<'a> {
     pub(crate) skill: &'a Skill,
     pub(crate) lexical: f64,
     pub(crate) dense: Option<f32>,
+    pub(crate) rrf: Option<f64>,
 }
 
 fn sidecar_path(registry_path: &str) -> String {
@@ -592,9 +593,13 @@ fn ranked<'a>(reg: &'a Registry, registry_path: &str, query: &str, top_k: usize)
                 skill: k,
                 lexical: s,
                 dense: None,
+                rrf: None,
             })
             .collect()
     };
+    if query.trim().is_empty() {
+        return plain(lex); // nothing to embed; lexical search already returns nothing useful
+    }
     let side = dense::read_sidecar(
         &sidecar_path(registry_path),
         &registry_key(reg),
@@ -608,7 +613,12 @@ fn ranked<'a>(reg: &'a Registry, registry_path: &str, query: &str, top_k: usize)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2000);
-    let q = match dense::embed(&[query.to_string()], std::time::Duration::from_millis(ms)) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    // the tag may have been re-pulled with other weights since `index --embed`
+    if dense::model_digest(deadline).ok().as_deref() != Some(side.digest.as_str()) {
+        return plain(lex);
+    }
+    let q = match dense::embed(&[query.to_string()], deadline) {
         Ok(mut v) if v.first().is_some_and(|x| x.len() == side.dim) => v.remove(0),
         _ => return plain(lex), // embedder down, slow or a different model: lexical only
     };
@@ -623,10 +633,11 @@ fn ranked<'a>(reg: &'a Registry, registry_path: &str, query: &str, top_k: usize)
     dense::rrf(&lex_idx, &by_cos)
         .into_iter()
         .take(top_k)
-        .map(|i| Hit {
+        .map(|(i, fused)| Hit {
             skill: &reg.skills[i],
             lexical: lex_score.get(&i).copied().unwrap_or(0.0),
             dense: Some(cos[i]),
+            rrf: Some(fused),
         })
         .collect()
 }
@@ -795,20 +806,29 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 roots,
                 skills,
             };
-            write_registry(&out, &reg)?;
+            // the sidecar goes first: it is keyed to this registry, so if writing the registry
+            // then fails, the old registry simply finds no matching vectors
             let side = sidecar_path(&out);
             if embed {
+                let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let digest = dense::model_digest(deadline())?;
                 let texts: Vec<String> = reg.skills.iter().map(embed_text).collect();
                 let mut vecs = Vec::with_capacity(texts.len());
                 for chunk in texts.chunks(64) {
-                    vecs.extend(dense::embed(chunk, std::time::Duration::from_secs(300))?);
+                    vecs.extend(dense::embed(chunk, deadline())?);
                 }
-                dense::write_sidecar(&side, &registry_key(&reg), &vecs)?;
+                dense::write_sidecar(&side, &registry_key(&reg), &digest, &vecs)?;
                 println!("embedded {n} skills with {} -> {side}", dense::model());
             } else {
                 // an old sidecar would no longer match; remove it so nothing looks stale
-                let _ = fs::remove_file(&side);
+                match fs::remove_file(&side) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(format!("{side}: {e}"));
+                    }
+                    _ => {}
+                }
             }
+            write_registry(&out, &reg)?;
             println!("indexed {n} skills -> {out}");
             Ok(ExitCode::SUCCESS)
         }
@@ -830,6 +850,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 .map(|h| {
                     serde_json::json!({"id": h.skill.id, "score": (h.lexical * 1000.0).round() / 1000.0,
                                        "dense": h.dense.map(|d| (f64::from(d) * 1000.0).round() / 1000.0),
+                                       "rrf": h.rrf.map(|r| (r * 1e6).round() / 1e6),
                                        "description": h.skill.description})
                 })
                 .collect();
