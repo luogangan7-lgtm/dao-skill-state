@@ -242,6 +242,9 @@ pub struct Receipt {
     pub kinds: BTreeMap<String, KindScore>,
     /// Case ids that failed, with the kept hits, for diagnosis.
     pub failures: Vec<(String, Vec<String>)>,
+    /// Subject names the registry has no id for (their cases were not scored).
+    #[serde(default)]
+    pub unreachable: Vec<String>,
 }
 
 /// Per-kind scores and the failed case ids with the hits that were kept.
@@ -428,6 +431,7 @@ pub fn receipt(
         gated: GATED.iter().map(|s| s.to_string()).collect(),
         kinds: scored.0,
         failures: scored.1,
+        unreachable: Vec::new(),
     })
 }
 
