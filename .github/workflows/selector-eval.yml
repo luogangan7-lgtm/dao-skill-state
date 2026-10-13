@@ -157,7 +157,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## skill-hub selector eval, round 4: recall (tau tuned on dev per config, applied once to held-out)"
+            echo "## skill-hub selector eval, round 5: hosted Jev vs local selector (tau tuned on dev per config, applied once to held-out)"
             echo
             echo "Recall of each retrieval list (gold skill within the first k): ${{ needs.cands.outputs.ceiling }}"
             echo
