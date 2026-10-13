@@ -303,7 +303,7 @@ def recall_at(ranks, k):
 
 def run(bundle_path, model, out, src="bgem3", k="10"):
     k = int(k)
-    name = run_name(model, src, k)
+    name = run_name(model, src, k) + os.environ.get("SELECTOR_TAG", "")  # e.g. "@mps": same config, other machine
     t = time.time()
     fn = None if model == "lexical" else load(model)  # before the private data is in this process
     load_s = time.time() - t
