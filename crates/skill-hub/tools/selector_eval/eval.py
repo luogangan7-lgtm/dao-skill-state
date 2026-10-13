@@ -45,6 +45,7 @@ JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_NONE = "(no skill)"
 PROMPT_CHARS, DESC_CHARS = 2500, 400
 JEV_OFF_SET = [0]  # answers outside the option set (counted, printed as a number)
+JEV_MODELS = set()  # resolved model names the API reports (jev-latest is a moving alias)
 
 
 def bound_prompt(p):
@@ -180,11 +181,13 @@ def load(model):
             for attempt in range(4):
                 try:
                     with urllib.request.urlopen(req, timeout=30) as r:
-                        return jev_scores(json.load(r), cands, none)
+                        resp = json.load(r)
+                    JEV_MODELS.add(str(resp.get("model")))
+                    return jev_scores(resp, cands, none)
                 except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets
                     # status codes only: the body could echo the request
                     code = getattr(e, "code", None)
-                    if attempt == 3 or (code is not None and code not in (429, 500, 502, 503, 529)):
+                    if attempt == 3 or (code is not None and code not in (429, 500, 502, 503, 504, 529)):
                         raise RuntimeError(f"Jev call failed (HTTP {code})") from None
                     time.sleep(2 ** attempt * 2)
         return fn
@@ -275,11 +278,13 @@ def run(bundle_path, model, out, src="bgem3", k="10"):
     tau = tune(dev)
     res = {"model": name, "tau": tau, "load_s": round(load_s, 1),
            "dev": summary(dev, tau), "held": summary(held, tau), "rows": {"dev": dev, "held": held}}
+    if model == "jev":
+        res["jev_models"] = sorted(JEV_MODELS)
     os.makedirs(out, exist_ok=True)
     json.dump(res, open(os.path.join(out, f"{name}.json"), "w"), indent=1)
     print(name, res["dev"]["all"], res["held"]["all"])
     if model == "jev":
-        print(f"jev answers outside the option set: {JEV_OFF_SET[0]}")
+        print(f"jev answers outside the option set: {JEV_OFF_SET[0]}; models: {sorted(JEV_MODELS)}")
 
 
 # --- candidates -----------------------------------------------------------------------------
@@ -307,6 +312,9 @@ def cands(bundle_path, skill_hub, out):
                     "qwen3emb": SentenceTransformer(QWEN_EMB_REPO, device="cpu",
                                                     revision=REVISIONS[QWEN_EMB_REPO])}  # before the data
     bundle = json.load(open(bundle_path))
+    for split in ("dev", "held"):  # the hook bounds the prompt before retrieval and selection
+        for c in bundle[split]["cases"]:
+            c["prompt"] = bound_prompt(c["prompt"])
     reg = bundle.pop("registry")
     skills = reg["skills"]
     index = {s["id"]: i for i, s in enumerate(skills)}
