@@ -639,6 +639,17 @@ fn publish_cmd(args: &[String]) -> Result<ExitCode, String> {
     let o = opts(&rest, &["--store", "--target"])?;
     let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
     let target = PathBuf::from(o.get("--target").ok_or("--target is required")?);
+    // one writer per target: hold an exclusive lock from reading the publication to writing it
+    let _guard = if flag("--apply") {
+        fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        let f =
+            fs::File::create(target.join(".dao-publication.lock")).map_err(|e| e.to_string())?;
+        f.lock()
+            .map_err(|e| format!("lock {}: {e}", target.display()))?;
+        Some(f)
+    } else {
+        None
+    };
     let lock = publish::read_lock(&target)?;
     let want = publish::wanted(&store, &lock, flag("--rollback"))?;
     let actions = publish::plan(&store, &target, &lock, &want);

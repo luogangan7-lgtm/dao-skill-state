@@ -15,7 +15,7 @@
 //! - `--rollback` publishes the previous version's exact set from the immutable store objects,
 //!   as a new version, so rolling back can itself be rolled back.
 
-use crate::quarantine::{verify_object, Manifest};
+use crate::quarantine::{digest_of, verify_object, Manifest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -102,6 +102,9 @@ pub fn wanted(
             continue;
         };
         if let Some(c) = crate::admission::champion(store, name)? {
+            if c.name != name {
+                return Err(format!("champions/{name}.json names {:?}", c.name));
+            }
             want.insert(c.name, c.digest);
         }
     }
@@ -116,8 +119,14 @@ fn manifest(store: &Path, digest: &str) -> Result<Manifest, String> {
         .map_err(|e| e.to_string())
         .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
         .map_err(|e| format!("manifest {}: {e}", &digest[..12]))?;
-    if m.digest != digest {
-        return Err(format!("manifest {} names another digest", &digest[..12]));
+    // the manifest must hash to the digest, or a rewritten manifest could vouch for any bytes
+    let mut sorted = m.files.clone();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    if m.digest != digest || sorted != m.files || digest_of(&sorted) != digest {
+        return Err(format!(
+            "manifest {} does not hash to its digest",
+            &digest[..12]
+        ));
     }
     Ok(m)
 }
@@ -143,7 +152,17 @@ pub fn plan(
         digest: digest.cloned(),
         reason,
     };
+    // two names that differ only in case are one directory on case-insensitive filesystems
+    let mut folded: BTreeMap<String, usize> = BTreeMap::new();
+    for n in want.keys() {
+        *folded.entry(n.to_lowercase()).or_default() += 1;
+    }
     for (name, digest) in want {
+        if folded[&name.to_lowercase()] > 1 {
+            let why = "another published name differs from it only in case".to_string();
+            out.push(act(name, "conflict", Some(digest), Some(why)));
+            continue;
+        }
         if let Err(e) = crate::admission::valid_name(name) {
             out.push(act(name, "conflict", Some(digest), Some(e)));
             continue;
@@ -244,6 +263,14 @@ pub fn apply(
         ));
     }
     fs::create_dir_all(target).map_err(|e| format!("{}: {e}", target.display()))?;
+    // scratch left by an interrupted run (single writer: the caller holds the target lock)
+    for e in fs::read_dir(target).map_err(|e| format!("{}: {e}", target.display()))? {
+        let p = e.map_err(|e| e.to_string())?.path();
+        let n = p.file_name().unwrap_or_default().to_string_lossy();
+        if n.starts_with(".dao-stage-") || n.starts_with(".dao-old-") {
+            fs::remove_dir_all(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+    }
     for a in actions {
         let dir = target.join(&a.name);
         let old = scratch(target, "old", &a.name);
@@ -420,6 +447,28 @@ mod tests {
     }
 
     #[test]
+    fn manifests_must_hash_to_their_digest_and_names_must_not_fold_together() {
+        let root = std::env::temp_dir().join(format!("dao-publish-fold-{}", std::process::id()));
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+        let (store, d1, d2) = store_with_two_versions(&root);
+        // a manifest rewritten to vouch for other bytes is refused
+        let mp = store.join("manifests").join(format!("{d1}.json"));
+        let _ = crate::quarantine::make_writable(&mp);
+        let mut m: Manifest = serde_json::from_slice(&fs::read(&mp).unwrap()).unwrap();
+        m.files[0].size += 1;
+        fs::write(&mp, serde_json::to_vec(&m).unwrap()).unwrap();
+        assert!(manifest(&store, &d1).unwrap_err().contains("does not hash"));
+        // Skill and skill would share one directory on a case-insensitive filesystem
+        let want = BTreeMap::from([("Skill".to_string(), d2.clone()), ("skill".to_string(), d2)]);
+        let lock = read_lock(&root.join("t")).unwrap();
+        let acts = plan(&store, &root.join("t"), &lock, &want);
+        assert!(acts.iter().all(|a| a.action == "conflict"), "{acts:?}");
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_rollback_removes_what_the_newer_version_added() {
         let root = std::env::temp_dir().join(format!("dao-publish-rm-{}", std::process::id()));
         let _ = crate::quarantine::make_writable(&root);
@@ -438,8 +487,23 @@ mod tests {
         fs::write(target.join(LOCK), serde_json::to_vec(&empty).unwrap()).unwrap();
         champion(&store, &d1);
         assert_eq!(kinds(&run(&store, &target, false).unwrap()), ["s:add"]);
+        // a hand-edited directory is not removed by a rollback
+        fs::write(target.join("s/SKILL.md"), "edited").unwrap();
+        assert!(run(&store, &target, true)
+            .unwrap_err()
+            .contains("edited by hand"));
+        assert_eq!(
+            fs::read_to_string(target.join("s/SKILL.md")).unwrap(),
+            "edited"
+        );
+        let m1 = manifest(&store, &d1).unwrap();
+        fs::remove_dir_all(target.join("s")).unwrap();
+        copy_object(&store, &m1, &target.join("s")).unwrap();
+        // leftovers of an interrupted apply are swept
+        fs::create_dir_all(target.join(".dao-stage-s-1/x")).unwrap();
         assert_eq!(kinds(&run(&store, &target, true).unwrap()), ["s:remove"]);
         assert!(!target.join("s").exists());
+        assert!(!target.join(".dao-stage-s-1").exists());
         let _ = crate::quarantine::make_writable(&root);
         let _ = fs::remove_dir_all(&root);
     }
