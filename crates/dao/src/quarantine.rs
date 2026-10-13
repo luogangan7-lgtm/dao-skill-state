@@ -512,7 +512,12 @@ pub fn stage(
     lock_val["flags"] = serde_json::json!(manifest.flags);
     let lock_json = serde_json::to_string_pretty(&lock_val).unwrap() + "\n";
     let lock_id = hex(&Sha256::digest(
-        format!("{}\0{:?}\0{}", lock.origin, lock.commit, subpath).as_bytes(),
+        // the requested ref is part of a lock's identity: two refs at one commit are two locks
+        format!(
+            "{}\0{:?}\0{}\0{:?}",
+            lock.origin, lock.commit, subpath, lock.requested_rev
+        )
+        .as_bytes(),
     ));
     write_atomic(
         &store.join("locks").join(&manifest.digest),
