@@ -13,6 +13,7 @@ mod quarantine;
 mod relations;
 mod scan;
 mod source;
+mod upstream;
 
 use quarantine::{stage, Limits, Outcome};
 use source::{detect_license, fetch_git, read_vetted, SourceLock};
@@ -29,6 +30,7 @@ fn usage() -> ExitCode {
          writes scans/<digest>.json (BLOCK | UNRESOLVED | REVIEW_REQUIRED | CLEAN) and prints a summary.\n\
   dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
+  dao upstream check --store DIR [--apply] [--allow-local DIR]...   sources moved since intake; --apply stages them as new candidates\n\
   dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
@@ -100,6 +102,9 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    if local.is_some() && rev.is_some() {
+        return Err("--rev applies only to --git".into());
+    }
     if let Some(g) = &git {
         source::validate_origin(g)?; // before touching the filesystem
     }
@@ -143,6 +148,126 @@ fn intake(args: &[String]) -> Result<ExitCode, String> {
     });
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     Ok(ExitCode::SUCCESS)
+}
+
+/// `dao upstream check --store DIR [--apply]`: report moved sources; with --apply stage each
+/// changed path again as a new candidate (git: the new commit; local: the current tree).
+fn upstream_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (mut store, mut apply, mut allow) = (None, false, Vec::new());
+    let mut it = args.iter();
+    if it.next().map(String::as_str) != Some("check") {
+        return Err(
+            "usage: dao upstream check --store DIR [--apply] [--allow-local DIR]...".into(),
+        );
+    }
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--store" => store = Some(PathBuf::from(it.next().ok_or("--store needs a value")?)),
+            "--apply" => apply = true,
+            "--allow-local" => {
+                let d = it.next().ok_or("--allow-local needs a directory")?;
+                allow.push(fs::canonicalize(d).map_err(|e| format!("{d}: {e}"))?);
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let store = fs::canonicalize(store.ok_or("--store is required")?).map_err(|e| e.to_string())?;
+    if allow.contains(&store) {
+        return Err("--allow-local must not be the store itself".into());
+    }
+    let (items, mut reports) = upstream::tracked(&store)?;
+    reports.extend(upstream::check(&items, &allow));
+    let mut staged = Vec::new();
+    let mut apply_failed = 0usize;
+    if apply {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // one fetch per (origin, upstream commit); every changed path under it is staged
+        let mut groups: std::collections::BTreeMap<
+            (String, String, Option<String>, String),
+            Vec<String>,
+        > = Default::default();
+        for r in reports.iter().filter(|r| r.status == "changed") {
+            let key = (
+                r.kind.clone(),
+                r.origin.clone(),
+                r.requested_rev.clone(),
+                r.upstream.clone().unwrap_or_default(),
+            );
+            groups.entry(key).or_default().push(r.subpath.clone());
+        }
+        for ((kind, origin, rev, upstream_commit), paths) in groups {
+            let fetch_dir = store
+                .join("tmp")
+                .join(format!("upstream-{}", std::process::id()));
+            // a local path is re-checked against --allow-local now and read only through the
+            // canonical path it resolves to (a symlink retargeted since the check is not followed)
+            let src = if Path::new(&origin).is_absolute() {
+                upstream::local_allowed(&origin, &allow)
+                    .unwrap_or_else(|| Err(format!("{origin}: local origin no longer allowed")))
+            } else {
+                Ok(PathBuf::from(&origin))
+            };
+            let fetched = src.and_then(|src| {
+                if kind == "git" {
+                    let _ = fs::remove_dir_all(&fetch_dir);
+                    fetch_git(&src.to_string_lossy(), &upstream_commit, &fetch_dir)
+                        .map(|c| (fetch_dir.clone(), Some(c)))
+                } else if store.starts_with(&src) {
+                    Err("--store must not be inside a local source tree".to_string())
+                } else {
+                    Ok((src, None))
+                }
+            });
+            match fetched {
+                // one unreachable source is that source's error, not the run's
+                Err(e) => {
+                    apply_failed += paths.len();
+                    staged.push(serde_json::json!({"outcome": "error", "origin": origin, "paths": paths, "error": e}));
+                }
+                Ok((tree, commit)) => {
+                    for p in paths {
+                        match stage_all(
+                            &tree, &p, false, &store, &kind, &origin, &rev, &commit, now,
+                        ) {
+                            Ok((outcomes, _)) => {
+                                for o in outcomes {
+                                    apply_failed +=
+                                        usize::from(matches!(o, Outcome::Rejected { .. }));
+                                    staged.push(serde_json::to_value(o).unwrap());
+                                }
+                            }
+                            Err(e) => {
+                                apply_failed += 1;
+                                staged.push(serde_json::json!({"outcome": "error", "subpath": p, "error": e}));
+                            }
+                        }
+                    }
+                }
+            }
+            if kind == "git" {
+                let _ = fs::remove_dir_all(&fetch_dir);
+            }
+        }
+    }
+    let count = |s: &str| reports.iter().filter(|r| r.status == s).count();
+    let errors = count("error");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "tracked": items.len(), "unchanged": count("unchanged"), "changed": count("changed"),
+            "pinned": count("pinned"), "skipped": count("skipped"), "errors": errors,
+            "apply_failed": apply_failed, "reports": reports, "staged": staged,
+        }))
+        .unwrap()
+    );
+    Ok(if errors == 0 && apply_failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -515,6 +640,7 @@ fn main() -> ExitCode {
     };
     let result = match args.first().map(String::as_str) {
         Some("intake") => intake(&args[1..]),
+        Some("upstream") => upstream_cmd(&args[1..]),
         Some("scan") => scan_cmd(&args[1..]),
         Some("normalize") => normalize_cmd(&args[1..]),
         Some("relations") => relations_cmd(&args[1..]),
