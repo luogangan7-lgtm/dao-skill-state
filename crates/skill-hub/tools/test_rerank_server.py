@@ -1,4 +1,5 @@
 """Model-free checks of rerank_server.py: score scaling and request batching (fake scorers)."""
+import struct
 import threading
 import time
 import unittest
@@ -14,8 +15,12 @@ class ScaleTest(unittest.TestCase):
         ys = [to_hook_scale(x, 0.345) for x in xs]
         self.assertEqual(ys, sorted(ys))
         self.assertTrue(all(0 < y < 1 for y in ys))
-        # a decision at tau is the same before and after
+        # a decision at tau is the same before and after, also as the hook reads it (f32)
+        f32 = lambda v: struct.unpack("f", struct.pack("f", v))[0]
+        xs += [0.345 - 1e-12, 0.345 + 1e-12, 0.3449999]
+        ys = [to_hook_scale(x, 0.345) for x in xs]
         self.assertEqual([x >= 0.345 for x in xs], [y >= HOOK_TAU for y in ys])
+        self.assertEqual([x >= 0.345 for x in xs], [f32(y) >= f32(HOOK_TAU) for y in ys])
 
     def test_split_returns_one_list_per_request(self):
         self.assertEqual(split([("a", ["x", "y"]), ("b", []), ("c", ["z"])], [1, 2, 3]), [[1, 2], [], [3]])
