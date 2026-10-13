@@ -311,7 +311,7 @@ def cli():
         raw("c-empty-file", (b"", 1)),
         # argparse: -\.?\d with Unicode Nd digits, or a space (long options too), means positional
         raw("c-udigit", args=["-\u0661"]), raw("c-udot", args=["-.\u0661"]), raw("c-udigit-x", args=["-\u0661x"]),
-        raw("c-superscript", args=["-\u00b2"]), raw("c-long-space", args=["--x y"]), raw("c-eq-help", args=["x", "--=y", "-h"]), raw("c-eq-empty", args=["--="]),
+        raw("c-superscript", args=["-\u00b2"]), raw("c-long-space", args=["--x y"]), raw("c-eq-help", args=["x", "--=y", "-h"]), raw("c-eq-empty", args=["--="]), raw("c-deq-help", args=["x", "-=y", "-h"]), raw("c-deq-bare", args=["x", "-=", "-h"]), raw("c-deq-space", args=["-=1x "]),
         # a non-UTF-8 argv byte reaches Python as a surrogate escape (frozen as {"b": base64})
         raw("c-nonutf8-missing", args=["x\udcff.json"]),
     ]
