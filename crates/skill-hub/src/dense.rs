@@ -66,12 +66,13 @@ fn call(
     // a first bound on reads too, so a read can never outlive the deadline by more than this
     s.set_read_timeout(left()).map_err(|e| e.to_string())?;
     // HTTP/1.0: the server closes after one response, so no chunked decoding is needed
-    write!(
-        s,
+    // one buffer, one write: the request is never split across a partial write
+    let req = format!(
         "{method} {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
-    )
-    .map_err(|e| format!("ollama: {e}"))?;
+    );
+    s.write_all(req.as_bytes())
+        .map_err(|e| format!("ollama: {e}"))?;
     // one overall deadline and a size cap, however the server dribbles or floods
     let mut raw = Vec::new();
     let mut buf = [0u8; 64 * 1024];
@@ -341,7 +342,15 @@ mod tests {
             let port = l.local_addr().unwrap().port();
             std::thread::spawn(move || {
                 if let Ok((mut c, _)) = l.accept() {
-                    let _ = c.read(&mut [0u8; 4096]);
+                    // read the whole request (GET, no body): closing with unread bytes is a reset on Linux
+                    let mut req = Vec::new();
+                    let mut b = [0u8; 1024];
+                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match c.read(&mut b) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => req.extend_from_slice(&b[..n]),
+                        }
+                    }
                     let _ = write!(c, "HTTP/1.0 200 OK\r\n\r\n{body}");
                 }
             });
