@@ -1,7 +1,7 @@
 """The scoring rules of eval.py (no models needed). Runs in CI only."""
 import unittest
 
-from eval import BASELINE, correct, first_rank, mcnemar, recall_at, rrf, run_name, summary, tune
+from eval import BASELINE, correct, first_rank, jev_body, jev_scores, mcnemar, recall_at, rrf, run_name, summary, tune
 
 
 def row(pos, top_ok, best):
@@ -61,6 +61,26 @@ class Rules(unittest.TestCase):
         self.assertEqual(BASELINE, run_name("qwen3rr-skill", "bgem3", 10))
         self.assertEqual(BASELINE, "qwen3rr-skill@bgem3@k10")
 
+    def test_jev_body_matches_the_hook(self):
+        long = "h" * 3000 + "TAIL"
+        none, body = jev_body(long, [{"id": "a", "description": "d" * 500}, {"id": "(no skill)", "description": ""}])
+        self.assertEqual(none, "(no skill)*")
+        crit = body["questions"]["skill"]["criteria"]
+        self.assertEqual((len(crit["a"]), crit["(no skill)"]), (400, "(no skill)"))
+        self.assertIn(none, crit)
+        self.assertEqual(len(body["state"]), 2500)
+        self.assertTrue(body["state"].endswith("TAIL"))
+
+    def test_jev_scores_follow_the_hook(self):
+        c = [{"id": "a"}, {"id": "b"}]
+        resp = lambda ans: {"answers": {"skill": ans}}
+        self.assertEqual(jev_scores(resp({"choice": "(no skill)"}), c, "(no skill)"), [])
+        # the choice wins even when Jev reports a higher probability elsewhere
+        self.assertEqual(jev_scores(resp({"choice": "b", "probabilities": {"a": 0.9, "b": 0.1}}), c, "(no skill)"),
+                         [0.0, 1.0])
+        self.assertEqual(jev_scores(resp({"choice": "zzz"}), c, "(no skill)"), [])
+        rows = [{"pos": True, "top_ok": True, "best": 1.0}, {"pos": False, "top_ok": False, "best": None}]
+        self.assertTrue(all(correct(r, tune(rows)) for r in rows))
 
 if __name__ == "__main__":
     unittest.main()
