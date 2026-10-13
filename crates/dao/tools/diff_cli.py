@@ -140,6 +140,10 @@ def main():
     ap.add_argument("--freeze")
     ap.add_argument("--only", default="", help="comma-separated name prefixes (a quick subset; not with --freeze)")
     a = ap.parse_args()
+    if a.freeze and a.only:
+        ap.error("--only cannot be combined with --freeze (a fixture must hold the whole corpus)")
+    if a.freeze and a.corpus == "check":
+        ap.error("--freeze supports only the assess corpus; check_skill.json has its own schema")
     a.sub = a.corpus
     a.py, a.dao = os.path.abspath(a.py), os.path.abspath(a.dao)
     a.known = set(filter(None, a.known.split(",")))
