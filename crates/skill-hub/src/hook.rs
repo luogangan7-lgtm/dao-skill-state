@@ -51,6 +51,18 @@ pub struct Candidate {
     pub dense: Option<f64>,
 }
 
+/// A local cross-encoder that scores (prompt, candidate) pairs; the best is kept if it clears
+/// `tau`, otherwise the hook abstains. D7 (held-out 40 cases, same RRF top-10): bge-reranker-v2-m3
+/// with tau 0.02 chose right on 31/40 against 24/40 for the lexical rule, mostly by abstaining
+/// on chit-chat (10/12 vs 5/12); ~1.2 s per prompt on CPU.
+/// Scores for (query, texts), in text order.
+pub type Scorer<'a> = dyn Fn(&str, &[String]) -> Result<Vec<f32>, String> + 'a;
+
+pub struct Rerank<'a> {
+    pub score: &'a Scorer<'a>,
+    pub tau: f32,
+}
+
 /// How to reach Jev; absent means local lexical selection only.
 pub struct Jev {
     pub key: String,
@@ -184,9 +196,49 @@ fn call_jev(jev: &Jev, body: &str) -> Result<String, String> {
 }
 
 /// Choose what to show the model. Jev failures fall back to the lexical rule.
-pub fn decide(cands: &[Candidate], prompt: &str, jev: Option<&Jev>, n_skills: usize) -> Decision {
+pub fn decide(
+    cands: &[Candidate],
+    prompt: &str,
+    jev: Option<&Jev>,
+    rerank: Option<&Rerank>,
+    n_skills: usize,
+) -> Decision {
     if cands.is_empty() {
         return Decision::Nothing("no-match");
+    }
+    // the local reranker comes first: it never sends the prompt off the machine
+    if let Some(r) = rerank {
+        // the reference server takes at most 16 texts (larger --top-k only reranks the head)
+        let cands = &cands[..cands.len().min(16)];
+        let docs: Vec<String> = cands
+            .iter()
+            .map(|c| {
+                let d: String = c.description.chars().take(DESC_CHARS).collect();
+                format!("{}: {d}", c.id)
+            })
+            .collect();
+        match (r.score)(prompt, &docs) {
+            Ok(s) if s.len() == cands.len() => {
+                // ties go to the earlier candidate: retrieval order still means something
+                let best = (0..s.len())
+                    .reduce(|a, b| if s[b] > s[a] { b } else { a })
+                    .unwrap();
+                return if s[best] >= r.tau {
+                    Decision::Skills(vec![cands[best].clone()], "rerank")
+                } else {
+                    Decision::Nothing("rerank-none")
+                };
+            }
+            Ok(_) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "skill-hub hook: reranker returned the wrong number of scores"
+                );
+            }
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "skill-hub hook: {e}; reranker skipped");
+            }
+        }
     }
     if let Some(jev) = jev {
         let result = call_jev(jev, &jev_body(prompt, cands, &jev.model))
@@ -211,7 +263,7 @@ pub fn decide(cands: &[Candidate], prompt: &str, jev: Option<&Jev>, n_skills: us
     } else {
         Decision::Skills(
             keep,
-            if jev.is_some() {
+            if jev.is_some() || rerank.is_some() {
                 "lexical-fallback"
             } else {
                 "lexical"
@@ -268,7 +320,43 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
             model: std::env::var("SKILL_HUB_JEV_MODEL").unwrap_or_else(|_| "jev-latest".into()),
             curl: std::env::var("SKILL_HUB_CURL").unwrap_or_else(|_| "curl".into()),
         });
-    let decision = decide(&cands, &prompt, jev.as_ref(), reg.skills.len());
+    let rerank_fn = |q: &str, docs: &[String]| {
+        let ms = std::env::var("SKILL_HUB_RERANK_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
+        crate::dense::rerank(
+            q,
+            docs,
+            Instant::now() + std::time::Duration::from_millis(ms),
+        )
+    };
+    let rerank = std::env::var("SKILL_HUB_RERANK").is_ok().then(|| Rerank {
+        score: &rerank_fn,
+        tau: std::env::var("SKILL_HUB_RERANK_TAU")
+            .ok()
+            // a probability threshold: nan, negative or > 1 would mean "never" or "always"
+            .map(|v| {
+                v.parse::<f32>()
+                    .ok()
+                    .filter(|t| t.is_finite() && (0.0..=1.0).contains(t))
+                    .unwrap_or_else(|| {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "skill-hub hook: SKILL_HUB_RERANK_TAU={v:?} is not in [0,1]; using 0.02"
+                        );
+                        0.02
+                    })
+            })
+            .unwrap_or(0.02),
+    });
+    let decision = decide(
+        &cands,
+        &prompt,
+        jev.as_ref(),
+        rerank.as_ref(),
+        reg.skills.len(),
+    );
     if let Ok(log) = std::env::var("SKILL_HUB_HOOK_LOG") {
         // decisions only; the prompt text is never logged
         let (via, picked) = match &decision {
@@ -438,7 +526,114 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn rerank_keeps_the_best_above_tau_abstains_below_and_falls_back_on_error() {
+        let c = vec![cand("a", 20.0), cand("b", 15.0), cand("c", 1.0)];
+        let fixed = |s: Vec<f32>| move |_: &str, _: &[String]| Ok(s.clone());
+        let tie = fixed(vec![0.5, 0.5, 0.5]);
+        let r = Rerank {
+            score: &tie,
+            tau: 0.02,
+        };
+        match decide(&c, "tie", None, Some(&r), 3000) {
+            Decision::Skills(s, _) => assert_eq!(s[0].id, "a", "a tie keeps retrieval order"),
+            d => panic!("{d:?}"),
+        }
+        let pick = fixed(vec![0.1, 0.9, 0.0]);
+        let r = Rerank {
+            score: &pick,
+            tau: 0.02,
+        };
+        match decide(&c, "do b", None, Some(&r), 3000) {
+            Decision::Skills(s, via) => {
+                assert_eq!((s[0].id.as_str(), s.len(), via), ("b", 1, "rerank"))
+            }
+            d => panic!("{d:?}"),
+        }
+        let low = fixed(vec![0.01, 0.005, 0.0]);
+        let r = Rerank {
+            score: &low,
+            tau: 0.02,
+        };
+        assert!(matches!(
+            decide(&c, "hi", None, Some(&r), 3000),
+            Decision::Nothing("rerank-none")
+        ));
+        // a reranker that fails or miscounts leaves the lexical rule in charge
+        let broken = |_: &str, _: &[String]| -> Result<Vec<f32>, String> { Err("down".into()) };
+        let short = fixed(vec![0.5]);
+        for f in [
+            &broken as &dyn Fn(&str, &[String]) -> Result<Vec<f32>, String>,
+            &short,
+        ] {
+            let r = Rerank {
+                score: f,
+                tau: 0.02,
+            };
+            assert!(matches!(
+                decide(&c, "do a", None, Some(&r), 3000),
+                Decision::Skills(_, "lexical-fallback")
+            ));
+        }
+        // the reranker sees "id: description" for every candidate, in order
+        let seen = std::cell::RefCell::new(Vec::new());
+        let spy = |_: &str, d: &[String]| {
+            *seen.borrow_mut() = d.to_vec();
+            Ok(vec![0.0; d.len()])
+        };
+        let r = Rerank {
+            score: &spy,
+            tau: 0.02,
+        };
+        decide(&c, "x", None, Some(&r), 3000);
+        assert_eq!(seen.borrow().len(), 3);
+        assert!(seen.borrow()[1].starts_with("b: "));
+    }
+
+    #[test]
+    fn the_prompt_reaches_jev_only_when_the_local_reranker_fails() {
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (curl, dir) = fake_curl(
+            "rerank-first",
+            r#"echo '{"answers":{"skill":{"answer":"a"}}}'"#,
+        );
+        let jev = Jev {
+            key: "k".into(),
+            model: "m".into(),
+            curl,
+        };
+        let c = [cand("a", 20.0), cand("b", 15.0)];
+        let ok = |_: &str, d: &[String]| Ok(vec![0.9; d.len()]);
+        let r = Rerank {
+            score: &ok,
+            tau: 0.02,
+        };
+        assert!(matches!(
+            decide(&c, "secret", Some(&jev), Some(&r), 3000),
+            Decision::Skills(_, "rerank")
+        ));
+        assert!(
+            !dir.join("argv").exists(),
+            "jev was called although the reranker answered"
+        );
+        let down = |_: &str, _: &[String]| -> Result<Vec<f32>, String> { Err("down".into()) };
+        let r = Rerank {
+            score: &down,
+            tau: 0.02,
+        };
+        assert!(matches!(
+            decide(&c, "secret", Some(&jev), Some(&r), 3000),
+            Decision::Skills(_, "jev")
+        ));
+        assert!(
+            dir.join("argv").exists(),
+            "jev is the fallback when the reranker fails"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn jev_pick_is_used_and_key_stays_out_of_argv() {
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (curl, dir) = fake_curl("ok", r#"echo '{"answers":{"skill":{"answer":"b"}}}'"#);
         let jev = Jev {
             key: "sk-secret-123".into(),
@@ -447,7 +642,7 @@ mod tests {
         };
         let c = [cand("a", 20.0), cand("b", 10.0)];
         assert_eq!(
-            decide(&c, "do b", Some(&jev), 3000),
+            decide(&c, "do b", Some(&jev), None, 3000),
             Decision::Skills(vec![cand("b", 10.0)], "jev")
         );
         let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
@@ -462,6 +657,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn jev_none_injects_nothing_and_failure_falls_back() {
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (curl, d1) = fake_curl(
             "none",
             r#"echo '{"answers":{"skill":{"answer":"(no skill)"}}}'"#,
@@ -473,7 +669,7 @@ mod tests {
         };
         let c = [cand("a", 20.0)];
         assert_eq!(
-            decide(&c, "hi", Some(&jev), 3000),
+            decide(&c, "hi", Some(&jev), None, 3000),
             Decision::Nothing("jev-none")
         );
         let (curl, d2) = fake_curl("fail", "exit 22");
@@ -483,11 +679,11 @@ mod tests {
             curl,
         };
         assert_eq!(
-            decide(&c, "hi", Some(&jev), 3000),
+            decide(&c, "hi", Some(&jev), None, 3000),
             Decision::Skills(vec![cand("a", 20.0)], "lexical-fallback")
         );
         assert_eq!(
-            decide(&[], "hi", Some(&jev), 3000),
+            decide(&[], "hi", Some(&jev), None, 3000),
             Decision::Nothing("no-match")
         );
         let _ = (std::fs::remove_dir_all(d1), std::fs::remove_dir_all(d2));

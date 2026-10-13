@@ -20,6 +20,11 @@
 mod dense;
 mod hook;
 
+/// Tests that write an executable or fork hold this: on Linux, exec of a script fails with
+/// ETXTBSY while a child forked by a parallel test still holds the writer's descriptor.
+#[cfg(test)]
+pub(crate) static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1183,6 +1188,7 @@ mod tests {
         put(&root, "loop", "loop", "has a symlink loop and a fifo");
         std::os::unix::fs::symlink("..", root.join("loop/up")).unwrap();
         let fifo = root.join("loop/pipe");
+        let _spawn = crate::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert!(std::process::Command::new("mkfifo")
             .arg(&fifo)
             .status()
