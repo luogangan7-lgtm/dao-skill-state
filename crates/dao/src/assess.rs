@@ -1457,6 +1457,10 @@ fn arg_kind(a: &str) -> char {
             _ => 'o',
         };
     }
+    if a.starts_with("-=") {
+        // argparse splits at '=' and the prefix "-" matches both -h and --help: ambiguous, at once
+        return 'e';
+    }
     if let Some(rest) = a.strip_prefix("-h") {
         // a chain of short flags: -hh is help twice, -hx queues help before the unknown -x
         let rest = rest.trim_start_matches('h');

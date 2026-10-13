@@ -38666,6 +38666,49 @@
 "python_stdout": ""
 },
 {
+"name": "c-deq-help",
+"args": [
+"x",
+"-=y",
+"-h"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "usage",
+"python_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+"python_stdout": ""
+},
+{
+"name": "c-deq-bare",
+"args": [
+"x",
+"-=",
+"-h"
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "usage",
+"python_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+"python_stdout": ""
+},
+{
+"name": "c-deq-space",
+"args": [
+"-=1x "
+],
+"files": {},
+"dirs": [],
+"fifos": [],
+"python_exit": 2,
+"python_stderr": "usage",
+"python_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+"python_stdout": ""
+},
+{
 "name": "c-nonutf8-missing",
 "args": [
 {
