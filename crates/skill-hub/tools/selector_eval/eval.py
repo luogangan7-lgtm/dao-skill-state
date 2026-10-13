@@ -3,11 +3,13 @@
 
 Runs in CI only (`.github/workflows/selector-eval.yml`); nothing here runs on a developer machine.
 
-  eval.py cands  BUNDLE SKILL_HUB OUT   rebuild every case's top-10 candidates the way skill-hub
-                                        ranks them: BM25 top-50 (the skill-hub binary) fused by
-                                        RRF (K=60) with bge-m3 dense top-200, as in dense.rs
-  eval.py run    BUNDLE MODEL OUT_DIR   score one selector; tau is tuned on dev only, then
-                                        applied once to the held-out split
+  eval.py cands  BUNDLE SKILL_HUB OUT   rebuild every case's candidates the way skill-hub ranks
+                                        them: BM25 top-50 (the skill-hub binary) fused by RRF
+                                        (K=60) with a dense top-200, as in dense.rs; two dense
+                                        models (bge-m3, as shipped, and Qwen3-Embedding), top-16
+                                        kept, recall@k of every list printed
+  eval.py run    BUNDLE MODEL OUT_DIR [SRC K]   score one selector on retrieval variant SRC
+                                        (bgem3|qwen3emb) at depth K; tau tuned on dev only
   eval.py report OUT_DIR                markdown table + paired exact McNemar tests
 
 Bundle (decrypted from data.json.enc; key = SELECTOR_EVAL_KEY in the `selector-eval` environment):
@@ -178,19 +180,37 @@ def summary(rows, tau):
     }
 
 
-def run(bundle_path, model, out):
+def run_name(model, src, k):
+    return f"{model}@{src}@k{k}"
+
+
+def first_rank(lst, gold):
+    """0-based position of the first gold item in a ranked list, None if absent. A case whose
+    expected ids are all missing from the registry has an empty gold set and counts as a miss."""
+    return next((n for n, i in enumerate(lst) if i in gold), None)
+
+
+def recall_at(ranks, k):
+    return sum(1 for r in ranks if r is not None and r < k)
+
+
+def run(bundle_path, model, out, src="bgem3", k="10"):
+    k = int(k)
+    name = run_name(model, src, k)
     t = time.time()
     fn = load(model)  # before the private data is in this process
     load_s = time.time() - t
     bundle = json.load(open(bundle_path))
     fn("warm up", [{"id": "a", "description": "warm up"}, {"id": "b", "description": "other"}])
+    for split in ("dev", "held"):  # the chosen retrieval variant and candidate depth
+        bundle[split]["cands"] = {cid: hs[:k] for cid, hs in bundle[split]["cands_by_src"][src].items()}
     dev, held = score_split(fn, bundle["dev"]), score_split(fn, bundle["held"])
     tau = tune(dev)
-    res = {"model": model, "tau": tau, "load_s": round(load_s, 1),
+    res = {"model": name, "tau": tau, "load_s": round(load_s, 1),
            "dev": summary(dev, tau), "held": summary(held, tau), "rows": {"dev": dev, "held": held}}
     os.makedirs(out, exist_ok=True)
-    json.dump(res, open(os.path.join(out, f"{model}.json"), "w"), indent=1)
-    print(model, res["dev"]["all"], res["held"]["all"])
+    json.dump(res, open(os.path.join(out, f"{name}.json"), "w"), indent=1)
+    print(name, res["dev"]["all"], res["held"]["all"])
 
 
 # --- candidates -----------------------------------------------------------------------------
@@ -204,23 +224,33 @@ def rrf(lexical, dense, k=60.0):
     return sorted(score, key=lambda i: (-score[i], i))
 
 
+QWEN_EMB_REPO = "Qwen/Qwen3-Embedding-0.6B"
+CAND_K = 16  # the reference rerank server accepts at most 16 texts per request
+RECALL_AT = (5, 10, 16, 30)
+
+
 def cands(bundle_path, skill_hub, out):
+    """Two retrieval variants, BM25 fused by RRF with bge-m3 (what skill-hub ships) or with
+    Qwen3-Embedding as the dense half; recall@k of each list, numbers only."""
     import tempfile
     from sentence_transformers import SentenceTransformer
-    r = "BAAI/bge-m3"
-    m = SentenceTransformer(r, device="cpu", revision=REVISIONS[r])  # before the private data
+    dense_models = {"bgem3": SentenceTransformer("BAAI/bge-m3", device="cpu", revision=REVISIONS["BAAI/bge-m3"]),
+                    "qwen3emb": SentenceTransformer(QWEN_EMB_REPO, device="cpu",
+                                                    revision=REVISIONS[QWEN_EMB_REPO])}  # before the data
     bundle = json.load(open(bundle_path))
     reg = bundle.pop("registry")
     skills = reg["skills"]
     index = {s["id"]: i for i, s in enumerate(skills)}
+    gold_rank = {}  # (split, list name) -> [rank of the first gold id per positive case, or None]
     with tempfile.TemporaryDirectory() as d:
         reg_path = os.path.join(d, "registry.json")  # no .emb sidecar: skill-hub search is BM25 only
         json.dump(reg, open(reg_path, "w"))
         # skill-hub embed_text: "name: description", first 2000 chars
-        sv = m.encode([f'{s["name"]}: {s["description"]}'[:2000] for s in skills], batch_size=32,
-                      normalize_embeddings=True, show_progress_bar=False)
+        texts = [f'{s["name"]}: {s["description"]}'[:2000] for s in skills]
+        sv = {k: m.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=False)
+              for k, m in dense_models.items()}
         for split in ("dev", "held"):
-            out_c = {}
+            by_src = {k: {} for k in dense_models}
             for c in bundle[split]["cases"]:
                 # errors name the case id only: argv holds the private prompt, and a traceback
                 # would put it into a public Actions log
@@ -236,21 +266,32 @@ def cands(bundle_path, skill_hub, out):
                     raise SystemExit(f"skill-hub returned an unknown id on case {c['id']}")
                 lex_idx = [index[h["id"]] for h in lex]
                 bm25 = {index[h["id"]]: h["score"] for h in lex}
-                cos = sv @ m.encode([c["prompt"]], normalize_embeddings=True, show_progress_bar=False)[0]
-                dense = sorted(range(len(skills)), key=lambda i: (-cos[i], i))[:200]
-                top = rrf(lex_idx, dense)[:10] if c["prompt"].strip() else lex_idx[:10]
-                out_c[c["id"]] = [{"id": skills[i]["id"], "description": skills[i]["description"],
-                                   "score": bm25.get(i, 0.0)} for i in top]
-            bundle[split]["cands"] = out_c
+                lists = {"lexical": lex_idx}
+                for k, m in dense_models.items():
+                    qp = {"prompt": QWEN_EMB_PROMPT} if k == "qwen3emb" else {}
+                    cos = sv[k] @ m.encode([c["prompt"]], normalize_embeddings=True, show_progress_bar=False,
+                                           **qp)[0]
+                    dense = sorted(range(len(skills)), key=lambda i: (-cos[i], i))[:200]
+                    fused = rrf(lex_idx, dense) if c["prompt"].strip() else lex_idx
+                    lists[f"dense-{k}"], lists[f"rrf-{k}"] = dense, fused
+                    by_src[k][c["id"]] = [{"id": skills[i]["id"], "description": skills[i]["description"],
+                                           "score": bm25.get(i, 0.0)} for i in fused[:CAND_K]]
+                if c["expect"]:
+                    gold = {index[e] for e in c["expect"] if e in index}
+                    for name, lst in lists.items():
+                        gold_rank.setdefault((split, name), []).append(first_rank(lst, gold))
+            bundle[split]["cands_by_src"] = by_src
     json.dump(bundle, open(out, "w"), ensure_ascii=False)
-    for split in ("dev", "held"):
-        cs = bundle[split]["cases"]
-        pos = [c for c in cs if c["expect"]]
-        hit = sum(any(h["id"] in c["expect"] for h in bundle[split]["cands"][c["id"]]) for c in pos)
-        print(f"{split}: {len(cs)} cases, candidate ceiling {hit}/{len(pos)}")
+    # recall@k: share of positives whose gold skill is within the first k of each list
+    for (split, name), ranks in sorted(gold_rank.items()):
+        cells = " ".join(f"@{k}={recall_at(ranks, k)}/{len(ranks)}" for k in RECALL_AT)
+        print(f"{split} {name}: {cells}")
 
 
 # --- report ---------------------------------------------------------------------------------
+
+BASELINE = run_name("qwen3rr-skill", "bgem3", 10)  # what skill-hub ships after PR #17
+
 
 def mcnemar(a, b):
     """Exact two-sided McNemar on paired correctness: (wins of a, losses of a, p)."""
@@ -270,7 +311,7 @@ def report(out):
         if f.endswith(".json"):
             r = json.load(open(os.path.join(out, f)))
             res[r["model"]] = r
-    lines = ["| model | tau | dev | **held** | held pos | held abstain | top-1 | ceiling | false abstain "
+    lines = ["| config | tau | dev | **held** | held pos | held abstain | top-1 | ceiling | false abstain "
              "| wrong skill | false fire | p50/p95 ms | load s |", "|" + "---|" * 13]
     order = sorted(res, key=lambda m: -int(res[m]["held"]["all"].split("/")[0]))
     for m in order:
@@ -280,11 +321,11 @@ def report(out):
                      f'| {h["false_fire"]} | {h["p50_ms"]} / {h["p95_ms"]} | {r["load_s"]} |')
     ok = {m: {x["id"]: correct(x, res[m]["tau"]) for x in res[m]["rows"]["held"]} for m in res}
     lines += ["", "Paired exact McNemar on held-out (wins / losses of the row model, p):", "",
-              "| model | vs bge | vs best |", "|---|---|---|"]
+              f"| config | vs {BASELINE} | vs best |", "|---|---|---|"]
     best = order[0] if order else None
     for m in order:
         cells = []
-        for ref in ("bge", best):
+        for ref in (BASELINE, best):
             if ref in ok and ref != m:
                 w, l, p = mcnemar(ok[m], ok[ref])
                 cells.append(f"{w} / {l}, p={p:.3f}")

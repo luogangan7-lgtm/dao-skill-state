@@ -1,7 +1,7 @@
 """The scoring rules of eval.py (no models needed). Runs in CI only."""
 import unittest
 
-from eval import correct, mcnemar, rrf, summary, tune
+from eval import BASELINE, correct, first_rank, mcnemar, recall_at, rrf, run_name, summary, tune
 
 
 def row(pos, top_ok, best):
@@ -48,6 +48,18 @@ class Rules(unittest.TestCase):
         self.assertEqual((w, l), (2, 1))
         self.assertAlmostEqual(p, 1.0)
         self.assertEqual(mcnemar(a, a)[2], 1.0)
+
+    def test_recall_counts_zero_based_ranks_strictly_below_k(self):
+        lst = [7, 3, 9, 4]
+        self.assertEqual(first_rank(lst, {9}), 2)
+        self.assertIsNone(first_rank(lst, {42}))
+        self.assertIsNone(first_rank(lst, set()))  # expected ids all missing from the registry
+        ranks = [0, 2, None, 5]
+        self.assertEqual((recall_at(ranks, 1), recall_at(ranks, 3), recall_at(ranks, 6)), (1, 2, 3))
+
+    def test_the_baseline_is_the_shipped_configuration(self):
+        self.assertEqual(BASELINE, run_name("qwen3rr-skill", "bgem3", 10))
+        self.assertEqual(BASELINE, "qwen3rr-skill@bgem3@k10")
 
 
 if __name__ == "__main__":

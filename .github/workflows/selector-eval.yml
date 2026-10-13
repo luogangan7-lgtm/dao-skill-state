@@ -60,7 +60,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-cands-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json') }}
+          key: hf-cands-v2-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json') }}  # v2: + Qwen3-Embedding
       - name: Build skill-hub
         working-directory: crates/skill-hub
         run: cargo build --release --locked
@@ -99,7 +99,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [bge, qwen3rr, qwen3rr-skill, gte-mbert, qwen3emb, laya-ml, laya-en, laya-td]
+        # round 4 (recall): the shipped selector on both retrieval variants at depth 10 and 16
+        include:
+          - {model: qwen3rr-skill, src: bgem3, k: 10}
+          - {model: qwen3rr-skill, src: bgem3, k: 16}
+          - {model: qwen3rr-skill, src: qwen3emb, k: 10}
+          - {model: qwen3rr-skill, src: qwen3emb, k: 16}
+          - {model: bge, src: bgem3, k: 10}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -126,10 +132,11 @@ jobs:
       - name: Evaluate
         run: |
           trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
-          python crates/skill-hub/tools/selector_eval/eval.py run "$RUNNER_TEMP/cands.json" "${{ matrix.model }}" results
+          python crates/skill-hub/tools/selector_eval/eval.py run "$RUNNER_TEMP/cands.json" "${{ matrix.model }}" results \
+            "${{ matrix.src }}" "${{ matrix.k }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: selector-eval-${{ matrix.model }}
+          name: selector-eval-${{ matrix.model }}-${{ matrix.src }}-k${{ matrix.k }}
           path: results/
           retention-days: 14
   report:
@@ -148,9 +155,9 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## skill-hub selector eval, round 3 (tau tuned on dev, applied once to held-out)"
+            echo "## skill-hub selector eval, round 4: recall (tau tuned on dev per config, applied once to held-out)"
             echo
-            echo "Candidates (built in CI): ${{ needs.cands.outputs.ceiling }}"
+            echo "Recall of each retrieval list (gold skill within the first k): ${{ needs.cands.outputs.ceiling }}"
             echo
             python3 crates/skill-hub/tools/selector_eval/eval.py report results
           } >> "$GITHUB_STEP_SUMMARY"
