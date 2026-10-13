@@ -24,8 +24,10 @@ use crate::check::{days_in_month, py_path_str, py_space};
 use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::OnceLock;
 
@@ -284,7 +286,7 @@ fn number(c: &[char], start: usize) -> Result<(Val, usize), PErr> {
     }
     let text: String = c[start..idx].iter().collect();
     if is_float {
-        return Ok((Val::Float(text.parse().unwrap()), idx));
+        return Ok((Val::Float(parse_float(&text)), idx));
     }
     let (neg, mag) = match text.strip_prefix('-') {
         Some(m) => (m != "0", m.to_string()),
@@ -297,6 +299,46 @@ fn number(c: &[char], start: usize) -> Result<(Val, usize), PErr> {
         )));
     }
     Ok((Val::Int(Int { neg, mag }), idx))
+}
+
+/// `float(text)` for a JSON float literal. Rust's parser saturates the exponent near 65536, so
+/// the digits and exponent are first folded into at most 801 significant digits (a sticky `1`
+/// stands for a dropped nonzero tail; f64 needs at most 768) and a small exponent, with
+/// out-of-range magnitudes decided here as inf or 0.
+fn parse_float(text: &str) -> f64 {
+    let (neg, t) = text.strip_prefix('-').map_or((false, text), |t| (true, t));
+    let (mant, exp) = t.split_once(['e', 'E']).unwrap_or((t, "0"));
+    let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+    let (eneg, edigits) = match exp.as_bytes()[0] {
+        b'-' => (true, &exp[1..]),
+        b'+' => (false, &exp[1..]),
+        _ => (false, exp),
+    };
+    let edigits = edigits.trim_start_matches('0');
+    // |exponent| beyond 10^17 is decided by its sign alone: mantissas are under 10^7 digits
+    let e: i64 = if edigits.len() > 17 {
+        1 << 60
+    } else {
+        edigits.parse().unwrap_or(0)
+    };
+    let mut e = if eneg { -e } else { e } - frac.len() as i64;
+    let all = format!("{int}{frac}");
+    let trimmed = all.trim_end_matches('0');
+    e += (all.len() - trimmed.len()) as i64;
+    let mut digits = trimmed.trim_start_matches('0').to_string();
+    let sign = if neg { -1.0 } else { 1.0 };
+    if digits.is_empty() || digits.len() as i64 + e < -330 {
+        return sign * 0.0;
+    }
+    if digits.len() as i64 + e > 310 {
+        return sign * f64::INFINITY;
+    }
+    if digits.len() > 801 {
+        e += digits.len() as i64 - 801;
+        digits.truncate(800);
+        digits.push('1');
+    }
+    sign * format!("{digits}e{e}").parse::<f64>().unwrap()
 }
 
 /// `"key"` + ws + `:` + ws; returns the key and the index of the value.
@@ -524,9 +566,18 @@ fn utf8_error(raw: &[u8], e: std::str::Utf8Error) -> String {
     }
 }
 
-/// `str(float)` (shortest round-trip, Python's exponent thresholds).
+/// `str(float)` (shortest round-trip, Python's exponent thresholds). Rust's shortest form breaks
+/// a tie between two equally near shortest strings upward; repr takes the correctly rounded
+/// (half-even) one, which exact formatting at the same digit count gives.
 fn py_float(x: f64) -> String {
-    let s = format!("{x:e}");
+    let shortest = format!("{x:e}");
+    let n = shortest
+        .split_once('e')
+        .unwrap()
+        .0
+        .matches(|c: char| c.is_ascii_digit())
+        .count();
+    let s = format!("{x:.*e}", n - 1);
     let (mant, exp) = s.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let (sign, mant) = match mant.strip_prefix('-') {
@@ -1288,7 +1339,7 @@ fn input_error(msg: S) -> (String, u8) {
     (out, 2)
 }
 
-fn read_input(path: &str) -> Result<Vec<u8>, String> {
+fn read_input(path: &[u8]) -> Result<Vec<u8>, String> {
     let os_err = |e: std::io::Error| {
         let text = e.to_string();
         let text = text
@@ -1297,13 +1348,13 @@ fn read_input(path: &str) -> Result<Vec<u8>, String> {
         format!(
             "[Errno {}] {text}: {}",
             e.raw_os_error().unwrap_or(0),
-            py_repr(&u(path))
+            py_repr(&surrogateescape(path))
         )
     };
     let mut f = OpenOptions::new()
         .read(true)
         .custom_flags(O_NONBLOCK)
-        .open(path)
+        .open(OsStr::from_bytes(path))
         .map_err(os_err)?;
     if !f.metadata().map_err(os_err)?.is_file() {
         return Err("input must be a regular file".into());
@@ -1320,8 +1371,10 @@ fn read_input(path: &str) -> Result<Vec<u8>, String> {
 }
 
 /// `check_assessment.main([arg])` minus argparse: (stdout without the final newline, exit code).
-pub fn assess(arg: &str) -> (String, u8) {
-    let path = py_path_str(arg);
+pub fn assess(arg: &[u8]) -> (String, u8) {
+    // pathlib's normalisation only looks at '/' and '.', so run it on a byte-per-char copy
+    let latin1: String = arg.iter().map(|&b| b as char).collect();
+    let path: Vec<u8> = py_path_str(&latin1).chars().map(|c| c as u8).collect();
     let raw = match read_input(&path) {
         Ok(r) => r,
         Err(m) => return input_error(u(&m)),
@@ -1392,6 +1445,7 @@ fn arg_kind(a: &str) -> char {
         ) {
             (true, false) => 'h',
             (true, true) => 'e',
+            _ if a.contains(' ') => 'p',
             _ => 'o',
         };
     }
@@ -1404,9 +1458,12 @@ fn arg_kind(a: &str) -> char {
             'h'
         };
     }
-    let negative_number =
-        b[1].is_ascii_digit() || (b[1] == b'.' && b.get(2).is_some_and(u8::is_ascii_digit));
-    if negative_number || a.contains(' ') {
+    static NEG: OnceLock<Regex> = OnceLock::new(); // argparse's matcher; \d is Unicode Nd here too
+    if NEG
+        .get_or_init(|| Regex::new(r"^-\.?\d").unwrap())
+        .is_match(a)
+        || a.contains(' ')
+    {
         'p'
     } else {
         'o'
@@ -1418,15 +1475,28 @@ fn usage_error(why: &str) -> u8 {
     2
 }
 
-/// `dao assess [-h] input`; prints like the Python CLI and returns its exit code.
-pub fn main(args: &[String]) -> u8 {
+/// Python's view of a non-UTF-8 argv: each undecodable byte becomes a U+DC80..U+DCFF surrogate.
+fn surrogateescape(b: &[u8]) -> S {
+    let mut out = S::new();
+    for chunk in b.utf8_chunks() {
+        out.extend(chunk.valid().chars().map(|c| c as u32));
+        out.extend(chunk.invalid().iter().map(|&x| 0xDC00 + x as u32));
+    }
+    out
+}
+
+/// `dao assess [-h] input`; prints like the Python CLI and returns its exit code. Arguments stay
+/// bytes (Python takes non-UTF-8 argv through surrogate escapes); options are judged on a lossy
+/// copy, which only replaces bytes argparse never looks at.
+pub fn main(args: &[OsString]) -> u8 {
     let (mut pos, mut bad, mut rest) = (Vec::new(), Vec::new(), false);
-    for a in args {
+    for raw in args {
+        let a = String::from_utf8_lossy(raw.as_bytes()).into_owned();
         if rest {
-            pos.push(a);
+            pos.push((a, raw));
             continue;
         }
-        match (a.as_str(), arg_kind(a)) {
+        match (a.as_str(), arg_kind(&a)) {
             ("--", _) => rest = true,
             (_, 'h') => {
                 print!("{HELP}");
@@ -1434,7 +1504,7 @@ pub fn main(args: &[String]) -> u8 {
             }
             (_, 'o') => bad.push(a),
             (_, 'e') => return usage_error("argument -h/--help: ignored explicit argument"),
-            _ => pos.push(a),
+            _ => pos.push((a, raw)),
         }
     }
     if pos.is_empty() {
@@ -1443,12 +1513,12 @@ pub fn main(args: &[String]) -> u8 {
     if pos.len() > 1 || !bad.is_empty() {
         let extra: Vec<&str> = bad
             .iter()
-            .chain(pos.iter().skip(1))
+            .chain(pos.iter().skip(1).map(|p| &p.0))
             .map(|s| s.as_str())
             .collect();
         return usage_error(&format!("unrecognized arguments: {}", extra.join(" ")));
     }
-    let (out, code) = assess(pos[0]);
+    let (out, code) = assess(pos[0].1.as_bytes());
     let mut stdout = std::io::stdout().lock();
     let _ = writeln!(stdout, "{out}"); // a closed stdout is not worth a panic
     code
@@ -1474,6 +1544,11 @@ mod tests {
             (5e-324, "5e-324"),
             (2.0 / 3.0, "0.6666666666666666"),
             (123456789.125, "123456789.125"),
+            // shortest-digit ties round half-even like repr, not up
+            (1e15 + 0.25, "1000000000000000.2"),
+            (580932385485918.0 + 0.25, "580932385485918.2"),
+            (2f64.powi(49) + 0.25, "562949953421312.2"),
+            (1394089528363410.2, "1394089528363410.2"),
         ] {
             assert_eq!(py_float(x), s);
         }
@@ -1486,6 +1561,29 @@ mod tests {
         assert_eq!(
             py_repr(&[0x27, 0x22, 0xd800, 0xe9, 0xad, 0x1f600]),
             "'\\'\"\\ud800é\\xad😀'"
+        );
+    }
+
+    #[test]
+    fn long_float_literals_parse_like_python_float() {
+        let f = |t: String| match number(&format!("{t} ").chars().collect::<Vec<_>>(), 0) {
+            Ok((Val::Float(x), _)) => x,
+            _ => panic!("not a float: {t}"),
+        };
+        let z = "0".repeat(700_000);
+        assert_eq!(f(format!("0.{z}1e700401")), f64::INFINITY);
+        assert_eq!(f(format!("-0.{z}1e700401")), f64::NEG_INFINITY);
+        assert_eq!(f(format!("0.{z}1e700001")), 1.0);
+        assert_eq!(f(format!("1{z}e-700000")), 1.0);
+        assert_eq!(f(format!("1{z}.5e-700401")), 0.0);
+        assert_eq!(f(format!("1.5e{}", "9".repeat(30))), f64::INFINITY);
+        assert_eq!(f(format!("1.5e-{}", "9".repeat(30))), 0.0);
+        assert_eq!(f(format!("0.{z}e{}", "9".repeat(30))), 0.0);
+        assert_eq!(f("0.1".into()), 0.1);
+        // more than f64's 768 significant digits: the dropped tail still rounds the result
+        assert_eq!(
+            f(format!("9007199254740993{}1e-{}", "0".repeat(800), 801)),
+            9007199254740994.0
         );
     }
 
