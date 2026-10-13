@@ -445,7 +445,7 @@ fn set_mode(_: &Path, _: u32) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn make_writable(p: &Path) -> std::io::Result<()> {
+pub(crate) fn make_writable(p: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let meta = fs::symlink_metadata(p)?;
     fs::set_permissions(
@@ -460,7 +460,7 @@ fn make_writable(p: &Path) -> std::io::Result<()> {
     Ok(())
 }
 #[cfg(not(unix))]
-fn make_writable(_: &Path) -> std::io::Result<()> {
+pub(crate) fn make_writable(_: &Path) -> std::io::Result<()> {
     Ok(())
 }
 

@@ -10,6 +10,7 @@ mod admission;
 mod check;
 mod eval;
 mod normalize;
+mod publish;
 mod quarantine;
 mod relations;
 mod scan;
@@ -34,6 +35,7 @@ fn usage() -> ExitCode {
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao admit --store DIR --digest D   gates: object, scan (CLEAN or approved REVIEW), card, eval; exit 1 if refused\n\
   dao promote --store DIR --digest D | rollback --store DIR --name N | recover --store DIR   champion pointers via the journal\n\
+  dao publish --store DIR --target DIR [--apply] [--rollback]   champions -> <target>/<name>/, versioned in <target>/.dao-publication.json (dry run without --apply; exit 1 on conflicts)\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
@@ -625,6 +627,44 @@ fn champion_cmd(cmd: &str, args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `dao publish --store DIR --target DIR [--apply] [--rollback]`: plan (or apply) publishing
+/// every champion, or the previous publication with `--rollback`. Exit 1 when anything conflicts.
+fn publish_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|a| !matches!(a.as_str(), "--apply" | "--rollback"))
+        .cloned()
+        .collect();
+    let o = opts(&rest, &["--store", "--target"])?;
+    let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
+    let target = PathBuf::from(o.get("--target").ok_or("--target is required")?);
+    let lock = publish::read_lock(&target)?;
+    let want = publish::wanted(&store, &lock, flag("--rollback"))?;
+    let actions = publish::plan(&store, &target, &lock, &want);
+    let conflict = actions.iter().any(|a| a.action == "conflict");
+    let version = if flag("--apply") && !conflict {
+        publish::apply(&store, &target, lock, &want, &actions)?
+            .history
+            .last()
+            .map(|v| v.version)
+    } else {
+        lock.history.last().map(|v| v.version)
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "target": target, "applied": flag("--apply") && !conflict,
+            "version": version, "actions": actions}))
+        .unwrap()
+    );
+    Ok(if conflict {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
     let (store, digests) = store_and_digests(args)?;
     if !digests.is_empty() || args.iter().any(|a| a == "--all") {
@@ -664,6 +704,7 @@ fn main() -> ExitCode {
         Some("relations") => relations_cmd(&args[1..]),
         Some("eval") => eval_cmd(&args[1..]),
         Some("admit") => admit_cmd(&args[1..]),
+        Some("publish") => publish_cmd(&args[1..]),
         Some("promote" | "rollback" | "recover") => champion_cmd(&args[0], &args[1..]),
         Some("check") if args.len() <= 2 => {
             let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
