@@ -44,7 +44,7 @@ fn issue(kind: &str, message: impl Into<String>) -> Issue {
 // ---------- Python string semantics ----------
 
 /// `str.isspace()`: White_Space plus the C0 separators \x1c-\x1f.
-fn py_space(c: char) -> bool {
+pub(crate) fn py_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
@@ -79,7 +79,7 @@ fn py_splitlines(s: &str) -> Vec<&str> {
 }
 
 /// `str(pathlib.PurePosixPath(arg))`.
-fn py_path_str(arg: &str) -> String {
+pub(crate) fn py_path_str(arg: &str) -> String {
     if arg.is_empty() {
         return ".".into();
     }
@@ -364,7 +364,7 @@ fn py_float_ok(s: &str) -> bool {
     !t.is_empty() && t.is_ascii() && t.parse::<f64>().is_ok()
 }
 
-fn days_in_month(y: u32, m: u32) -> u32 {
+pub(crate) fn days_in_month(y: u32, m: u32) -> u32 {
     match m {
         2 if (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400) => 29,
         2 => 28,
