@@ -2,10 +2,11 @@
 //!
 //! Role: entry point; routes subcommands to modules. Stage 1 (this crate's first card):
 //! `dao intake` = source pinning + quarantine into a content-addressed store.
-//! Depends on: source, quarantine. Called by: users, CI, later DAO stages (scan, normalize).
+//! Depends on: source, quarantine, scan, normalize, relations, check, assess. Called by: users, CI, later DAO stages (scan, normalize).
 //! Invariants: exit 0 when the command ran (rejected skills are a normal outcome, listed in
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
+mod assess;
 mod check;
 mod normalize;
 mod quarantine;
@@ -29,6 +30,7 @@ fn usage() -> ExitCode {
   dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
+  dao assess FILE   (Rust port of check_assessment.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
     ExitCode::from(2)
@@ -394,6 +396,7 @@ fn main() -> ExitCode {
             println!("{}", check::to_json(&r));
             return ExitCode::from(check::exit_code(&r));
         }
+        Some("assess") => return ExitCode::from(assess::main(&args[1..])),
         _ => return usage(),
     };
     result.unwrap_or_else(|e| {
