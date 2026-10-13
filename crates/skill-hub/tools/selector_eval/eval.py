@@ -18,6 +18,16 @@ import os
 import sys
 import time
 
+# Every evaluated repository at a fixed commit, so reruns compare the same weights, configs and
+# tokenizers (and gte's config, which chooses its remote code, cannot change underneath us).
+REVISIONS = {
+    "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "Qwen/Qwen3-Reranker-0.6B": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
+    "mixedbread-ai/mxbai-rerank-base-v2": "3ea9d4dffa7d12a4f366be8e275c349de9fc9865",
+    "Alibaba-NLP/gte-multilingual-reranker-base": "8215cf04918ba6f7b6a62bb44238ce2953d8831c",
+    "Alibaba-NLP/new-impl": "40ced75c3017eb27626c9d4ea981bde21a2662f4",
+}
+
 QWEN_DEFAULT = "Given a web search query, retrieve relevant passages that answer the query"
 QWEN_SKILL = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
               "should be loaded to carry out the request; small talk or general questions need no skill")
@@ -31,22 +41,29 @@ def load(model):
     f32 = {("dtype" if int(transformers.__version__.split(".")[0]) >= 5 else "torch_dtype"): torch.float32}
     if model == "bge":
         from sentence_transformers import CrossEncoder
-        m = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512, device="cpu")
+        r = "BAAI/bge-reranker-v2-m3"
+        m = CrossEncoder(r, max_length=512, device="cpu", revision=REVISIONS[r])
         return lambda q, docs: [float(x) for x in m.predict([(q, d) for d in docs])]
     if model == "mxbai":
         from sentence_transformers import CrossEncoder
-        m = CrossEncoder("mixedbread-ai/mxbai-rerank-base-v2", device="cpu")
+        r = "mixedbread-ai/mxbai-rerank-base-v2"
+        m = CrossEncoder(r, device="cpu", revision=REVISIONS[r])
+        # one scale for every case, decided from the model's configured activation: if predict
+        # already applies a sigmoid the scores are probabilities, otherwise they are raw logits
+        act = type(getattr(m, "activation_fn", None)).__name__
+        is_prob = act == "Sigmoid"
+        print(f"mxbai activation_fn={act} -> {'as is' if is_prob else 'sigmoid'}", file=sys.stderr)
 
         def fn(q, docs):
             raw = [float(x) for x in m.predict([(q, d) for d in docs])]
-            # LogitScore gives logit(yes) - logit(no); map to a probability unless it already is one
-            return raw if all(0.0 <= x <= 1.0 for x in raw) else [1 / (1 + math.exp(-x)) for x in raw]
+            return raw if is_prob else [1 / (1 + math.exp(-x)) for x in raw]
         return fn
     if model in ("qwen3rr", "qwen3rr-skill"):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         instruction = QWEN_SKILL if model == "qwen3rr-skill" else QWEN_DEFAULT
-        tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-Reranker-0.6B", padding_side="left")
-        m = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-Reranker-0.6B", **f32).eval()
+        r = "Qwen/Qwen3-Reranker-0.6B"
+        tok = AutoTokenizer.from_pretrained(r, padding_side="left", revision=REVISIONS[r])
+        m = AutoModelForCausalLM.from_pretrained(r, revision=REVISIONS[r], **f32).eval()
         yes, no = tok.convert_tokens_to_ids("yes"), tok.convert_tokens_to_ids("no")
         pre = ("<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the "
                "Instruct provided. Note that the answer can only be \"yes\" or \"no\".<|im_end|>\n<|im_start|>user\n")
@@ -70,7 +87,7 @@ def load(model):
         # the commit, then loads with HF_HUB_OFFLINE=1 so nothing newer can be fetched and run
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         r = "Alibaba-NLP/gte-multilingual-reranker-base"
-        rev = os.environ["GTE_REVISION"]  # the inspected snapshot; its config chooses the remote code
+        rev = REVISIONS[r]  # the inspected snapshot; its config chooses the remote code
         tok = AutoTokenizer.from_pretrained(r, revision=rev)
         m = AutoModelForSequenceClassification.from_pretrained(r, revision=rev, trust_remote_code=True,
                                                                **f32).eval()
