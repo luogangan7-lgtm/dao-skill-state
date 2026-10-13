@@ -142,9 +142,9 @@ jobs:
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
           }
-          bench 8121 --backend mlx --max-batch-rows 10   # one request per pass: the old behaviour
-          bench 8122                                       # default on Apple Silicon: MLX, batched
-          bench 8123 --backend torch                       # torch float16 on the Apple GPU, batched
+          bench 8121                                       # default on Apple Silicon: MLX, one request per pass
+          bench 8122 --max-batch-rows 64                   # MLX, up to ~6 requests merged per pass
+          bench 8123 --backend torch                       # torch float16 on the Apple GPU
           { echo "## rerank server under concurrency on macos-latest"; echo; sed 's/^/    /' bench.txt; } >> "$GITHUB_STEP_SUMMARY"
       - name: Server logs
         if: failure()
