@@ -247,8 +247,15 @@ def cands(bundle_path, skill_hub, out):
         json.dump(reg, open(reg_path, "w"))
         # skill-hub embed_text: "name: description", first 2000 chars
         texts = [f'{s["name"]}: {s["description"]}'[:2000] for s in skills]
-        sv = {k: m.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=False)
-              for k, m in dense_models.items()}
+        sv = {}
+        for k, m in dense_models.items():
+            t0, full = time.time(), m.max_seq_length
+            # ponytail: 512 tokens covers "name: description" for the registry only; the 8k/32k
+            # defaults ran past the 60 min job limit on CPU (run 38393875479). Queries keep full length.
+            m.max_seq_length = 512
+            sv[k] = m.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=False)
+            m.max_seq_length = full
+            print(f"encoded {len(texts)} skills with {k} in {time.time() - t0:.0f}s", flush=True)
         for split in ("dev", "held"):
             by_src = {k: {} for k in dense_models}
             for c in bundle[split]["cases"]:

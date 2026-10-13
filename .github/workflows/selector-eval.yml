@@ -45,7 +45,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.preflight.outputs.has_key == 'true'
     environment: selector-eval
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     outputs:
       ceiling: ${{ steps.c.outputs.ceiling }}
     steps:
