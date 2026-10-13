@@ -1340,17 +1340,16 @@ fn input_error(msg: S) -> (String, u8) {
 }
 
 fn read_input(path: &[u8]) -> Result<Vec<u8>, String> {
-    let os_err = |e: std::io::Error| {
+    // Python's OSError text: "[Errno N] message", plus ": 'path'" for errors from open()
+    let errno = |e: &std::io::Error| {
         let text = e.to_string();
         let text = text
             .rsplit_once(" (os error ")
-            .map_or(text.as_str(), |t| t.0);
-        format!(
-            "[Errno {}] {text}: {}",
-            e.raw_os_error().unwrap_or(0),
-            py_repr(&surrogateescape(path))
-        )
+            .map_or(text.as_str(), |t| t.0)
+            .to_string();
+        format!("[Errno {}] {text}", e.raw_os_error().unwrap_or(0))
     };
+    let os_err = |e: std::io::Error| format!("{}: {}", errno(&e), py_repr(&surrogateescape(path)));
     let mut f = OpenOptions::new()
         .read(true)
         .custom_flags(O_NONBLOCK)
@@ -1363,7 +1362,8 @@ fn read_input(path: &[u8]) -> Result<Vec<u8>, String> {
     (&mut f)
         .take(MAX_BYTES + 1)
         .read_to_end(&mut raw)
-        .map_err(os_err)?;
+        // Python's stream.read() error carries no filename, unlike open()'s
+        .map_err(|e| errno(&e))?;
     if raw.len() as u64 > MAX_BYTES {
         return Err(format!("input exceeds {MAX_BYTES} bytes"));
     }
