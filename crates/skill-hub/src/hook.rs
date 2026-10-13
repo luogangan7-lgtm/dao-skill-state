@@ -66,6 +66,10 @@ pub type Scorer<'a> = dyn Fn(&str, &[String]) -> Result<Vec<f32>, String> + 'a;
 pub struct Rerank<'a> {
     pub score: &'a Scorer<'a>,
     pub tau: f32,
+    /// When the reranker (and Jev, if set) gives no answer, inject nothing instead of the lexical
+    /// rule (`SKILL_HUB_RERANK_FALLBACK=none`). D7 round 6: the lexical rule fired on 23 of 36
+    /// chit-chat prompts, so under a burst of agents "nothing" is the safer degradation.
+    pub fallback_none: bool,
 }
 
 /// How to reach Jev; absent means local lexical selection only.
@@ -262,6 +266,9 @@ pub fn decide(
             }
         }
     }
+    if rerank.is_some_and(|r| r.fallback_none) {
+        return Decision::Nothing("rerank-unavailable");
+    }
     let keep = lexical(cands, n_skills);
     if keep.is_empty() {
         Decision::Nothing("below-floor")
@@ -354,6 +361,7 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
                     })
             })
             .unwrap_or(RERANK_TAU),
+        fallback_none: std::env::var("SKILL_HUB_RERANK_FALLBACK").is_ok_and(|v| v == "none"),
     });
     let decision = decide(
         &cands,
@@ -538,6 +546,7 @@ mod tests {
         let r = Rerank {
             score: &tie,
             tau: 0.02,
+            fallback_none: false,
         };
         match decide(&c, "tie", None, Some(&r), 3000) {
             Decision::Skills(s, _) => assert_eq!(s[0].id, "a", "a tie keeps retrieval order"),
@@ -547,6 +556,7 @@ mod tests {
         let r = Rerank {
             score: &pick,
             tau: 0.02,
+            fallback_none: false,
         };
         match decide(&c, "do b", None, Some(&r), 3000) {
             Decision::Skills(s, via) => {
@@ -558,6 +568,7 @@ mod tests {
         let r = Rerank {
             score: &low,
             tau: 0.02,
+            fallback_none: false,
         };
         assert!(matches!(
             decide(&c, "hi", None, Some(&r), 3000),
@@ -573,12 +584,23 @@ mod tests {
             let r = Rerank {
                 score: f,
                 tau: 0.02,
+                fallback_none: false,
             };
             assert!(matches!(
                 decide(&c, "do a", None, Some(&r), 3000),
                 Decision::Skills(_, "lexical-fallback")
             ));
         }
+        // SKILL_HUB_RERANK_FALLBACK=none: a failed reranker injects nothing instead
+        let none = Rerank {
+            score: &broken,
+            tau: 0.02,
+            fallback_none: true,
+        };
+        assert_eq!(
+            decide(&c, "do a", None, Some(&none), 3000),
+            Decision::Nothing("rerank-unavailable")
+        );
         // the reranker sees "id: description" for every candidate, in order
         let seen = std::cell::RefCell::new(Vec::new());
         let spy = |_: &str, d: &[String]| {
@@ -588,6 +610,7 @@ mod tests {
         let r = Rerank {
             score: &spy,
             tau: 0.02,
+            fallback_none: false,
         };
         decide(&c, "x", None, Some(&r), 3000);
         assert_eq!(seen.borrow().len(), 3);
@@ -611,6 +634,7 @@ mod tests {
         let r = Rerank {
             score: &ok,
             tau: 0.02,
+            fallback_none: false,
         };
         assert!(matches!(
             decide(&c, "secret", Some(&jev), Some(&r), 3000),
@@ -624,6 +648,7 @@ mod tests {
         let r = Rerank {
             score: &down,
             tau: 0.02,
+            fallback_none: false,
         };
         assert!(matches!(
             decide(&c, "secret", Some(&jev), Some(&r), 3000),
