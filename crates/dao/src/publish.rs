@@ -10,9 +10,10 @@
 //!   refuses the whole apply, and nothing is written.
 //! - Every copy is checked against the object's manifest before it is swapped in. The lock
 //!   (`<target>/.dao-publication.json`) is written last and durably, with the whole version
-//!   history. Before the first swap the lock durably records the intended set as `pending`, so
-//!   after a crash between swaps a directory dao itself installed is still recognised as dao's
-//!   (unchanged, or updatable), never mistaken for a user's directory. Staging happens only in
+//!   history. During an apply the lock's `pending` durably records each directory right after
+//!   it is swapped in, so after a crash a directory dao itself installed is still recognised as
+//!   dao's, while one it never installed (even byte-identical) stays the user's. The window
+//!   between one rename and its record is the only one where dao's own copy reads as foreign. Staging happens only in
 //!   `<target>/.dao-publish-tmp/`, which dao proves it owns with a marker file; the next apply
 //!   empties it and clears `pending`. Each managed directory is re-checked just before it is
 //!   moved away, so an edit made while staging aborts the apply rather than being deleted.
@@ -26,6 +27,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const LOCK: &str = ".dao-publication.json";
+/// Prefix of an `apply` error that is an ownership refusal (exit 1), not an environment failure.
+pub const CONFLICT: &str = "conflict: ";
 const SCHEMA: &str = "dao-publication/1";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -39,7 +42,9 @@ pub struct Version {
 pub struct Lock {
     pub schema: String,
     pub history: Vec<Version>,
-    /// The set an apply was installing when it last wrote the lock; absent once it finished.
+    /// Directories an unfinished apply has already swapped in (name -> digest), each recorded
+    /// durably right after its swap; absent once the apply finished. Intent alone is never
+    /// recorded here, so a crash can't make a directory dao never installed look like dao's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<BTreeMap<String, String>>,
 }
@@ -55,6 +60,13 @@ pub struct Action {
 }
 
 pub fn read_lock(target: &Path) -> Result<Lock, String> {
+    // the ownership record must be this target's own file, not a link to another one
+    if fs::symlink_metadata(target.join(LOCK)).is_ok_and(|m| !m.is_file()) {
+        return Err(format!(
+            "{} is not a regular file",
+            target.join(LOCK).display()
+        ));
+    }
     match fs::read(target.join(LOCK)) {
         Ok(b) => {
             let l: Lock = serde_json::from_slice(&b)
@@ -364,7 +376,7 @@ pub fn apply(
         .iter()
         .any(|a| matches!(a.action.as_str(), "add" | "update" | "remove"));
     if changes {
-        lock.pending = Some(want.clone());
+        lock.pending = Some(lock.pending.clone().unwrap_or_default());
         let body = serde_json::to_vec_pretty(&lock).unwrap();
         crate::admission::durable_write(&target.join(LOCK), &body)?;
     }
@@ -380,7 +392,7 @@ pub fn apply(
     };
     let changed_since_plan = |dir: &Path| {
         format!(
-            "{} changed since planning; nothing more was published",
+            "{CONFLICT}{} changed since planning; nothing more was published",
             dir.display()
         )
     };
@@ -405,6 +417,12 @@ pub fn apply(
                     return Err(changed_since_plan(&dir));
                 }
                 fs::rename(&stage, &dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                // now it is dao's: record that before anything else can crash
+                if let Some(p) = lock.pending.as_mut() {
+                    p.insert(a.name.clone(), a.digest.clone().unwrap());
+                }
+                let body = serde_json::to_vec_pretty(&lock).unwrap();
+                crate::admission::durable_write(&target.join(LOCK), &body)?;
                 let _ = fs::remove_dir_all(&old);
             }
             "remove" if fs::symlink_metadata(&dir).is_ok() => {
@@ -631,6 +649,23 @@ mod tests {
         );
         let lock = read_lock(&target).unwrap();
         assert_eq!(lock.pending, None);
+        // intent without a recorded swap is no ownership: an identical dir is still a conflict
+        let t2 = root.join("t2");
+        copy_object(&store, &manifest(&store, &d1).unwrap(), &t2.join("s")).unwrap();
+        let started = Lock {
+            schema: SCHEMA.into(),
+            history: vec![],
+            pending: Some(BTreeMap::new()),
+        };
+        fs::write(t2.join(LOCK), serde_json::to_vec(&started).unwrap()).unwrap();
+        assert!(run(&store, &t2, false)
+            .unwrap_err()
+            .contains("did not publish"));
+        // the publication record must be the target's own file
+        let t3 = root.join("t3");
+        fs::create_dir_all(&t3).unwrap();
+        std::os::unix::fs::symlink(target.join(LOCK), t3.join(LOCK)).unwrap();
+        assert!(read_lock(&t3).unwrap_err().contains("not a regular file"));
         assert_eq!(lock.history.len(), 1);
         assert!(!target.join(".dao-publish-tmp/stage-t").exists());
         let _ = crate::quarantine::make_writable(&root);

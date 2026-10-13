@@ -695,12 +695,22 @@ fn publish_cmd(args: &[String]) -> Result<ExitCode, String> {
     let lock = publish::read_lock(&target)?;
     let want = publish::wanted(&store, &lock, flag("--rollback"))?;
     let actions = publish::plan(&store, &target, &lock, &want);
-    let conflict = actions.iter().any(|a| a.action == "conflict");
+    let mut conflict = actions.iter().any(|a| a.action == "conflict");
+    let mut refused = None;
     let version = if flag("--apply") && !conflict {
-        publish::apply(&store, &target, lock, &want, &actions)?
-            .history
-            .last()
-            .map(|v| v.version)
+        match publish::apply(&store, &target, lock.clone(), &want, &actions) {
+            Ok(l) => l.history.last().map(|v| v.version),
+            // found while applying (e.g. a dir edited since planning): same contract as a plan conflict
+            Err(e) if e.starts_with(publish::CONFLICT) => {
+                conflict = true;
+                refused = Some(e[publish::CONFLICT.len()..].to_string());
+                publish::read_lock(&target)?
+                    .history
+                    .last()
+                    .map(|v| v.version)
+            }
+            Err(e) => return Err(e),
+        }
     } else {
         lock.history.last().map(|v| v.version)
     };
@@ -708,7 +718,7 @@ fn publish_cmd(args: &[String]) -> Result<ExitCode, String> {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "target": target, "applied": flag("--apply") && !conflict,
-            "version": version, "actions": actions}))
+            "version": version, "actions": actions, "refused": refused}))
         .unwrap()
     );
     Ok(if conflict {
