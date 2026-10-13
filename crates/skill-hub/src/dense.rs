@@ -68,7 +68,11 @@ pub fn rerank(query: &str, docs: &[String], deadline: Instant) -> Result<Vec<f32
             .as_f64()
             .map(|s| s as f32)
             .filter(|s| s.is_finite());
-        *out.get_mut(i).ok_or("rerank: index out of range")? = s.ok_or("rerank: bad score")?;
+        let slot = out.get_mut(i).ok_or("rerank: index out of range")?;
+        if !slot.is_nan() {
+            return Err("rerank: duplicate index".into());
+        }
+        *slot = s.ok_or("rerank: bad score")?;
     }
     if out.iter().any(|s| s.is_nan()) {
         return Err("rerank: not every text was scored".into());
@@ -140,6 +144,14 @@ fn call_at(
                 if raw.len() > MAX_RESPONSE {
                     return Err(format!("{who}: response too large"));
                 }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(format!("{who}: deadline exceeded"))
             }
             Err(e) => return Err(format!("{who}: {e}")),
         }
@@ -362,6 +374,10 @@ mod tests {
         assert!(rerank("q", &docs, soon())
             .unwrap_err()
             .contains("not every text"));
+        serve(r#"[{"index":0,"score":0.1},{"index":0,"score":0.2}]"#);
+        assert!(rerank("q", &docs, soon())
+            .unwrap_err()
+            .contains("duplicate"));
         serve(r#"[{"index":5,"score":0.1},{"index":0,"score":0.1}]"#);
         assert!(rerank("q", &docs, soon())
             .unwrap_err()
