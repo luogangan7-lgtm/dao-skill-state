@@ -128,7 +128,7 @@ def qwen3_mlx_scorer():
         n = max(len(r) for r in rs)
         x = mx.array([r + [0] * (n - len(r)) for r in rs])
         h = m.model(x)[mx.arange(len(rs)), mx.array([len(r) - 1 for r in rs])]
-        last = out(h).astype(mx.float32)
+        last = out(h.astype(mx.float32))  # float32 answer logits: scores sit near a tuned tau
         return mx.sigmoid(last[:, yes] - last[:, no]).tolist()  # = softmax([no, yes])[1]
     return score
 
@@ -212,7 +212,10 @@ def main():
         def log_message(self, *args):  # prompts must not end up in a terminal log
             pass
 
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    class Server(ThreadingHTTPServer):
+        request_queue_size = 256  # many agents submitting at once; the default backlog of 5 drops them
+
+    srv = Server(("127.0.0.1", a.port), Handler)
     print("rerank server on http://127.0.0.1:%d (%s, %s, %s)" % (a.port, a.model, dev,
           "4bit" if a.backend == "mlx" else a.dtype), flush=True)
     srv.serve_forever()
