@@ -71,8 +71,20 @@ fn call(
         "{method} {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
-    s.write_all(req.as_bytes())
-        .map_err(|e| format!("ollama: {e}"))?;
+    // the deadline bounds the write too: a server draining slowly can't stretch it chunk by chunk
+    let mut sent = req.as_bytes();
+    while !sent.is_empty() {
+        let Some(rest) = left() else {
+            return Err("ollama: deadline exceeded".into());
+        };
+        let _ = s.set_write_timeout(Some(rest));
+        match s.write(sent) {
+            Ok(0) => return Err("ollama: connection closed".into()),
+            Ok(n) => sent = &sent[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(format!("ollama: {e}")),
+        }
+    }
     // one overall deadline and a size cap, however the server dribbles or floods
     let mut raw = Vec::new();
     let mut buf = [0u8; 64 * 1024];
