@@ -484,6 +484,14 @@ fn eval_cmd(args: &[String]) -> Result<ExitCode, String> {
         .filter(|n| !ids.contains(*n))
         .cloned()
         .collect();
+    r.entries = reg["skills"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| Some((s["id"].as_str()?, s["entry_sha256"].as_str()?)))
+        .filter(|(id, _)| set.subjects.contains_key(*id))
+        .map(|(id, h)| (id.to_string(), h.to_string()))
+        .collect();
     write_json(&dir.join(r.file_name()), &r)?;
     println!(
         "{}",
@@ -509,12 +517,10 @@ fn opts<'a>(
     Ok(m)
 }
 
-/// `dao admit --store DIR --digest D`: write admissions/<D>.json; exit 0 admitted, 1 refused.
-fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let o = opts(args, &["--store", "--digest"])?;
-    let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
-    let digest = o.get("--digest").ok_or("--digest is required")?.clone();
-    if !scan::is_digest(&digest) {
+/// Gather the evidence on disk now and decide (admit and promote both call this, so promote
+/// never trusts a stored admission that may be stale or forged).
+fn admit_decision(store: &Path, digest: &str) -> Result<admission::Admission, String> {
+    if !scan::is_digest(digest) {
         return Err(format!("not a digest: {digest}"));
     }
     let read = |p: PathBuf| {
@@ -525,9 +531,15 @@ fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
     let manifest: Option<quarantine::Manifest> =
         read(store.join("manifests").join(format!("{digest}.json")))
             .and_then(|v| serde_json::from_value(v).ok());
+    let entry_sha256 = manifest.as_ref().and_then(|m| {
+        m.files
+            .iter()
+            .find(|f| f.path == "SKILL.md")
+            .map(|f| f.sha256.clone())
+    });
     let object_ok = match &manifest {
         Some(m) if m.digest == digest => {
-            quarantine::verify_object(&store.join("objects").join(&digest), m)
+            quarantine::verify_object(&store.join("objects").join(digest), m)
         }
         _ => Err("no manifest for this digest".into()),
     };
@@ -539,7 +551,7 @@ fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
     // the eval set as the store generates it now, whether the stored one equals it, and the
     // newest receipt for that set
     let eval = (|| -> Option<(eval::Set, bool, Option<eval::Receipt>)> {
-        let (cards, _) = load_cards(&store).ok()?;
+        let (cards, _) = load_cards(store).ok()?;
         let rels: Vec<relations::Relation> =
             serde_json::from_slice(&fs::read(store.join("relations.json")).ok()?).ok()?;
         let fresh_set = eval::generate(&cards, &rels);
@@ -561,16 +573,25 @@ fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
         receipts.sort_by_key(|(t, _)| *t);
         Some((fresh_set, fresh, receipts.pop().map(|(_, r)| r)))
     })();
-    let a = admission::decide(
-        &digest,
+    Ok(admission::decide(
+        digest,
         &admission::Evidence {
             object_ok,
             scan,
             approval,
             card,
             eval,
+            entry_sha256,
         },
-    );
+    ))
+}
+
+/// `dao admit --store DIR --digest D`: write admissions/<D>.json; exit 0 admitted, 1 refused.
+fn admit_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let o = opts(args, &["--store", "--digest"])?;
+    let store = PathBuf::from(o.get("--store").ok_or("--store is required")?);
+    let digest = o.get("--digest").ok_or("--digest is required")?.clone();
+    let a = admit_decision(&store, &digest)?;
     fs::create_dir_all(store.join("admissions")).map_err(|e| e.to_string())?;
     write_json(&store.join("admissions").join(format!("{digest}.json")), &a)?;
     println!("{}", serde_json::to_string_pretty(&a).unwrap());
@@ -603,21 +624,23 @@ fn champion_cmd(cmd: &str, args: &[String]) -> Result<ExitCode, String> {
         }
         "promote" => {
             let digest = o.get("--digest").ok_or("--digest is required")?;
-            let a: admission::Admission = serde_json::from_slice(
-                &fs::read(store.join("admissions").join(format!("{digest}.json")))
-                    .map_err(|e| format!("run dao admit first: {e}"))?,
-            )
-            .map_err(|e| e.to_string())?;
-            if !a.admitted || a.digest != *digest {
-                return Err(format!("{digest} is not admitted"));
+            // re-decide from the evidence now; a stored admission may be stale or forged
+            let a = admit_decision(&store, digest)?;
+            if !a.admitted {
+                let why: Vec<String> = a
+                    .gates
+                    .iter()
+                    .filter(|g| !g.passed)
+                    .map(|g| format!("{}: {}", g.name, g.evidence))
+                    .collect();
+                return Err(format!("{digest} is not admitted now: {}", why.join("; ")));
             }
             let name = a.name.ok_or("admission has no name")?;
-            admission::move_champion(&store, &name, digest, false, fault)?
+            admission::move_champion(&store, &name, Some(digest), fault)?
         }
         _ => {
             let name = o.get("--name").ok_or("--name is required")?;
-            let to = admission::rollback_target(&store, name)?;
-            admission::move_champion(&store, name, &to, true, fault)?
+            admission::move_champion(&store, name, None, fault)?
         }
     };
     println!(
@@ -728,4 +751,117 @@ fn main() -> ExitCode {
         eprintln!("error: {e}");
         ExitCode::from(2)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store with one fully evaluated, admittable skill `demo`; returns (store, digest).
+    fn admittable_store(tag: &str) -> (PathBuf, String) {
+        let root = std::env::temp_dir().join(format!("dao-main-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (tree, store) = (root.join("src"), root.join("store"));
+        fs::create_dir_all(tree.join("demo")).unwrap();
+        fs::write(
+            tree.join("demo/SKILL.md"),
+            format!(
+                "---\nname: demo\ndescription: Use for demo widgets.\n---\n\n# Demo\n\n{}\n",
+                "Build a demo widget from the request and explain each step. ".repeat(20)
+            ),
+        )
+        .unwrap();
+        let (out, _) =
+            stage_all(&tree, "demo", false, &store, "local", "o", &None, &None, 0).unwrap();
+        let Outcome::Staged { digest, .. } = &out[0] else {
+            panic!("{out:?}")
+        };
+        let digest = digest.clone();
+        let r = scan::scan(&store, &digest).unwrap();
+        assert_eq!(r.verdict, scan::Verdict::Clean, "{r:?}");
+        scan::write_receipt(&store, &r).unwrap();
+        normalize::write_card(&store, &normalize::card(&store, &digest).unwrap()).unwrap();
+        fs::write(store.join("relations.json"), "[]").unwrap();
+        let (cards, _) = load_cards(&store).unwrap();
+        let set = eval::generate(&cards, &[]);
+        fs::create_dir_all(store.join("evals")).unwrap();
+        write_json(&store.join("evals/set.json"), &set).unwrap();
+        let entry = quarantine_skill_sha(&store, &digest);
+        let r = eval::Receipt {
+            schema: eval::RECEIPT_SCHEMA.into(),
+            set_sha256: set.set_sha256.clone(),
+            registry_sha256: "r".into(),
+            searcher_sha256: "s".into(),
+            n_skills: 1,
+            top_k: 3,
+            floor: 0.0,
+            rel: 0.5,
+            gated: eval::GATED.iter().map(|s| s.to_string()).collect(),
+            kinds: Default::default(),
+            failures: vec![],
+            unreachable: vec![],
+            scored: set.cases.iter().map(|c| c.id.clone()).collect(),
+            entries: [("demo".to_string(), entry)].into(),
+        };
+        write_json(&store.join("evals").join(r.file_name()), &r).unwrap();
+        (store, digest)
+    }
+
+    fn quarantine_skill_sha(store: &Path, digest: &str) -> String {
+        let m: quarantine::Manifest = serde_json::from_slice(
+            &fs::read(store.join("manifests").join(format!("{digest}.json"))).unwrap(),
+        )
+        .unwrap();
+        m.files
+            .into_iter()
+            .find(|f| f.path == "SKILL.md")
+            .unwrap()
+            .sha256
+    }
+
+    fn promote(store: &Path, digest: &str) -> Result<ExitCode, String> {
+        let args = ["--store", store.to_str().unwrap(), "--digest", digest].map(String::from);
+        champion_cmd("promote", &args)
+    }
+
+    /// B3: promote re-decides from the evidence now; it does not trust admissions/<d>.json.
+    #[test]
+    fn promote_rejudges_and_refuses_stale_forged_or_bad_digests() {
+        let (store, digest) = admittable_store("b3");
+        let a = admit_decision(&store, &digest).unwrap();
+        assert!(a.admitted, "{:?}", a.gates);
+        // stale: admitted, then the scan turns BLOCK → promote refuses
+        let ok = admission::Admission {
+            schema: "dao-admission/1".into(),
+            digest: digest.clone(),
+            name: Some("demo".into()),
+            admitted: true,
+            gates: vec![],
+        };
+        fs::create_dir_all(store.join("admissions")).unwrap();
+        write_json(&store.join(format!("admissions/{digest}.json")), &ok).unwrap();
+        let scan_path = store.join(format!("scans/{digest}.json"));
+        let clean = fs::read_to_string(&scan_path).unwrap();
+        fs::write(&scan_path, clean.replace("\"CLEAN\"", "\"BLOCK\"")).unwrap();
+        let e = promote(&store, &digest).unwrap_err();
+        assert!(e.contains("not admitted now") && e.contains("BLOCK"), "{e}");
+        assert!(admission::champion(&store, "demo").unwrap().is_none());
+        // forged: an admission file for a digest with no object
+        let ghost = "f".repeat(64);
+        let mut forged = ok.clone();
+        forged.digest = ghost.clone();
+        write_json(&store.join(format!("admissions/{ghost}.json")), &forged).unwrap();
+        assert!(promote(&store, &ghost).is_err());
+        // traversal digest
+        let e = promote(&store, "../x/evil").unwrap_err();
+        assert!(e.contains("not a digest"), "{e}");
+        // with the scan clean again it promotes
+        fs::write(&scan_path, clean).unwrap();
+        promote(&store, &digest).unwrap();
+        assert_eq!(
+            admission::champion(&store, "demo").unwrap().unwrap().digest,
+            digest
+        );
+        let _ = fs::remove_dir_all(store.parent().unwrap());
+    }
 }
