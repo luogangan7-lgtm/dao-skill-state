@@ -12,8 +12,10 @@
 //!   (`<target>/.dao-publication.json`) is written last and durably, with the whole version
 //!   history. Before the first swap the lock durably records the intended set as `pending`, so
 //!   after a crash between swaps a directory dao itself installed is still recognised as dao's
-//!   (unchanged, or updatable), never mistaken for a user's directory. The next apply sweeps
-//!   leftover `.dao-stage-*` / `.dao-old-*` scratch and clears `pending`.
+//!   (unchanged, or updatable), never mistaken for a user's directory. Staging happens only in
+//!   `<target>/.dao-publish-tmp/`, which dao proves it owns with a marker file; the next apply
+//!   empties it and clears `pending`. Each managed directory is re-checked just before it is
+//!   moved away, so an edit made while staging aborts the apply rather than being deleted.
 //! - `--rollback` publishes the previous version's exact set from the immutable store objects,
 //!   as a new version, so rolling back can itself be rolled back.
 
@@ -296,8 +298,44 @@ fn copy_object(store: &Path, m: &Manifest, stage: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn scratch(target: &Path, kind: &str, name: &str) -> PathBuf {
-    target.join(format!(".dao-{kind}-{name}-{}", std::process::id()))
+/// dao's own scratch directory inside the target, proven by a marker file it writes there.
+pub const SCRATCH: &str = ".dao-publish-tmp";
+const MARK: &str = ".dao-owned";
+
+/// Empty (or create) the scratch directory. A same-named entry without dao's marker is not
+/// dao's: refuse rather than delete anything a user put there.
+fn scratch_root(target: &Path) -> Result<PathBuf, String> {
+    let root = target.join(SCRATCH);
+    let err = |e: std::io::Error| format!("{}: {e}", root.display());
+    match fs::symlink_metadata(&root) {
+        Ok(m) if m.is_dir() && fs::symlink_metadata(root.join(MARK)).is_ok_and(|m| m.is_file()) => {
+            for e in fs::read_dir(&root).map_err(err)? {
+                let p = e.map_err(err)?.path();
+                if p.file_name() == Some(MARK.as_ref()) {
+                    continue;
+                }
+                let is_dir = fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
+                if is_dir {
+                    fs::remove_dir_all(&p)
+                } else {
+                    fs::remove_file(&p)
+                }
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+            }
+        }
+        Ok(_) => {
+            return Err(format!(
+                "{} exists but is not dao's scratch (no {MARK}); move it away",
+                root.display()
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&root).map_err(err)?;
+            fs::write(root.join(MARK), b"dao publish scratch\n").map_err(err)?;
+        }
+        Err(e) => return Err(err(e)),
+    }
+    Ok(root)
 }
 
 /// Carry out `actions` (none may be a conflict) and record the new version.
@@ -310,20 +348,8 @@ pub fn apply(
 ) -> Result<Lock, String> {
     fs::create_dir_all(target).map_err(|e| format!("{}: {e}", target.display()))?;
     // scratch left by an interrupted run (single writer: the caller holds the target lock);
-    // swept before anything else so even a refused apply leaves no half-copied skill behind
-    for e in fs::read_dir(target).map_err(|e| format!("{}: {e}", target.display()))? {
-        let p = e.map_err(|e| e.to_string())?.path();
-        let n = p.file_name().unwrap_or_default().to_string_lossy();
-        if n.starts_with(".dao-stage-") || n.starts_with(".dao-old-") {
-            let is_dir = fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
-            if is_dir {
-                fs::remove_dir_all(&p)
-            } else {
-                fs::remove_file(&p)
-            }
-            .map_err(|e| format!("{}: {e}", p.display()))?;
-        }
-    }
+    // emptied before anything else so even a refused apply leaves no half-copied skill behind
+    let tmp = scratch_root(target)?;
     if let Some(c) = actions.iter().find(|a| a.action == "conflict") {
         return Err(format!(
             "{}: {}; nothing was published",
@@ -331,6 +357,8 @@ pub fn apply(
             c.reason.as_deref().unwrap_or("conflict")
         ));
     }
+    // what dao may have left at each name before this apply (published or pending)
+    let before = lock.clone();
     // record the intent before the first swap, so a crash leaves dao's own dirs recognisable
     let changes = actions
         .iter()
@@ -340,30 +368,58 @@ pub fn apply(
         let body = serde_json::to_vec_pretty(&lock).unwrap();
         crate::admission::durable_write(&target.join(LOCK), &body)?;
     }
+    // a managed dir is re-checked just before it is moved away: an edit made since planning
+    // aborts the apply instead of being deleted
+    let still_ours = |name: &str, dir: &Path| {
+        let p = before.pending.clone().unwrap_or_default();
+        [current(&before).get(name).cloned(), p.get(name).cloned()]
+            .into_iter()
+            .flatten()
+            .filter_map(|d| manifest(store, &d).ok())
+            .any(|m| holds(dir, &m) == Some(true))
+    };
+    let changed_since_plan = |dir: &Path| {
+        format!(
+            "{} changed since planning; nothing more was published",
+            dir.display()
+        )
+    };
     for a in actions {
         let dir = target.join(&a.name);
-        let old = scratch(target, "old", &a.name);
+        let old = tmp.join(format!("old-{}", a.name));
         match a.action.as_str() {
             "add" | "update" => {
                 let m = manifest(store, a.digest.as_deref().unwrap())?;
-                let stage = scratch(target, "stage", &a.name);
+                let stage = tmp.join(format!("stage-{}", a.name));
                 let _ = fs::remove_dir_all(&stage);
                 if let Err(e) = copy_object(store, &m, &stage) {
                     let _ = fs::remove_dir_all(&stage);
                     return Err(e);
                 }
                 if a.action == "update" {
+                    if !still_ours(&a.name, &dir) {
+                        return Err(changed_since_plan(&dir));
+                    }
                     fs::rename(&dir, &old).map_err(|e| format!("{}: {e}", dir.display()))?;
+                } else if fs::symlink_metadata(&dir).is_ok() {
+                    return Err(changed_since_plan(&dir));
                 }
                 fs::rename(&stage, &dir).map_err(|e| format!("{}: {e}", dir.display()))?;
                 let _ = fs::remove_dir_all(&old);
             }
             "remove" if fs::symlink_metadata(&dir).is_ok() => {
+                if !still_ours(&a.name, &dir) {
+                    return Err(changed_since_plan(&dir));
+                }
                 fs::rename(&dir, &old).map_err(|e| format!("{}: {e}", dir.display()))?;
                 let _ = fs::remove_dir_all(&old);
             }
             _ => {}
         }
+    }
+    // the swaps are directory entries of the target: durable even when no new version is written
+    if changes {
+        crate::admission::fsync_dir(target)?;
     }
     let new_version = current(&lock) != *want;
     if new_version {
@@ -565,7 +621,8 @@ mod tests {
             pending: Some(want.clone()),
         };
         copy_object(&store, &manifest(&store, &d1).unwrap(), &target.join("s")).unwrap();
-        fs::create_dir_all(target.join(".dao-stage-t-9/x")).unwrap();
+        fs::create_dir_all(target.join(".dao-publish-tmp/stage-t/x")).unwrap();
+        fs::write(target.join(".dao-publish-tmp/.dao-owned"), "").unwrap();
         fs::write(target.join(LOCK), serde_json::to_vec(&crashed).unwrap()).unwrap();
         champion(&store, &d1);
         assert_eq!(
@@ -575,7 +632,29 @@ mod tests {
         let lock = read_lock(&target).unwrap();
         assert_eq!(lock.pending, None);
         assert_eq!(lock.history.len(), 1);
-        assert!(!target.join(".dao-stage-t-9").exists());
+        assert!(!target.join(".dao-publish-tmp/stage-t").exists());
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scratch_is_only_ever_dao_marked() {
+        let root = std::env::temp_dir().join(format!("dao-publish-tmp-{}", std::process::id()));
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+        let (store, d1, _) = store_with_two_versions(&root);
+        let target = root.join("target");
+        // look-alike names are a user's, and an unmarked scratch dir is refused, not emptied
+        fs::create_dir_all(target.join(".dao-stage-x")).unwrap();
+        fs::create_dir_all(target.join(".dao-publish-tmp/keep")).unwrap();
+        champion(&store, &d1);
+        assert!(run(&store, &target, false)
+            .unwrap_err()
+            .contains("not dao's scratch"));
+        assert!(target.join(".dao-publish-tmp/keep").exists());
+        fs::remove_dir_all(target.join(".dao-publish-tmp")).unwrap();
+        assert_eq!(kinds(&run(&store, &target, false).unwrap()), ["s:add"]);
+        assert!(target.join(".dao-stage-x").exists());
         let _ = crate::quarantine::make_writable(&root);
         let _ = fs::remove_dir_all(&root);
     }
@@ -613,10 +692,10 @@ mod tests {
         fs::remove_dir_all(target.join("s")).unwrap();
         copy_object(&store, &m1, &target.join("s")).unwrap();
         // leftovers of an interrupted apply are swept
-        fs::create_dir_all(target.join(".dao-stage-s-1/x")).unwrap();
+        fs::create_dir_all(target.join(".dao-publish-tmp/stage-s/x")).unwrap();
         assert_eq!(kinds(&run(&store, &target, true).unwrap()), ["s:remove"]);
         assert!(!target.join("s").exists());
-        assert!(!target.join(".dao-stage-s-1").exists());
+        assert!(!target.join(".dao-publish-tmp/stage-s").exists());
         let _ = crate::quarantine::make_writable(&root);
         let _ = fs::remove_dir_all(&root);
     }
