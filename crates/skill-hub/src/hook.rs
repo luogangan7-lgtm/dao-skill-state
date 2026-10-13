@@ -219,7 +219,10 @@ pub fn decide(
             .collect();
         match (r.score)(prompt, &docs) {
             Ok(s) if s.len() == cands.len() => {
-                let best = (0..s.len()).max_by(|a, b| s[*a].total_cmp(&s[*b])).unwrap();
+                // ties go to the earlier candidate: retrieval order still means something
+                let best = (0..s.len())
+                    .reduce(|a, b| if s[b] > s[a] { b } else { a })
+                    .unwrap();
                 return if s[best] >= r.tau {
                     Decision::Skills(vec![cands[best].clone()], "rerank")
                 } else {
@@ -526,6 +529,15 @@ mod tests {
     fn rerank_keeps_the_best_above_tau_abstains_below_and_falls_back_on_error() {
         let c = vec![cand("a", 20.0), cand("b", 15.0), cand("c", 1.0)];
         let fixed = |s: Vec<f32>| move |_: &str, _: &[String]| Ok(s.clone());
+        let tie = fixed(vec![0.5, 0.5, 0.5]);
+        let r = Rerank {
+            score: &tie,
+            tau: 0.02,
+        };
+        match decide(&c, "tie", None, Some(&r), 3000) {
+            Decision::Skills(s, _) => assert_eq!(s[0].id, "a", "a tie keeps retrieval order"),
+            d => panic!("{d:?}"),
+        }
         let pick = fixed(vec![0.1, 0.9, 0.0]);
         let r = Rerank {
             score: &pick,
