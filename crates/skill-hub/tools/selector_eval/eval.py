@@ -20,17 +20,16 @@ import time
 
 # Every evaluated repository at a fixed commit, so reruns compare the same weights, configs and
 # tokenizers (and gte's config, which chooses its remote code, cannot change underneath us).
-REVISIONS = {
-    "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
-    "Qwen/Qwen3-Reranker-0.6B": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
-    "mixedbread-ai/mxbai-rerank-base-v2": "3ea9d4dffa7d12a4f366be8e275c349de9fc9865",
-    "Alibaba-NLP/gte-multilingual-reranker-base": "8215cf04918ba6f7b6a62bb44238ce2953d8831c",
-    "Alibaba-NLP/new-impl": "40ced75c3017eb27626c9d4ea981bde21a2662f4",
-}
+REVISIONS = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "revisions.json")))
 
 QWEN_DEFAULT = "Given a web search query, retrieve relevant passages that answer the query"
 QWEN_SKILL = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
               "should be loaded to carry out the request; small talk or general questions need no skill")
+
+
+def sigmoid(x):
+    """Overflow-safe logistic function."""
+    return 1 / (1 + math.exp(-x)) if x >= 0 else math.exp(x) / (1 + math.exp(x))
 
 
 def load(model):
@@ -50,13 +49,13 @@ def load(model):
         m = CrossEncoder(r, device="cpu", revision=REVISIONS[r])
         # one scale for every case, decided from the model's configured activation: if predict
         # already applies a sigmoid the scores are probabilities, otherwise they are raw logits
-        act = type(getattr(m, "activation_fn", None)).__name__
-        is_prob = act == "Sigmoid"
+        act = getattr(m, "activation_fn", None)
+        is_prob = isinstance(act, torch.nn.Sigmoid)
         print(f"mxbai activation_fn={act} -> {'as is' if is_prob else 'sigmoid'}", file=sys.stderr)
 
         def fn(q, docs):
             raw = [float(x) for x in m.predict([(q, d) for d in docs])]
-            return raw if is_prob else [1 / (1 + math.exp(-x)) for x in raw]
+            return raw if is_prob else [sigmoid(x) for x in raw]
         return fn
     if model in ("qwen3rr", "qwen3rr-skill"):
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -72,19 +71,21 @@ def load(model):
         pre_ids = tok(pre, add_special_tokens=False)["input_ids"]
         suf_ids = tok(suf, add_special_tokens=False)["input_ids"]
         ids = lambda t: tok(t, add_special_tokens=False)["input_ids"]
-        head_ids = ids(f"<Instruct>: {instruction}\n<Query>: ")
-        mid_ids = ids("\n<Document>: ")
+        # pieces split before a space so " text" merges like whole-string tokenization does
+        head_ids = ids(f"<Instruct>: {instruction}\n<Query>:")
+        mid_ids = ids("\n<Document>:")
         budget = 1024 - len(pre_ids) - len(head_ids) - len(mid_ids) - len(suf_ids)
 
         def fn(q, docs):
             # query and document are cut separately, so a long query can never crowd out the
             # candidate (scores stay candidate-dependent), and the suffix always ends at the
             # yes/no answer position
-            q_ids = ids(q)[: budget // 2]
-            rows = [pre_ids + head_ids + q_ids + mid_ids + ids(d)[: budget - len(q_ids)] + suf_ids for d in docs]
+            q_ids = ids(" " + q)[: max(budget // 2, 1)]
+            rows = [pre_ids + head_ids + q_ids + mid_ids + ids(" " + d)[: max(budget - len(q_ids), 1)] + suf_ids
+                    for d in docs]
             enc = tok.pad({"input_ids": rows}, padding=True, return_tensors="pt")
             with torch.no_grad():
-                lg = m(**enc).logits[:, -1, :]
+                lg = m(**enc, logits_to_keep=1).logits[:, -1, :]  # only the answer position
             return torch.stack([lg[:, no], lg[:, yes]], dim=1).log_softmax(dim=1)[:, 1].exp().tolist()
         return fn
     if model == "gte":
@@ -95,6 +96,7 @@ def load(model):
         rev = REVISIONS[r]  # the inspected snapshot; its config chooses the remote code
         tok = AutoTokenizer.from_pretrained(r, revision=rev)
         m = AutoModelForSequenceClassification.from_pretrained(r, revision=rev, trust_remote_code=True,
+                                                               code_revision=REVISIONS["Alibaba-NLP/new-impl"],
                                                                **f32).eval()
 
         def fn(q, docs):
@@ -148,17 +150,18 @@ def summary(rows, tau):
         "abstain": f'{sum(correct(r, tau) for r in neg)}/{len(neg)}',
         "top1": f'{sum(r["top_ok"] for r in pos)}/{len(pos)}',
         "false_abstain": sum(1 for r in pos if not picks(r, tau)),
-        "wrong_skill": sum(1 for r in picked if not r["top_ok"]),
-        "p50_ms": round(ms[len(ms) // 2]), "p95_ms": round(ms[int(len(ms) * 0.95) - 1]),
+        "wrong_skill": sum(1 for r in picked if r["pos"] and not r["top_ok"]),
+        "false_fire": sum(1 for r in picked if not r["pos"]),
+        "p50_ms": round(ms[len(ms) // 2]), "p95_ms": round(ms[min(len(ms) - 1, math.ceil(len(ms) * 0.95) - 1)]),
     }
 
 
 def main():
     bundle_path, model, out = sys.argv[1:4]
-    bundle = json.load(open(bundle_path))
     t = time.time()
-    fn = load(model)
+    fn = load(model)  # before the private data is in this process
     load_s = time.time() - t
+    bundle = json.load(open(bundle_path))
     fn("warm up", ["warm up"])
     dev, held = score_split(fn, bundle["dev"]), score_split(fn, bundle["held"])
     tau = tune(dev)
@@ -169,7 +172,7 @@ def main():
     json.dump(res, open(os.path.join(out, f"{model}.json"), "w"), indent=1)
     d, h = res["dev"], res["held"]
     print(f'| {model} | {tau:.4g} | {d["all"]} | **{h["all"]}** | {h["pos"]} | {h["abstain"]} | {h["top1"]} '
-          f'| {h["false_abstain"]} | {h["wrong_skill"]} | {h["p50_ms"]} / {h["p95_ms"]} | {res["load_s"]} |')
+          f'| {h["false_abstain"]} | {h["wrong_skill"]} | {h["false_fire"]} | {h["p50_ms"]} / {h["p95_ms"]} | {res["load_s"]} |')
 
 
 if __name__ == "__main__":
