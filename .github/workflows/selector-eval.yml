@@ -13,6 +13,9 @@ on:
       - .github/workflows/selector-eval.yml
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash  # -eo pipefail: a failing left side of a pipe fails the step
 jobs:
   rules:
     runs-on: ubuntu-latest
@@ -61,17 +64,25 @@ jobs:
       - name: Build skill-hub
         working-directory: crates/skill-hub
         run: cargo build --release --locked
-      - id: c
-        name: Candidates
+      # the key is only ever in openssl's environment, never in a step that runs model code
+      - name: Decrypt data
         env:
           KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
         run: |
-          trap 'rm -f "$RUNNER_TEMP/bundle.json" "$RUNNER_TEMP/cands.json"' EXIT
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
             -in crates/skill-hub/tools/selector_eval/data.json.enc -pass env:KEY | gunzip > "$RUNNER_TEMP/bundle.json"
+      - id: c
+        name: Candidates
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/bundle.json"' EXIT
           python crates/skill-hub/tools/selector_eval/eval.py cands "$RUNNER_TEMP/bundle.json" \
             "$PWD/crates/skill-hub/target/release/skill-hub" "$RUNNER_TEMP/cands.json" | tee ceiling.txt
           echo "ceiling=$(tr '\n' ';' < ceiling.txt)" >> "$GITHUB_OUTPUT"
+      - name: Encrypt candidates
+        env:
+          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt \
             -in "$RUNNER_TEMP/cands.json" -out cands.json.enc -pass env:KEY
       - uses: actions/upload-artifact@v4
@@ -106,13 +117,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: selector-cands
-      - name: Evaluate
+      - name: Decrypt candidates
         env:
           KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
         run: |
-          trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
             -in cands.json.enc -out "$RUNNER_TEMP/cands.json" -pass env:KEY
+      - name: Evaluate
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
           python crates/skill-hub/tools/selector_eval/eval.py run "$RUNNER_TEMP/cands.json" "${{ matrix.model }}" results
       - uses: actions/upload-artifact@v4
         with:
@@ -126,10 +139,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - uses: actions/download-artifact@v4
+        continue-on-error: true  # every model job may have failed; the summary says so
         with:
           pattern: selector-eval-*
           merge-multiple: true
@@ -141,5 +152,5 @@ jobs:
             echo
             echo "Candidates (built in CI): ${{ needs.cands.outputs.ceiling }}"
             echo
-            python crates/skill-hub/tools/selector_eval/eval.py report results
+            python3 crates/skill-hub/tools/selector_eval/eval.py report results
           } >> "$GITHUB_STEP_SUMMARY"

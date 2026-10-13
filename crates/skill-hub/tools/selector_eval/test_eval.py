@@ -20,6 +20,13 @@ class Rules(unittest.TestCase):
         tau = tune(rows)
         self.assertTrue(0.2 < tau <= 0.71, tau)
 
+    def test_tau_can_go_below_zero_when_every_hit_is_negative(self):
+        # the first cut used to be 0.0, which abstained on every negative-cosine hit
+        rows = [row(True, True, -0.1), row(True, True, -0.2), row(False, False, -0.6)]
+        tau = tune(rows)
+        self.assertTrue(-0.6 < tau <= -0.2, tau)
+        self.assertTrue(all(correct(r, tau) for r in rows))
+
     def test_a_wrong_top_pick_is_never_correct_and_counts_as_wrong_skill(self):
         rows = [row(True, False, 0.9), row(False, False, 0.5)]
         s = summary(rows, 0.1)
