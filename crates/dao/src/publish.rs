@@ -10,8 +10,10 @@
 //!   refuses the whole apply, and nothing is written.
 //! - Every copy is checked against the object's manifest before it is swapped in. The lock
 //!   (`<target>/.dao-publication.json`) is written last and durably, with the whole version
-//!   history. A crash between swaps re-plans cleanly: a directory that already equals its
-//!   target object counts as unchanged.
+//!   history. Before the first swap the lock durably records the intended set as `pending`, so
+//!   after a crash between swaps a directory dao itself installed is still recognised as dao's
+//!   (unchanged, or updatable), never mistaken for a user's directory. The next apply sweeps
+//!   leftover `.dao-stage-*` / `.dao-old-*` scratch and clears `pending`.
 //! - `--rollback` publishes the previous version's exact set from the immutable store objects,
 //!   as a new version, so rolling back can itself be rolled back.
 
@@ -35,6 +37,9 @@ pub struct Version {
 pub struct Lock {
     pub schema: String,
     pub history: Vec<Version>,
+    /// The set an apply was installing when it last wrote the lock; absent once it finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -60,6 +65,7 @@ pub fn read_lock(target: &Path) -> Result<Lock, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock {
             schema: SCHEMA.into(),
             history: vec![],
+            pending: None,
         }),
         Err(e) => Err(format!("{}: {e}", target.join(LOCK).display())),
     }
@@ -145,6 +151,15 @@ pub fn plan(
     want: &BTreeMap<String, String>,
 ) -> Vec<Action> {
     let cur = current(lock);
+    let pending = lock.pending.clone().unwrap_or_default();
+    // digests dao may have left at <target>/<name>: the published one and an interrupted apply's
+    let ours = |name: &str| -> Vec<Manifest> {
+        [cur.get(name), pending.get(name)]
+            .into_iter()
+            .flatten()
+            .filter_map(|d| manifest(store, d).ok())
+            .collect()
+    };
     let mut out = Vec::new();
     let act = |name: &str, action: &str, digest: Option<&String>, reason: Option<String>| Action {
         name: name.into(),
@@ -155,10 +170,10 @@ pub fn plan(
     // two names that differ only in case are one directory on case-insensitive filesystems
     let mut folded: BTreeMap<String, usize> = BTreeMap::new();
     for n in want.keys() {
-        *folded.entry(n.to_lowercase()).or_default() += 1;
+        *folded.entry(fold(n)).or_default() += 1;
     }
     for (name, digest) in want {
-        if folded[&name.to_lowercase()] > 1 {
+        if folded[&fold(name)] > 1 {
             let why = "another published name differs from it only in case".to_string();
             out.push(act(name, "conflict", Some(digest), Some(why)));
             continue;
@@ -177,10 +192,12 @@ pub fn plan(
             }
         };
         let dir = target.join(name);
-        let was = cur.get(name).and_then(|d| manifest(store, d).ok());
+        let was = ours(name);
         out.push(match holds(&dir, &m) {
             None => act(name, "add", Some(digest), None),
-            Some(true) if cur.contains_key(name) => act(name, "unchanged", Some(digest), None),
+            Some(true) if cur.contains_key(name) || pending.contains_key(name) => {
+                act(name, "unchanged", Some(digest), None)
+            }
             // identical bytes dao never recorded: still the user's directory, never adopted
             Some(true) => act(
                 name,
@@ -191,7 +208,7 @@ pub fn plan(
                     dir.display()
                 )),
             ),
-            Some(false) if was.as_ref().is_some_and(|w| holds(&dir, w) == Some(true)) => {
+            Some(false) if was.iter().any(|w| holds(&dir, w) == Some(true)) => {
                 act(name, "update", Some(digest), None)
             }
             Some(false) => act(
@@ -205,10 +222,16 @@ pub fn plan(
             ),
         });
     }
-    for (name, digest) in cur.iter().filter(|(n, _)| !want.contains_key(*n)) {
+    let gone: BTreeMap<&String, &String> = pending
+        .iter()
+        .chain(cur.iter())
+        .filter(|(n, _)| !want.contains_key(*n))
+        .collect();
+    for (name, digest) in gone {
         let dir = target.join(name);
         let ok = crate::admission::valid_name(name).is_ok()
-            && manifest(store, digest).is_ok_and(|m| holds(&dir, &m) != Some(false));
+            && (fs::symlink_metadata(&dir).is_err()
+                || ours(name).iter().any(|m| holds(&dir, m) == Some(true)));
         out.push(if ok {
             act(name, "remove", Some(digest), None)
         } else {
@@ -224,6 +247,11 @@ pub fn plan(
         });
     }
     out
+}
+
+/// Case folding close to APFS's: per character, so a final sigma folds like any other.
+fn fold(name: &str) -> String {
+    name.chars().flat_map(char::to_lowercase).collect()
 }
 
 #[cfg(unix)]
@@ -280,6 +308,22 @@ pub fn apply(
     want: &BTreeMap<String, String>,
     actions: &[Action],
 ) -> Result<Lock, String> {
+    fs::create_dir_all(target).map_err(|e| format!("{}: {e}", target.display()))?;
+    // scratch left by an interrupted run (single writer: the caller holds the target lock);
+    // swept before anything else so even a refused apply leaves no half-copied skill behind
+    for e in fs::read_dir(target).map_err(|e| format!("{}: {e}", target.display()))? {
+        let p = e.map_err(|e| e.to_string())?.path();
+        let n = p.file_name().unwrap_or_default().to_string_lossy();
+        if n.starts_with(".dao-stage-") || n.starts_with(".dao-old-") {
+            let is_dir = fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir());
+            if is_dir {
+                fs::remove_dir_all(&p)
+            } else {
+                fs::remove_file(&p)
+            }
+            .map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+    }
     if let Some(c) = actions.iter().find(|a| a.action == "conflict") {
         return Err(format!(
             "{}: {}; nothing was published",
@@ -287,14 +331,14 @@ pub fn apply(
             c.reason.as_deref().unwrap_or("conflict")
         ));
     }
-    fs::create_dir_all(target).map_err(|e| format!("{}: {e}", target.display()))?;
-    // scratch left by an interrupted run (single writer: the caller holds the target lock)
-    for e in fs::read_dir(target).map_err(|e| format!("{}: {e}", target.display()))? {
-        let p = e.map_err(|e| e.to_string())?.path();
-        let n = p.file_name().unwrap_or_default().to_string_lossy();
-        if n.starts_with(".dao-stage-") || n.starts_with(".dao-old-") {
-            fs::remove_dir_all(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-        }
+    // record the intent before the first swap, so a crash leaves dao's own dirs recognisable
+    let changes = actions
+        .iter()
+        .any(|a| matches!(a.action.as_str(), "add" | "update" | "remove"));
+    if changes {
+        lock.pending = Some(want.clone());
+        let body = serde_json::to_vec_pretty(&lock).unwrap();
+        crate::admission::durable_write(&target.join(LOCK), &body)?;
     }
     for a in actions {
         let dir = target.join(&a.name);
@@ -321,12 +365,17 @@ pub fn apply(
             _ => {}
         }
     }
-    if current(&lock) != *want {
+    let new_version = current(&lock) != *want;
+    if new_version {
         let version = lock.history.last().map_or(1, |v| v.version + 1);
         lock.history.push(Version {
             version,
             published: want.clone(),
         });
+    }
+    // a finished apply (or one that finds a crashed apply already complete) clears `pending`
+    let had_pending = lock.pending.take().is_some();
+    if new_version || had_pending {
         let body = serde_json::to_vec_pretty(&lock).unwrap();
         crate::admission::durable_write(&target.join(LOCK), &body)?;
     }
@@ -502,6 +551,36 @@ mod tests {
     }
 
     #[test]
+    fn a_crash_between_swaps_leaves_dao_dirs_recognisable() {
+        let root = std::env::temp_dir().join(format!("dao-publish-crash-{}", std::process::id()));
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+        let (store, d1, _) = store_with_two_versions(&root);
+        let target = root.join("target");
+        // the state a crash leaves: intent recorded, s swapped in, no version yet, a stage left
+        let want = BTreeMap::from([("s".to_string(), d1.clone())]);
+        let crashed = Lock {
+            schema: SCHEMA.into(),
+            history: vec![],
+            pending: Some(want.clone()),
+        };
+        copy_object(&store, &manifest(&store, &d1).unwrap(), &target.join("s")).unwrap();
+        fs::create_dir_all(target.join(".dao-stage-t-9/x")).unwrap();
+        fs::write(target.join(LOCK), serde_json::to_vec(&crashed).unwrap()).unwrap();
+        champion(&store, &d1);
+        assert_eq!(
+            kinds(&run(&store, &target, false).unwrap()),
+            ["s:unchanged"]
+        );
+        let lock = read_lock(&target).unwrap();
+        assert_eq!(lock.pending, None);
+        assert_eq!(lock.history.len(), 1);
+        assert!(!target.join(".dao-stage-t-9").exists());
+        let _ = crate::quarantine::make_writable(&root);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_rollback_removes_what_the_newer_version_added() {
         let root = std::env::temp_dir().join(format!("dao-publish-rm-{}", std::process::id()));
         let _ = crate::quarantine::make_writable(&root);
@@ -516,6 +595,7 @@ mod tests {
                 version: 1,
                 published: BTreeMap::new(),
             }],
+            pending: None,
         };
         fs::write(target.join(LOCK), serde_json::to_vec(&empty).unwrap()).unwrap();
         champion(&store, &d1);
