@@ -17,6 +17,7 @@
 //!   one broken skill never stops the others from being indexed or served.
 //! - The registry holds local absolute paths; it is a generated artifact, never committed.
 
+mod dense;
 mod hook;
 
 use serde::{Deserialize, Serialize};
@@ -550,6 +551,97 @@ fn bm25(docs: &[Vec<String>], q: &[(String, f64)]) -> Vec<f64> {
         .collect()
 }
 
+/// One ranked hit: the skill, its BM25 score (0 when only dense recall found it), and when
+/// dense recall ran its cosine similarity and the RRF score that decided its rank.
+pub(crate) struct Hit<'a> {
+    pub(crate) skill: &'a Skill,
+    pub(crate) lexical: f64,
+    pub(crate) dense: Option<f32>,
+    pub(crate) rrf: Option<f64>,
+}
+
+fn sidecar_path(registry_path: &str) -> String {
+    format!("{registry_path}.emb")
+}
+
+fn registry_key(reg: &Registry) -> String {
+    let pairs: Vec<(String, String)> = reg
+        .skills
+        .iter()
+        .map(|s| (s.id.clone(), s.entry_sha256.clone()))
+        .collect();
+    dense::registry_key(&pairs)
+}
+
+/// Embedding text for a skill (what the dense index sees).
+fn embed_text(s: &Skill) -> String {
+    format!("{}: {}", s.name, s.description)
+        .chars()
+        .take(2000)
+        .collect()
+}
+
+/// BM25, fused by RRF with dense recall when `<registry>.emb` matches the registry and the
+/// local embedder answers within the timeout; plain BM25 otherwise (the dense part is optional
+/// by construction).
+fn ranked<'a>(reg: &'a Registry, registry_path: &str, query: &str, top_k: usize) -> Vec<Hit<'a>> {
+    let lex = search(reg, query, top_k.max(50));
+    let plain = |lex: Vec<(f64, &'a Skill)>| {
+        lex.into_iter()
+            .take(top_k)
+            .map(|(s, k)| Hit {
+                skill: k,
+                lexical: s,
+                dense: None,
+                rrf: None,
+            })
+            .collect()
+    };
+    if query.trim().is_empty() {
+        return plain(lex); // nothing to embed; lexical search already returns nothing useful
+    }
+    let side = dense::read_sidecar(
+        &sidecar_path(registry_path),
+        &registry_key(reg),
+        reg.skills.len(),
+    );
+    // vectors from another model would compare meaningless numbers
+    let Some(side) = side.filter(|s| dense::same_model(&s.model, &dense::model())) else {
+        return plain(lex);
+    };
+    let ms = std::env::var("SKILL_HUB_EMBED_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    // the tag may have been re-pulled with other weights since `index --embed`
+    if dense::model_digest(deadline).ok().as_deref() != Some(side.digest.as_str()) {
+        return plain(lex);
+    }
+    let q = match dense::embed(&[query.to_string()], deadline) {
+        Ok(mut v) if v.first().is_some_and(|x| x.len() == side.dim) => v.remove(0),
+        _ => return plain(lex), // embedder down, slow or a different model: lexical only
+    };
+    let cos = side.cosines(&q);
+    let mut by_cos: Vec<usize> = (0..cos.len()).collect();
+    by_cos.sort_by(|a, b| cos[*b].total_cmp(&cos[*a]).then(a.cmp(b)));
+    by_cos.truncate(200);
+    let index_of = |s: &Skill| reg.skills.iter().position(|x| std::ptr::eq(x, s)).unwrap();
+    let lex_idx: Vec<usize> = lex.iter().take(50).map(|(_, s)| index_of(s)).collect();
+    let lex_score: std::collections::HashMap<usize, f64> =
+        lex.iter().map(|(sc, s)| (index_of(s), *sc)).collect();
+    dense::rrf(&lex_idx, &by_cos)
+        .into_iter()
+        .take(top_k)
+        .map(|(i, fused)| Hit {
+            skill: &reg.skills[i],
+            lexical: lex_score.get(&i).copied().unwrap_or(0.0),
+            dense: Some(cos[i]),
+            rrf: Some(fused),
+        })
+        .collect()
+}
+
 fn search<'a>(reg: &'a Registry, query: &str, top_k: usize) -> Vec<(f64, &'a Skill)> {
     // ponytail: in-memory BM25 over name x3 + description, plus a weighted body field;
     // fine for thousands of skills, add an on-disk inverted index beyond ~50k.
@@ -626,7 +718,7 @@ fn write_registry(out: &str, reg: &Registry) -> Result<(), String> {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  skill-hub index --root LABEL=DIR [--root ...] --out REGISTRY.json\n  \
+        "usage:\n  skill-hub index --root LABEL=DIR [--root ...] --out REGISTRY.json [--embed]\n  \
          skill-hub check  [--registry REGISTRY.json]\n  \
          skill-hub search [--registry REGISTRY.json] [--top-k N] [--] QUERY...\n  \
          skill-hub get    [--registry REGISTRY.json] ID\n  \
@@ -643,6 +735,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     };
     let mut roots = Vec::new();
     let (mut out, mut registry, mut top_k, mut rest) = (None, None, 3usize, Vec::new());
+    let mut embed = false;
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         if a == "--" {
@@ -650,7 +743,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             break;
         }
         let allowed: &[&str] = match cmd.as_str() {
-            "index" => &["--root", "--out"],
+            "index" => &["--root", "--out", "--embed"],
             "search" => &["--registry", "--top-k"],
             _ => &["--registry"],
         };
@@ -668,6 +761,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 });
             }
             "--out" => out = Some(val()?),
+            "--embed" => embed = true,
             "--registry" => registry = Some(val()?),
             "--top-k" => top_k = val()?.parse().map_err(|_| "--top-k expects a number")?,
             _ => rest.push(a.clone()),
@@ -684,13 +778,12 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         _ => return Ok(usage()),
     }
-    let registry = || -> Result<Registry, String> {
-        let path = registry
-            .clone()
-            .or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())
-            .ok_or(format!("{cmd} needs --registry or SKILL_HUB_REGISTRY"))?;
-        load(&path)
-    };
+    let registry_path = registry
+        .clone()
+        .or_else(|| std::env::var("SKILL_HUB_REGISTRY").ok())
+        .ok_or(format!("{cmd} needs --registry or SKILL_HUB_REGISTRY"));
+    let registry =
+        || -> Result<Registry, String> { load(registry_path.as_ref().map_err(Clone::clone)?) };
     match cmd.as_str() {
         "index" => {
             let out = out.ok_or("index needs --out")?;
@@ -708,14 +801,34 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 .iter()
                 .for_each(|s| eprintln!("skipped (explicit-only): {s}"));
             let n = skills.len();
-            write_registry(
-                &out,
-                &Registry {
-                    schema: SCHEMA,
-                    roots,
-                    skills,
-                },
-            )?;
+            let reg = Registry {
+                schema: SCHEMA,
+                roots,
+                skills,
+            };
+            // the sidecar goes first: it is keyed to this registry, so if writing the registry
+            // then fails, the old registry simply finds no matching vectors
+            let side = sidecar_path(&out);
+            if embed {
+                let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let digest = dense::model_digest(deadline())?;
+                let texts: Vec<String> = reg.skills.iter().map(embed_text).collect();
+                let mut vecs = Vec::with_capacity(texts.len());
+                for chunk in texts.chunks(64) {
+                    vecs.extend(dense::embed(chunk, deadline())?);
+                }
+                dense::write_sidecar(&side, &registry_key(&reg), &digest, &vecs)?;
+                println!("embedded {n} skills with {} -> {side}", dense::model());
+            } else {
+                // an old sidecar would no longer match; remove it so nothing looks stale
+                match fs::remove_file(&side) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(format!("{side}: {e}"));
+                    }
+                    _ => {}
+                }
+            }
+            write_registry(&out, &reg)?;
             println!("indexed {n} skills -> {out}");
             Ok(ExitCode::SUCCESS)
         }
@@ -730,11 +843,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::from(EXIT_DRIFT))
         }
         "search" => {
-            let reg = registry()?;
-            let hits: Vec<_> = search(&reg, &rest.join(" "), top_k)
+            let path = registry_path.clone()?;
+            let reg = load(&path)?;
+            let hits: Vec<_> = ranked(&reg, &path, &rest.join(" "), top_k)
                 .into_iter()
-                .map(|(score, s)| {
-                    serde_json::json!({"id": s.id, "score": (score * 1000.0).round() / 1000.0, "description": s.description})
+                .map(|h| {
+                    serde_json::json!({"id": h.skill.id, "score": (h.lexical * 1000.0).round() / 1000.0,
+                                       "dense": h.dense.map(|d| (f64::from(d) * 1000.0).round() / 1000.0),
+                                       "rrf": h.rrf.map(|r| (r * 1e6).round() / 1e6),
+                                       "description": h.skill.description})
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&hits).unwrap());
