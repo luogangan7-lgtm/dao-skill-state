@@ -180,7 +180,17 @@ pub fn plan(
         let was = cur.get(name).and_then(|d| manifest(store, d).ok());
         out.push(match holds(&dir, &m) {
             None => act(name, "add", Some(digest), None),
-            Some(true) => act(name, "unchanged", Some(digest), None),
+            Some(true) if cur.contains_key(name) => act(name, "unchanged", Some(digest), None),
+            // identical bytes dao never recorded: still the user's directory, never adopted
+            Some(true) => act(
+                name,
+                "conflict",
+                Some(digest),
+                Some(format!(
+                    "{} exists but dao did not publish it (remove it to let dao manage it)",
+                    dir.display()
+                )),
+            ),
             Some(false) if was.as_ref().is_some_and(|w| holds(&dir, w) == Some(true)) => {
                 act(name, "update", Some(digest), None)
             }
@@ -238,9 +248,24 @@ fn copy_object(store: &Path, m: &Manifest, stage: &Path) -> Result<(), String> {
         fs::create_dir_all(to.parent().unwrap())
             .and_then(|_| fs::copy(obj.join(rel), &to))
             .and_then(|_| set_mode(&to, f.executable))
+            .and_then(|_| fs::File::open(&to)?.sync_all())
             .map_err(|e| format!("{}: {e}", to.display()))?;
     }
-    verify_object(stage, m)
+    verify_object(stage, m)?;
+    // file bytes are synced above; the directory entries too, before the lock can name them
+    let mut dirs: Vec<PathBuf> = m
+        .files
+        .iter()
+        .filter_map(|f| stage.join(&f.path).parent().map(Path::to_path_buf))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    for d in dirs.iter().rev() {
+        fs::File::open(d)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    Ok(())
 }
 
 fn scratch(target: &Path, kind: &str, name: &str) -> PathBuf {
@@ -464,6 +489,14 @@ mod tests {
         let lock = read_lock(&root.join("t")).unwrap();
         let acts = plan(&store, &root.join("t"), &lock, &want);
         assert!(acts.iter().all(|a| a.action == "conflict"), "{acts:?}");
+        // a byte-identical copy dao never recorded is still not dao's to manage
+        let m2 = manifest(&store, &want["skill"]).unwrap();
+        copy_object(&store, &m2, &root.join("t/s")).unwrap();
+        let one = BTreeMap::from([("s".to_string(), want["skill"].clone())]);
+        assert_eq!(
+            kinds(&plan(&store, &root.join("t"), &lock, &one)),
+            ["s:conflict"]
+        );
         let _ = crate::quarantine::make_writable(&root);
         let _ = fs::remove_dir_all(&root);
     }
