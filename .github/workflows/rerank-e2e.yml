@@ -93,8 +93,8 @@ jobs:
       - name: Measure
         run: |
           python -c "import platform, torch; print('machine', platform.machine(), 'mps available', torch.backends.mps.is_available())" | tee -a lat.txt
-          measure() {  # $1 model, $2 port
-            python3 -I crates/skill-hub/tools/rerank_server.py --port "$2" --model "$1" > "srv-$2.log" 2>&1 &
+          measure() {  # $1 model, $2 port, then extra server flags
+            python3 -I crates/skill-hub/tools/rerank_server.py --port "$2" --model "$1" "${@:3}" > "srv-$2.log" 2>&1 &
             pid=$!
             for i in $(seq 1 120); do
               curl -sf -m 5 -X POST "http://127.0.0.1:$2/rerank" -d '{"query":"x","texts":["y"]}' > /dev/null && break
@@ -124,7 +124,7 @@ jobs:
             wait "$pid" 2>/dev/null || true
           }
           measure Qwen/Qwen3-Reranker-0.6B 8121
-          measure BAAI/bge-reranker-v2-m3 8122
+          measure BAAI/bge-reranker-v2-m3 8122 --revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
           { echo "## rerank server latency on macos-latest"; echo; sed 's/^/    /' lat.txt; } >> "$GITHUB_STEP_SUMMARY"
       - name: Server logs
         if: failure()

@@ -93,10 +93,11 @@ def qwen3_scorer(dev):
     return score
 
 
-def cross_encoder_scorer(name, max_length, dev):
+def cross_encoder_scorer(name, max_length, dev, revision=None):
     import torch
     from sentence_transformers import CrossEncoder
-    m = cached_first(lambda local: CrossEncoder(name, max_length=max_length, device=dev, local_files_only=local))
+    m = cached_first(lambda local: CrossEncoder(name, max_length=max_length, device=dev, revision=revision,
+                                                local_files_only=local))
     is_prob = isinstance(getattr(m, "activation_fn", None), torch.nn.Sigmoid)
 
     def score(q, texts):
@@ -113,12 +114,14 @@ def main():
     ap.add_argument("--port", type=int, default=8121)
     ap.add_argument("--model", default=QWEN)
     ap.add_argument("--max-length", type=int, default=512, help="cross-encoders only")
+    ap.add_argument("--revision", help="commit of a --model cross-encoder (Qwen3 is always pinned)")
     a = ap.parse_args()
     dev = device()
     if dev == "cpu":
         print("warning: running on CPU; a hook request takes seconds, longer than the hook's default "
               "SKILL_HUB_RERANK_TIMEOUT_MS=3000, so raise it or the hook falls back", file=sys.stderr, flush=True)
-    model_score = qwen3_scorer(dev) if a.model == QWEN else cross_encoder_scorer(a.model, a.max_length, dev)
+    model_score = (qwen3_scorer(dev) if a.model == QWEN
+                   else cross_encoder_scorer(a.model, a.max_length, dev, a.revision))
     lock = threading.Lock()
 
     def score(q, texts):
