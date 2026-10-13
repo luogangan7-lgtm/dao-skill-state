@@ -7,6 +7,7 @@
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
 mod check;
+mod eval;
 mod normalize;
 mod quarantine;
 mod relations;
@@ -30,6 +31,8 @@ fn usage() -> ExitCode {
   dao normalize --store DIR (DIGEST...|--all)   writes cards/<digest>.json (verbatim routing card)\n\
   dao relations --store DIR   reads cards/, writes relations.json (duplicates, translations, drift, conflicts, families)\n\
   dao upstream check --store DIR [--apply] [--allow-local DIR]...   sources moved since intake; --apply stages them as new candidates\n\
+  dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
+  dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
          exit: 0 ran (see JSON summary; rejections are listed, not errors), 2 usage/environment error"
     );
@@ -429,11 +432,9 @@ fn normalize_cmd(args: &[String]) -> Result<ExitCode, String> {
     })
 }
 
-fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let (store, digests) = store_and_digests(args)?;
-    if !digests.is_empty() || args.iter().any(|a| a == "--all") {
-        return Err("relations takes only --store (it reads every card)".into());
-    }
+/// Cards of objects that still exist, whose digest matches their file name (sorted by digest),
+/// plus the names of card files that were skipped.
+fn load_cards(store: &Path) -> Result<(Vec<normalize::Card>, Vec<String>), String> {
     let mut cards: Vec<normalize::Card> = Vec::new();
     let mut skipped = Vec::new();
     for e in fs::read_dir(store.join("cards"))
@@ -464,18 +465,146 @@ fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     cards.sort_by(|a, b| a.digest.cmp(&b.digest));
+    Ok((cards, skipped))
+}
+
+/// Write JSON atomically (sibling temp file + rename; the temp file never survives a failure).
+fn write_json(path: &Path, v: &impl serde::Serialize) -> Result<(), String> {
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let res =
+        fs::write(&tmp, serde_json::to_vec_pretty(v).unwrap()).and_then(|_| fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn eval_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (sub, rest) = args.split_first().ok_or("eval needs gen or run")?;
+    let allowed: &[&str] = match sub.as_str() {
+        "gen" => &["--store"],
+        "run" => &[
+            "--store",
+            "--registry",
+            "--searcher",
+            "--top-k",
+            "--floor",
+            "--rel",
+        ],
+        other => return Err(format!("unknown eval subcommand: {other}")),
+    };
+    let mut opt: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        let key = allowed
+            .iter()
+            .find(|k| **k == a.as_str())
+            .ok_or(format!("unknown argument for eval {sub}: {a}"))?;
+        opt.insert(
+            key,
+            it.next().ok_or(format!("{key} needs a value"))?.clone(),
+        );
+    }
+    let store = PathBuf::from(opt.get("--store").ok_or("--store is required")?);
+    let dir = store.join("evals");
+    // the set is a pure function of the store; regenerating it is the only trustworthy freeze
+    let regenerate = || -> Result<eval::Set, String> {
+        let (cards, _) = load_cards(&store)?;
+        let rels: Vec<relations::Relation> = serde_json::from_slice(
+            &fs::read(store.join("relations.json"))
+                .map_err(|e| format!("run dao relations first: {e}"))?,
+        )
+        .map_err(|e| format!("relations.json: {e}"))?;
+        let set = eval::generate(&cards, &rels);
+        if set.subjects.is_empty() {
+            return Err("no usable cards: nothing to evaluate".into());
+        }
+        Ok(set)
+    };
+    if sub == "gen" {
+        let set = regenerate()?;
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        write_json(&dir.join("set.json"), &set)?;
+        let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+        for c in &set.cases {
+            *kinds.entry(c.kind.as_str()).or_default() += 1;
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({"set_sha256": set.set_sha256, "subjects": set.subjects.len(), "cases": kinds})).unwrap()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let set: eval::Set = serde_json::from_slice(
+        &fs::read(dir.join("set.json")).map_err(|e| format!("run dao eval gen first: {e}"))?,
+    )
+    .map_err(|e| format!("set.json: {e}"))?;
+    if regenerate()? != set {
+        return Err("evals/set.json is not the set this store generates (edited, or cards changed: rerun dao eval gen)".into());
+    }
+    let registry = PathBuf::from(opt.get("--registry").ok_or("--registry is required")?);
+    let searcher = eval::resolve_bin(
+        opt.get("--searcher")
+            .ok_or("--searcher (skill-hub binary) is required")?,
+    )?;
+    let before = eval::input_hashes(&registry, &searcher)?;
+    let reg: serde_json::Value = serde_json::from_slice(
+        &fs::read(&registry).map_err(|e| format!("{}: {e}", registry.display()))?,
+    )
+    .map_err(|e| format!("{}: {e}", registry.display()))?;
+    let ids: std::collections::HashSet<String> = reg["skills"]
+        .as_array()
+        .ok_or("registry has no skills array")?
+        .iter()
+        .filter_map(|s| s["id"].as_str().map(str::to_string))
+        .collect();
+    let num = |k: &str, d: f64| -> Result<f64, String> {
+        let v = opt
+            .get(k)
+            .map_or(Ok(d), |v| v.parse::<f64>().map_err(|e| format!("{k}: {e}")))?;
+        if v.is_finite() && v >= 0.0 {
+            Ok(v)
+        } else {
+            Err(format!("{k} must be a finite number ≥ 0"))
+        }
+    };
+    let top_k: usize = opt.get("--top-k").map_or(Ok(3), |v| {
+        v.parse()
+            .map_err(|_| "--top-k must be a positive integer".to_string())
+    })?;
+    if top_k == 0 {
+        return Err("--top-k must be a positive integer".into());
+    }
+    let n_skills = ids.len();
+    let (floor, rel) = (
+        num("--floor", eval::hook_floor(n_skills))?,
+        num("--rel", 0.5)?,
+    );
+    let search = eval::skill_hub(searcher.clone(), registry.clone(), top_k);
+    let scored = eval::run(&set, &search, &ids, top_k, floor, rel)?;
+    let r = eval::receipt(
+        &set, &registry, &searcher, before, n_skills, top_k, floor, rel, scored,
+    )?;
+    write_json(&dir.join(r.file_name()), &r)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({"receipt": r.file_name(), "set_sha256": r.set_sha256, "registry_sha256": r.registry_sha256, "floor": r.floor, "kinds": r.kinds, "failures": r.failures.len()})).unwrap()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn relations_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let (store, digests) = store_and_digests(args)?;
+    if !digests.is_empty() || args.iter().any(|a| a == "--all") {
+        return Err("relations takes only --store (it reads every card)".into());
+    }
+    let (cards, mut skipped) = load_cards(&store)?;
     let rels = relations::build(&cards);
     let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
     for r in &rels {
         *kinds.entry(r.kind.as_str()).or_default() += 1;
     }
-    let tmp = store.join(format!(".relations.{}", std::process::id()));
-    let res = fs::write(&tmp, serde_json::to_vec_pretty(&rels).unwrap())
-        .and_then(|_| fs::rename(&tmp, store.join("relations.json")));
-    if res.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    res.map_err(|e| e.to_string())?;
+    write_json(&store.join("relations.json"), &rels)?;
     skipped.sort();
     println!(
         "{}",
@@ -502,6 +631,7 @@ fn main() -> ExitCode {
         Some("scan") => scan_cmd(&args[1..]),
         Some("normalize") => normalize_cmd(&args[1..]),
         Some("relations") => relations_cmd(&args[1..]),
+        Some("eval") => eval_cmd(&args[1..]),
         Some("check") if args.len() <= 2 => {
             let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
             println!("{}", check::to_json(&r));
