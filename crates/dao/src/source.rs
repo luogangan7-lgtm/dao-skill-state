@@ -127,8 +127,6 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         "-c",
         "core.askPass=",
         "-c",
-        "credential.helper=",
-        "-c",
         "http.lowSpeedLimit=1000",
         "-c",
         "http.lowSpeedTime=30",

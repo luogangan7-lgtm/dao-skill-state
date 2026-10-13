@@ -6,8 +6,11 @@
 //! changed sources as new candidates through the normal intake path.
 //! Invariants:
 //! - Read-only unless `--apply`; even then only new candidates are staged (new digests). No
-//!   existing object, manifest, card, receipt, lock or champion pointer is modified: a newer
-//!   upstream is a candidate that must pass admission like any other.
+//!   existing object, manifest, card, receipt or champion pointer is modified, nor any lock of
+//!   another ref; the one exception is a ref moved back to a commit it had before, whose own
+//!   lock for that commit is rewritten with a new fetch time. A newer upstream is a candidate
+//!   that must pass admission like any other. Refs outside HEAD, branches and tags (e.g.
+//!   pull/N/head) are not followed.
 //! - Lock files are store data and may be tampered with: only `<16 hex>.json` regular files of
 //!   at most 64 KiB are read; a bad lock is an error for that item, never for the whole run;
 //!   subpaths must be relative without `..`; local paths (a `local` origin, or a git origin that
@@ -124,7 +127,9 @@ pub fn tracked(store: &Path) -> Result<(Vec<Tracked>, Vec<Report>), String> {
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
+                .map_or(0, |d| d.as_nanos())
+                // a skewed clock can stamp the file in the future too
+                .min(u128::from(now) * 1_000_000_000 + 999_999_999);
             let t = Tracked {
                 kind: v["kind"].as_str().unwrap_or("").into(),
                 origin: origin.into(),
