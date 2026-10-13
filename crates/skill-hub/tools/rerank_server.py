@@ -18,8 +18,9 @@ Usage:
 On Apple Silicon with `mlx-lm` installed it serves a 4-bit MLX conversion of the same model
 (D7 round 6: 97/112, as accurate as float16, ~1.3 s per request, 0.9 GB); otherwise torch on
 the Apple GPU (float16), CUDA or CPU. Scores are shifted per variant so the hook's default
-tau fits each. Requests that arrive together share one forward pass (--max-batch-rows); a
-request that waited past --max-wait-ms gets 503 and the hook falls back. On CPU a hook request
+tau fits each. One model thread serves requests in arrival order (--max-batch-rows lets requests
+share a pass on a GPU where that pays; on an M1 it did not); a request that waited past
+--max-wait-ms gets 503 at once and the hook falls back instead of queueing. On CPU a hook request
 (10 candidates) takes seconds: raise SKILL_HUB_RERANK_TIMEOUT_MS (default 3000) accordingly.
 
 Depends on: mlx-lm (Apple Silicon), or torch + transformers (Qwen3) or sentence-transformers
@@ -237,8 +238,10 @@ def main():
                     help="auto: 4-bit MLX on Apple Silicon when mlx-lm is installed, else torch")
     ap.add_argument("--dtype", choices=["auto", "float32", "float16"], default="auto",
                     help="torch Qwen3: auto = float16 on the Apple GPU, float32 elsewhere")
-    ap.add_argument("--max-batch-rows", type=int, default=64,
-                    help="texts per forward pass when requests arrive together")
+    # PR #23 mac-concurrency (M1 GPU, MLX 4-bit): one request (10 texts) per pass ~1.3 s; six merged
+    # (60 texts) took 6-14 s and more memory, so merging gains nothing there. Default: one request.
+    ap.add_argument("--max-batch-rows", type=int, default=MAX_TEXTS,
+                    help="texts per forward pass when requests arrive together (raise on a large GPU)")
     ap.add_argument("--max-wait-ms", type=int, default=3000,
                     help="answer busy (503) when a request waited longer (the hook's default timeout)")
     a = ap.parse_args()
