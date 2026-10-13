@@ -289,7 +289,7 @@ fn unscoped_bash(entry_inner: Option<&str>) -> bool {
 /// tool parsing, demotion heuristics, placeholders) lives in this file, so its source text is
 /// hashed: any policy change changes `rules_sha256`. ponytail: also changes on comment edits;
 /// a separate policy file would be needed to avoid that.
-fn rules_sha256() -> String {
+pub(crate) fn rules_sha256() -> String {
     hex(&Sha256::digest(include_str!("scan.rs").as_bytes()))
 }
 

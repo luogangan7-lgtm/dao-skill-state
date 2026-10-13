@@ -12,7 +12,7 @@
 //!   registry and searcher hashes, so a number always names exactly what produced it.
 //! - Routing correctness only: this measures whether the right skill is put in front of the
 //!   model, not whether the skill then does the task well (that is a separate gate, G4).
-//! - `should_not` is informational: its prompts are the card's own exclusion sentences, which
+//! - Decision (D2): `should_not` is informational: its prompts are the card's own exclusion sentences, which
 //!   share the skill's vocabulary, so retrieval keeps the skill and the model must apply the
 //!   exclusion. Admission gates on trigger / choose / abstain, not on should_not.
 
@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const SET_SCHEMA: &str = "dao-eval-set/1";
-pub const RECEIPT_SCHEMA: &str = "dao-eval-receipt/1";
+/// /2 (D2 review): receipts record which cases were scored and the registry entry hash of each
+/// subject; /1 receipts lack both and are refused, so an unscored case can never pass.
+pub const RECEIPT_SCHEMA: &str = "dao-eval-receipt/2";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Case {
@@ -242,10 +244,21 @@ pub struct Receipt {
     pub kinds: BTreeMap<String, KindScore>,
     /// Case ids that failed, with the kept hits, for diagnosis.
     pub failures: Vec<(String, Vec<String>)>,
+    /// Subject names the registry has no id for (their cases were not scored).
+    pub unreachable: Vec<String>,
+    /// Ids of the cases that were actually scored; a case not listed here never passes.
+    pub scored: Vec<String>,
+    /// Subject name → the evaluated registry's `entry_sha256` (SKILL.md) for that id, so
+    /// admission can check the registry held this candidate's content.
+    pub entries: BTreeMap<String, String>,
 }
 
-/// Per-kind scores and the failed case ids with the hits that were kept.
-pub type Scored = (BTreeMap<String, KindScore>, Vec<(String, Vec<String>)>);
+/// Per-kind scores, the failed case ids with the hits that were kept, and the scored case ids.
+pub type Scored = (
+    BTreeMap<String, KindScore>,
+    Vec<(String, Vec<String>)>,
+    Vec<String>,
+);
 
 /// `(id, score)` hits for one prompt from the searcher.
 pub type Searcher<'a> = dyn Fn(&str) -> Result<Vec<(String, f64)>, String> + 'a;
@@ -276,12 +289,18 @@ pub fn run(
         })
         .collect();
     let mut failures = Vec::new();
+    let mut scored = Vec::new();
     for c in &set.cases {
         let k = kinds
             .get_mut(&c.kind)
             .ok_or(format!("unknown case kind {}", c.kind))?;
-        // an expected skill the registry cannot return is a broken case, not a routing failure
-        if c.expect.iter().any(|e| !known_ids.contains(e)) {
+        // a named skill the registry cannot return is a broken case, not a routing result: an
+        // absent expected skill cannot be kept, and an absent competitor (choose) cannot lose
+        if c.expect
+            .iter()
+            .chain(&c.expect_not)
+            .any(|e| !known_ids.contains(e))
+        {
             k.unreachable += 1;
             continue;
         }
@@ -301,11 +320,12 @@ pub fn run(
         };
         k.total += 1;
         k.passed += usize::from(ok);
+        scored.push(c.id.clone());
         if !ok {
             failures.push((c.id.clone(), kept));
         }
     }
-    Ok((kinds, failures))
+    Ok((kinds, failures, scored))
 }
 
 /// Every kind is always reported; only these gate admission (should_not is informational).
@@ -323,6 +343,12 @@ pub const GATED: [&str; 3] = ["should_abstain", "should_choose", "should_trigger
 pub fn hook_floor(n: usize) -> f64 {
     let max_idf = |n: f64| ((n - 1.0 + 0.5) / 1.5 + 1.0).ln();
     6.0 * (max_idf(n.max(1) as f64) / max_idf(2000.0)).min(1.0)
+}
+
+/// The production hook's keep policy for a registry of `n` skills: (top_k, floor, rel). `dao
+/// eval run` defaults to it and admission accepts only receipts produced under it.
+pub fn policy(n: usize) -> (usize, f64, f64) {
+    (3, hook_floor(n), 0.5)
 }
 
 /// The skill-hub `search` contract as a searcher.
@@ -455,6 +481,9 @@ pub fn receipt(
         gated: GATED.iter().map(|s| s.to_string()).collect(),
         kinds: scored.0,
         failures: scored.1,
+        scored: scored.2,
+        unreachable: Vec::new(),
+        entries: BTreeMap::new(),
     })
 }
 
@@ -572,13 +601,13 @@ mod tests {
                 vec![]
             })
         };
-        let (k, f) = run(&s, &perfect, &known, 3, 6.0, 0.5).unwrap();
+        let (k, f, _) = run(&s, &perfect, &known, 3, 6.0, 0.5).unwrap();
         assert!(f.is_empty(), "{f:?}");
         assert_eq!(k["should_abstain"].passed, 10);
         let hijack = |_: &str| -> Result<Vec<(String, f64)>, String> {
             Ok(vec![("deploy".into(), 20.0), ("deploy-k8s".into(), 19.0)])
         };
-        let (k, _) = run(&s, &hijack, &known, 3, 6.0, 0.5).unwrap();
+        let (k, _, _) = run(&s, &hijack, &known, 3, 6.0, 0.5).unwrap();
         assert_eq!(k["should_choose"].passed, 1);
         assert_eq!(k["should_abstain"].passed, 0);
         assert_eq!(
@@ -587,10 +616,16 @@ mod tests {
         );
         // a subject missing from the registry is unreachable, not a routing failure
         let only: std::collections::HashSet<String> = ["deploy"].map(String::from).into();
-        let (k, _) = run(&s, &perfect, &only, 3, 6.0, 0.5).unwrap();
+        let (k, _, _) = run(&s, &perfect, &only, 3, 6.0, 0.5).unwrap();
         assert_eq!(
             (k["should_trigger"].total, k["should_trigger"].unreachable),
             (1, 1)
+        );
+        // a choose case whose competitor is missing from the registry is not scored either:
+        // leaving the sibling out must not let the candidate win its choose case for free
+        assert_eq!(
+            (k["should_choose"].total, k["should_choose"].unreachable),
+            (0, 2)
         );
         // all four kinds are always reported
         assert_eq!(k.len(), 4);
