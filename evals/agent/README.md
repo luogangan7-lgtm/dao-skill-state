@@ -91,14 +91,17 @@ fixes it but breaks the US exports: `old-ok` (its request is shown to the evolve
 |---|---|---|---|
 | 38598558955 | 3 | 2/3 / 0/3 / 3/3 | 5 / 10 / 12 |
 | 38602257736 | 5 | 5/5 / 2/5 / 5/5 | 7 / 10 / 15 |
-| **Total** | 8 | **7/8 / 2/8 / 8/8** | |
+| 38608445681 (skill-creator only, candidates kept) | 3 | – / 3/3 / – | – / 9 / – |
+| **Total** | 8 / 11 / 8 | **7/8 / 5/11 / 8/8** | |
 
-- skill-creator's candidates broke the unseen US case in 5/8 (and in one more run the EU
-  held-out). The use runs' replies suggest swapped columns, a misspelt header or flipped US
-  dates, but the candidates were not kept then, so the cause is a hypothesis. dao vs skill-creator
-  8/8 vs 2/8: two-sided Fisher exact p ≈ 0.007, pooled over two runs, one task, MiniMax only. No
-  difference was observed between dao and no meta-skill. The `none` miss was a model glitch (the reply was a
-  raw tool-call string).
+- skill-creator's candidates broke the unseen US case in 5/11 (and the EU held-out once). The use
+  runs' replies suggest swapped columns, a misspelt header or flipped US dates; those candidates
+  were not kept, so that cause is a hypothesis. The three kept candidates (all clean) show the
+  style: they add rules the evidence did not give (a "first component > 12 means day first"
+  heuristic, a rewritten section order), which a weaker reading can turn into regressions.
+- dao vs skill-creator 8/8 vs 5/11: two-sided Fisher exact p ≈ 0.02, pooled over three runs, one
+  task, MiniMax only. No difference was observed between dao and no meta-skill (7/8; p ≈ 0.15 vs
+  skill-creator). The `none` miss was a model glitch (the reply was a raw tool-call string).
 - An earlier run (38594726481) used a prompt that only said "write the improved skill into
   ./candidate/"; 3/9 evolvers (none 1, dao 2) put it in `./candidate/<name>/` and scored "no
   candidate". The prompt now names `./candidate/SKILL.md` (#45); that run is excluded above.
