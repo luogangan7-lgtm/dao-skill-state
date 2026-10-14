@@ -67,6 +67,14 @@ jobs:
         run: |
           python3 crates/dao/tools/intake_bench_report.py "$store" "$RUNNER_TEMP/logs" results | tee report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Card fidelity (evaluation A3)
+        run: |
+          python3 -m pip install --quiet pyyaml==6.0.2
+          python3 crates/dao/tools/card_fidelity.py --selftest
+          rc=0; python3 crates/dao/tools/card_fidelity.py "$store" > fidelity.txt || rc=$?
+          # third-party names are printed: keep them out of markdown rendering
+          { echo '```'; cat fidelity.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
