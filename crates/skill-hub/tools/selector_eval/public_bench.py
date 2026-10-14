@@ -12,7 +12,8 @@ list of requests that need no skill (small talk, general questions and near miss
 domain). A request that names a multi-word skill is dropped (too easy).
 
 Limits, to state with any result: requests are written from each skill's own description, so they
-share its vocabulary and are easier than real traffic; the no-skill list is short. The bundle
+share its vocabulary and are easier than real traffic; the no-skill list is short; some requests fit
+a sibling skill as well (accepted via SIBLINGS) and two skills' requests needed no skill (EXCLUDE). The bundle
 embeds the registry (third-party texts): keep it inside the job, never upload it.
 
 gen reads ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL (an Anthropic-compatible
@@ -134,6 +135,22 @@ def split_of(case):
     return "dev" if hashlib.sha256(key.encode()).digest()[0] % 2 == 0 else "held"
 
 
+# Label review (PR #56): these skills' requests are generic writing / scaffolding that need no skill,
+# so their cases are left out; within each sibling group a request fits any member equally.
+EXCLUDE = {"discernment-nudge", "template-skill"}
+SIBLINGS = [{"vercel-deploy", "vercel-cli-with-tokens"}, {"playwright", "playwright-interactive", "webapp-testing"},
+            {"figma", "figma-use"}, {"writing-skills", "skill-creator"}, {"hf-cli", "huggingface-best"}]
+
+
+def accepted(names):
+    """The expected names plus their siblings."""
+    out = set(names)
+    for g in SIBLINGS:
+        if out & g:
+            out |= g
+    return sorted(out)
+
+
 def bundle(registry, cases_path, out):
     reg = json.load(open(registry))
     ids = {}
@@ -142,7 +159,9 @@ def bundle(registry, cases_path, out):
     b = {"registry": reg, "dev": {"cases": []}, "held": {"cases": []}}
     missing = 0
     for i, c in enumerate(json.load(open(cases_path))["cases"]):
-        expect = [x for n in c["expect"] for x in ids.get(n, [])]
+        if set(c["expect"]) & EXCLUDE:
+            continue
+        expect = [x for n in accepted(c["expect"]) for x in ids.get(n, [])]
         if c["expect"] and not expect:
             missing += 1  # a pinned skill is no longer in the registry: a broken benchmark
             continue
