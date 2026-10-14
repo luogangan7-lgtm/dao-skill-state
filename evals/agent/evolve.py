@@ -59,6 +59,8 @@ def main():
     ap.add_argument("--tasks", default="")
     ap.add_argument("--arms", default="none,skill-creator,dao")
     ap.add_argument("--use-arms", default="hook")
+    ap.add_argument("--evolve-arm", default="hook",
+                    help="how the meta-skill is offered: hook (skill-hub hook surfaces it) or skills (installed only)")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=1200)
@@ -99,7 +101,7 @@ def main():
                         "'SKILL.md')) else 1)\n")
                     shutil.copytree(os.path.join(troot, "skill"), os.path.join(tdir, "files", "skill"))
                     create.meta_skill(arm, tdir)
-                    e = run.run_one(tdir, "skills" if arm != "none" else "none", a.max_turns, a.timeout)
+                    e = run.run_one(tdir, a.evolve_arm if arm != "none" else "none", a.max_turns, a.timeout)
                     emit({"task": name, "arm": arm, "rep": rep, "phase": "evolve", "use_arm": use_arm, **e})
                     if not e["pass"]:
                         summary.append((name, arm, use_arm, None, base))
