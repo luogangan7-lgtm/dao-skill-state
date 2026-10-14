@@ -1,0 +1,4 @@
+fix(ui): align table headers (#480)
+docs: fix typo (#481)
+refactor: extract pricing module (#483)
+feat(cli): add --json flag (#485)
