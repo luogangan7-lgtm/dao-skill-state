@@ -58,10 +58,12 @@ def keep_candidate(src, dest, exts=(".md", ".py", ".json", ".yaml", ".yml", ".tx
     """Copy the candidate's small text files into the uploaded artifact, so a regression can be traced
     to the rule that caused it. The folder is agent-written: symlinks and other or large files are
     skipped, so nothing outside it (or a runner file it links to) can reach the artifact."""
+    if os.path.islink(src):
+        return
     for root, _, files in os.walk(src):  # os.walk does not follow symlinked folders
         for f in files:
             p = os.path.join(root, f)
-            if os.path.islink(p) or not f.endswith(exts) or os.path.getsize(p) > max_bytes:
+            if os.path.islink(p) or not os.path.isfile(p) or not f.endswith(exts) or os.path.getsize(p) > max_bytes:
                 continue
             out = os.path.join(dest, os.path.relpath(p, src))
             os.makedirs(os.path.dirname(out), exist_ok=True)
