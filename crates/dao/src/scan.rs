@@ -1254,7 +1254,7 @@ mod tests {
             let ok = match *want {
                 "block" => worst == Some(B),
                 "review" => worst.is_some_and(|s| s >= R),
-                _ => worst.map_or(true, |s| s == I),
+                _ => worst.is_none_or(|s| s == I),
             };
             if !ok {
                 misses.push(format!("{want:>6} got {worst:?}: {text}"));
