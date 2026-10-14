@@ -725,6 +725,27 @@ mod tests {
         );
     }
 
+    /// Intake benchmark A1: two staged third-party skills named "pdf" were both refused with a
+    /// reason that never said the name was shared. The reason must name the conflict.
+    #[test]
+    fn a_shared_name_is_reported_as_a_name_conflict() {
+        let mut e = ev("CLEAN", None, json!({}));
+        if let Ok((set, _, _)) = &mut e.eval {
+            set.subjects.insert("x".into(), d('b'));
+        }
+        let g = eval_gate_of(&e);
+        assert!(
+            !g.passed && g.evidence.contains("share the name x"),
+            "{g:?}"
+        );
+        let u = eval_gate_of(&ev(
+            "CLEAN",
+            None,
+            json!({"scored": ["ab1", "n1"], "unreachable": ["x"]}),
+        ));
+        assert!(u.evidence.contains("name conflict"), "{u:?}");
+    }
+
     /// B1: a case that was never scored (subject missing from the registry) cannot pass, and a
     /// pre-/2 receipt (no `scored`) does not even parse.
     #[test]
