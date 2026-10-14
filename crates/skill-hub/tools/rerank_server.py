@@ -86,7 +86,7 @@ def split(pairs, flat):
 def to_hook_scale(p, tau):
     """Shift a backend's probabilities so its own tuned tau lands on the hook's default
     (HOOK_TAU): monotonic, so rankings and every keep/abstain decision at tau are unchanged."""
-    q = min(max(p, 1e-7), 1 - 1e-7)
+    q = min(max(p, 1e-7), 1 - 1e-7)  # p first: max/min return it when it is NaN, so NaN survives to the guard
     logit = lambda x: math.log(x / (1 - x))
     y = 1 / (1 + math.exp(-(logit(q) - logit(tau) + logit(HOOK_TAU))))
     # rounding must not move a score across the threshold: at or above tau stays at or above the
