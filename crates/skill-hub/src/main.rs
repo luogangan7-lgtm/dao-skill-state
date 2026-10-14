@@ -506,10 +506,30 @@ fn named_languages(query: &str) -> Vec<&'static str> {
     langs
 }
 
+/// English function words and pleasantries dropped from queries (documents keep them). In a
+/// small library they score like content words: intake benchmark A1, "What is 17 times 23?"
+/// kept a skill whose description says "what is it doing". Words that are also content
+/// ("back end", "US", "no-code", "get", "WHO") stay out of the list. Known limit: a skill
+/// whose name is only function words ("how-to") is not reachable by its name in a query.
+const STOPWORDS: [&str; 80] = [
+    "a", "about", "after", "again", "am", "an", "and", "any", "are", "as", "at", "be", "been",
+    "before", "but", "by", "could", "did", "do", "does", "doing", "for", "from", "had", "has",
+    "have", "he", "hello", "her", "here", "hi", "him", "his", "how", "i", "if", "in", "into", "is",
+    "it", "its", "just", "me", "my", "now", "of", "ok", "okay", "on", "or", "our", "please", "she",
+    "should", "so", "some", "than", "thank", "thanks", "that", "the", "their", "them", "then",
+    "there", "these", "they", "this", "to", "was", "we", "were", "what", "when", "where", "which",
+    "why", "with", "would", "you",
+];
+
 /// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
 /// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
 fn expand_query(query: &str) -> Vec<(String, f64)> {
-    let base = tokenize(&normalize_query(query));
+    let all = tokenize(&normalize_query(query));
+    let base: Vec<String> = all
+        .iter()
+        .filter(|t| !STOPWORDS.contains(&t.as_str()))
+        .cloned()
+        .collect();
     let mut q: Vec<(String, f64)> = base.iter().map(|t| (t.clone(), 1.0)).collect();
     if named_languages(query).contains(&"dotnet") {
         q.push(("dotnet".to_string(), 0.5));
@@ -520,7 +540,8 @@ fn expand_query(query: &str) -> Vec<(String, f64)> {
         }
     }
     let latin = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric());
-    for w in base.windows(2).filter(|w| latin(&w[0]) && latin(&w[1])) {
+    // joined from the unfiltered words, so "how to" or "back end" still form compounds
+    for w in all.windows(2).filter(|w| latin(&w[0]) && latin(&w[1])) {
         q.push((format!("{}{}", w[0], w[1]), 0.5));
     }
     // keep the highest weight per term
@@ -1090,6 +1111,49 @@ mod tests {
                 .name,
             "upload-py"
         );
+    }
+
+    #[test]
+    fn function_words_alone_retrieve_nothing() {
+        // Intake benchmark A1 (112 public skills): "What is 17 times 23?" kept a skill whose
+        // description says "what is it doing", because "what"/"is"/"it" scored as terms.
+        let root = tmp("stopwords");
+        put(
+            &root,
+            "a",
+            "diagnose-session",
+            "Use when asked what is it doing or why it is so slow",
+        );
+        put(
+            &root,
+            "b",
+            "model-picker",
+            "Find the best model for a task and compare benchmark scores",
+        );
+        let reg = reg_for(&root);
+        for chit_chat in [
+            "What is 17 times 23?",
+            "Thanks, that is all for now.",
+            "Say it back to me.",
+        ] {
+            assert!(search(&reg, chit_chat, 5).is_empty(), "{chit_chat}");
+        }
+        // content words still retrieve, with or without function words around them
+        assert_eq!(
+            search(&reg, "what model should I use for this task?", 1)[0]
+                .1
+                .name,
+            "model-picker"
+        );
+        assert_eq!(
+            search(&reg, "why is it so slow", 1)[0].1.name,
+            "diagnose-session"
+        );
+        // compounds still join across a dropped word; content words that look like fillers stay
+        let q = expand_query("set up a how to guide for the back end");
+        for t in ["howto", "back", "backend"] {
+            assert!(q.iter().any(|(w, _)| w == t), "{t}: {q:?}");
+        }
     }
 
     #[test]
