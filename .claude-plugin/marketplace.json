@@ -1,0 +1,11 @@
+{
+  "name": "dao-skill-state",
+  "owner": {"name": "luogangan7-lgtm"},
+  "plugins": [
+    {
+      "name": "dao-skill-state",
+      "source": "./dao-skill-state",
+      "description": "Create, audit and evolve reusable agent skills, as fixed steps or with an optional long-task state contract."
+    }
+  ]
+}

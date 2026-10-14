@@ -1,0 +1,9 @@
+{
+  "name": "dao-skill-state",
+  "version": "0.3.0",
+  "description": "Create, audit and evolve reusable agent skills from requirements or failure evidence, as fixed steps or with an optional long-task state contract.",
+  "license": "MIT",
+  "repository": "https://github.com/luogangan7-lgtm/dao-skill-state",
+  "keywords": ["skills", "skill-creator", "meta-skill", "evaluation", "skill-state"],
+  "skills": "./"
+}

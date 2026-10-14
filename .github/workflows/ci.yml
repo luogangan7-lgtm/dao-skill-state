@@ -6,6 +6,17 @@ on:
 permissions:
   contents: read
 jobs:
+  plugin:
+    # the Claude Code plugin and marketplace manifests (.claude-plugin/) must validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code@2.1.285
+      - run: claude plugin validate .
+      - run: claude plugin validate dao-skill-state
   dao-python:
     runs-on: ubuntu-latest
     steps:
