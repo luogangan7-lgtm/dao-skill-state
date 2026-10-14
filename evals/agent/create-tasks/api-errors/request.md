@@ -7,4 +7,5 @@ Make a skill for our HTTP API error conventions, so any agent writing an endpoin
   anything unexpected → 500 "INTERNAL".
 - `message` is the human-readable text passed in, except for INTERNAL, where it is always
   "Internal error" (never leak details).
-- `request_id` echoes the caller's X-Request-Id header; if there is none, it is null.
+- `request_id` echoes the caller's X-Request-Id header (header names are case-insensitive); if there is
+  none, it is null.
