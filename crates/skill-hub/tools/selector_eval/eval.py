@@ -349,9 +349,12 @@ def cands(bundle_path, skill_hub, out):
     Qwen3-Embedding as the dense half; recall@k of each list, numbers only."""
     import tempfile
     from sentence_transformers import SentenceTransformer
-    dense_models = {"bgem3": SentenceTransformer("BAAI/bge-m3", device="cpu", revision=REVISIONS["BAAI/bge-m3"]),
-                    "qwen3emb": SentenceTransformer(QWEN_EMB_REPO, device="cpu",
-                                                    revision=REVISIONS[QWEN_EMB_REPO])}  # before the data
+    # only the retrieval variants a round uses (SELECTOR_DENSE, default bge-m3 as shipped): each one
+    # costs a CPU encode of the whole registry (bge-m3 ~13 min; with Qwen3-Embedding too, run
+    # 38474524757 hit the 2 h job limit)
+    repos = {"bgem3": "BAAI/bge-m3", "qwen3emb": QWEN_EMB_REPO}
+    dense_models = {k: SentenceTransformer(repos[k], device="cpu", revision=REVISIONS[repos[k]])
+                    for k in os.environ.get("SELECTOR_DENSE", "bgem3").split(",")}  # before the data
     bundle = json.load(open(bundle_path))
     for split in ("dev", "held"):  # the hook bounds the prompt before retrieval and selection
         for c in bundle[split]["cases"]:
