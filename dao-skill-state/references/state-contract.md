@@ -31,7 +31,7 @@ Specify the authoritative location, initialization, allowed transitions, complet
 
 Before an external action persist a pending record with stable action identity and authorization reference. After execution verify the external receipt before marking done. On restart inspect pending actions and the real system; do not resend a non-idempotent action merely because a local receipt is absent. Missing idempotency/reconciliation means human review, not an exactly-once claim.
 
-Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, then choose one next action. Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
+Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, then continue from the next unfinished action. State limits nothing else: a run does as many steps as the task allows, and stops only where the contract says (a gate, an approval, an error). Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
 
 ## Acceptance before runtime adoption
 
