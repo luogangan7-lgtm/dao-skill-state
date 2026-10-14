@@ -68,7 +68,7 @@ can make results worse.
   satisfy its own folder = name rule) and did not say so. #43 fixed the entry rule; rerun 9/9.
 - dao is the slowest creator (2–3× the turns), often adding scripts and self-checks.
 
-### D. Self-evolution (`evolve`, 2 tasks with a seeded defect)
+### D. Self-evolution (`evolve`, tasks with a seeded defect)
 
 | Run | Model | reps | Candidates fixed (none / skill-creator / dao) | Regressions | Held-out passes |
 |---|---|---|---|---|---|
@@ -78,9 +78,31 @@ can make results worse.
 All arms fix the observed failure without breaking prior successes (one `none` candidate on
 MiniMax did not fix it). The held-out case fails with the original skill in changelog-perf (and
 in csv-dates on Kimi) and passes with every candidate, so the fixes generalise beyond the shown
-case. The seeded defects are easy
-enough that no meta-skill is needed, so D does not yet separate the arms; harder tasks
-(multi-file skills, conflicting evidence, a tempting over-fix) are the next step.
+case.
+These two seeded defects are easy enough that no meta-skill is needed, so they do not separate the
+arms.
+
+**Over-fix trap (`csv-region`).** The failure shows one EU export whose slashed dates are day
+first; the reviewer says nothing about other exports. Switching every slashed date to day first
+fixes it but breaks the US exports: `old-ok` (its request is shown to the evolver) and
+`heldout-us` (never shown). Clean = fixed, no regression, held-out passes.
+
+| Run (MiniMax) | reps | Clean: none / skill-creator / dao | Mean evolve turns |
+|---|---|---|---|
+| 38598558955 | 3 | 2/3 / 0/3 / 3/3 | 5 / 10 / 12 |
+| 38602257736 | 5 | 5/5 / 2/5 / 5/5 | 7 / 10 / 15 |
+| **Total** | 8 | **7/8 / 2/8 / 8/8** | |
+
+- skill-creator's candidates broke the unseen US case in 5/8 (and in one more run the EU
+  held-out): the use runs swapped columns, misspelt the header or flipped US dates. The candidates
+  were not kept then, so the rule behind this is not yet traced. dao vs skill-creator 8/8 vs 2/8 (Fisher exact
+  p ≈ 0.007); dao vs none shows no difference. The `none` miss was a model glitch (the reply was a
+  raw tool-call string).
+- An earlier run (38594726481) used a prompt that only said "write the improved skill into
+  ./candidate/"; 3/9 evolvers (none 1, dao 2) put it in `./candidate/<name>/` and scored "no
+  candidate". The prompt now names `./candidate/SKILL.md` (#45); that run is excluded above.
+- Candidates are now kept in the run artifact (`candidates/`) so a regression can be traced to
+  the rule that caused it.
 
 ### Limits
 
