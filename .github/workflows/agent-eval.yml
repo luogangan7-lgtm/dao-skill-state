@@ -32,6 +32,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install openpyxl==3.1.5 python-docx==1.1.2 pypdf==5.1.0 python-pptx==1.0.2 reportlab==4.2.5 pytest==8.3.4
       - run: |
           for t in evals/agent/tasks/*/; do
             test -f "$t/prompt.md"
@@ -54,8 +58,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install Claude Code (pinned)
-        run: npm install -g @anthropic-ai/claude-code@2.1.285
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Claude Code (pinned) and task tooling
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.285
+          # the same libraries are available to the agent in both arms; checkers use them too
+          pip install openpyxl==3.1.5 python-docx==1.1.2 pypdf==5.1.0 python-pptx==1.0.2 reportlab==4.2.5 pytest==8.3.4
+      - name: Fetch third-party skills at pinned commits (never committed)
+        run: |
+          mkdir -p "$RUNNER_TEMP/sources"
+          jq -r '.sources[] | "\(.repo) \(.rev)"' crates/dao/tools/intake_bench.json | while read -r repo rev; do
+            d="$RUNNER_TEMP/sources/${repo//\//_}"
+            git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$rev" && git -C "$d" checkout -q FETCH_HEAD
+            # skills are data for the agent: no hooks from them
+            rm -rf "$d/.git"
+          done
+          echo "SKILL_SOURCES=$RUNNER_TEMP/sources" >> "$GITHUB_ENV"
       - name: Run tasks
         env:
           ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
