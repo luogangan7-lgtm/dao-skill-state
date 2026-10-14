@@ -37,9 +37,10 @@ REQUEST = """The skill in ./skill/ failed in use. The observation is below.
 These requests already worked with the skill and must keep working:
 {old}
 
-Improve the skill so this failure does not happen again. Write the complete improved skill into
-./candidate/ (copy the skill and edit the copy; leave ./skill/ unchanged). Change only what the
-evidence supports."""
+Improve the skill so this failure does not happen again. Write the complete improved skill
+directly into ./candidate/ (./candidate/SKILL.md plus any files it needs; ./candidate/ is only a
+staging folder, keep the skill's name) and leave ./skill/ unchanged. Change only what the evidence
+supports."""
 
 
 def replay(task_root, skill_dir, use_arm, max_turns, timeout):
