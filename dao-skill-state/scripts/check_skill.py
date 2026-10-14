@@ -45,6 +45,19 @@ def _issue(kind: str, message: str) -> dict[str, str]:
     return {"kind": kind, "message": message}
 
 
+def _mismatch_message(name: str, folder: str) -> str:
+    """Name both values and the fix: agents otherwise moved or nested a folder the user asked for
+    to satisfy this error. Kept identical to crates/dao/src/check.rs (byte-for-byte parity)."""
+    valid = (1 <= len(folder) <= 64 and folder == folder.lower()
+             and all(part and all(ch.isalnum() for ch in part) for part in folder.split("-")))
+    if valid:
+        return (f"name '{name}' must match the skill directory name '{folder}': set name to '{folder}' "
+                f"or move the skill to a folder named '{name}'; keep a folder the user asked for and "
+                "report any mismatch")
+    return (f"name '{name}' must match the skill directory name '{folder}', which is not a valid skill "
+            "name: keep a folder the user asked for, keep a valid name and report the mismatch")
+
+
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
     lines = text.splitlines()
     if not lines or lines[0] != "---":
@@ -99,12 +112,7 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
     if not isinstance(name, str) or not 1 <= len(name) <= 64:
         result["errors"].append(_issue("name", "name must be a string of 1..64 characters"))
     elif name != root.name:
-        result["errors"].append(_issue(
-            "name",
-            f"name '{name}' must match the skill directory name '{root.name}': set name to "
-            f"'{root.name}' if that is a valid name; do not rename or move a folder the user asked "
-            "for, report the mismatch instead",
-        ))
+        result["errors"].append(_issue("name", _mismatch_message(name, root.name)))
     elif name != name.lower():
         result["errors"].append(_issue("name", "name must not contain uppercase characters"))
     elif not all(part and all(ch.isalnum() for ch in part) for part in name.split("-")):
