@@ -506,10 +506,25 @@ fn named_languages(query: &str) -> Vec<&'static str> {
     langs
 }
 
+/// English function words and pleasantries dropped from queries (documents keep them). In a
+/// small library they score like content words: intake benchmark A1, "What is 17 times 23?"
+/// kept a skill whose description says "what is it doing".
+const STOPWORDS: [&str; 92] = [
+    "a", "about", "after", "again", "all", "am", "an", "and", "any", "are", "as", "at", "back",
+    "be", "been", "before", "but", "by", "can", "could", "did", "do", "does", "doing", "for",
+    "from", "get", "give", "had", "has", "have", "he", "hello", "her", "here", "hi", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "just", "me", "my", "no", "not", "now", "of",
+    "ok", "okay", "on", "or", "our", "please", "say", "she", "should", "so", "some", "tell", "than",
+    "thank", "thanks", "that", "the", "their", "them", "then", "there", "these", "they", "this",
+    "to", "us", "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "with",
+    "would", "you",
+];
+
 /// Query terms with weights: original tokens 1.0; synonyms and joined neighbour words
 /// ("app configuration" -> "appconfiguration", matching compound skill names) 0.5.
 fn expand_query(query: &str) -> Vec<(String, f64)> {
-    let base = tokenize(&normalize_query(query));
+    let mut base = tokenize(&normalize_query(query));
+    base.retain(|t| !STOPWORDS.contains(&t.as_str()));
     let mut q: Vec<(String, f64)> = base.iter().map(|t| (t.clone(), 1.0)).collect();
     if named_languages(query).contains(&"dotnet") {
         q.push(("dotnet".to_string(), 0.5));
