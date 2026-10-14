@@ -161,11 +161,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install torch==2.6.0 transformers==5.5.4
+        run: pip install torch==2.6.0 transformers==5.5.4 mlx-lm==0.31.3
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-mac-probe-qwen3-e61197ed
+          key: hf-mac-probe-qwen3-e61197ed-mlx4-5f324548
       - name: Probe
         working-directory: crates/skill-hub/tools
         run: python3 mps_probe.py | tee probe.txt; { echo "## MPS float32 probe"; echo; sed 's/^/    /' probe.txt; } >> "$GITHUB_STEP_SUMMARY"
