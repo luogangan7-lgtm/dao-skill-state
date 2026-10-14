@@ -94,9 +94,10 @@ fixes it but breaks the US exports: `old-ok` (its request is shown to the evolve
 | **Total** | 8 | **7/8 / 2/8 / 8/8** | |
 
 - skill-creator's candidates broke the unseen US case in 5/8 (and in one more run the EU
-  held-out): the use runs swapped columns, misspelt the header or flipped US dates. The candidates
-  were not kept then, so the rule behind this is not yet traced. dao vs skill-creator 8/8 vs 2/8 (Fisher exact
-  p ≈ 0.007); dao vs none shows no difference. The `none` miss was a model glitch (the reply was a
+  held-out). The use runs' replies suggest swapped columns, a misspelt header or flipped US
+  dates, but the candidates were not kept then, so the cause is a hypothesis. dao vs skill-creator
+  8/8 vs 2/8: two-sided Fisher exact p ≈ 0.007, pooled over two runs, one task, MiniMax only. No
+  difference was observed between dao and no meta-skill. The `none` miss was a model glitch (the reply was a
   raw tool-call string).
 - An earlier run (38594726481) used a prompt that only said "write the improved skill into
   ./candidate/"; 3/9 evolvers (none 1, dao 2) put it in `./candidate/<name>/` and scored "no
