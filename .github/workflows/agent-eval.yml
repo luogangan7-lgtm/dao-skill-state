@@ -64,6 +64,7 @@ jobs:
       - name: Install Claude Code (pinned) and task tooling
         run: |
           npm install -g @anthropic-ai/claude-code@2.1.285 docx@9.8.1 pptxgenjs@4.0.1
+          echo "NODE_PATH=$(npm root -g)" >> "$GITHUB_ENV"  # so require('docx') finds the global install
           # LibreOffice: the office skills convert and recalculate with it; both arms get it
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libreoffice-calc libreoffice-writer libreoffice-impress > /dev/null
           # the same libraries are available to the agent in both arms; checkers use them too
