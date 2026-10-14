@@ -1,0 +1,79 @@
+name: agent-eval
+# Evaluations B/C/D (charter 2026-10-14): Claude Code headless on frozen public tasks, with and
+# without skills, checked by each task's deterministic checker. The model runs on the owner's
+# Kimi For Coding subscription (Anthropic-compatible endpoint, secret KIMI_API); model jobs run
+# on manual dispatch only, so pull requests never spend the subscription window.
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: comma-separated task names (empty = all)
+        default: ""
+      arms:
+        default: none,skills
+      reps:
+        default: "1"
+      model:
+        default: k3
+  pull_request:
+    paths:
+      - evals/agent/**
+      - .github/workflows/agent-eval.yml
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  checkers:
+    # every task has a prompt and a checker that fails on an empty workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          for t in evals/agent/tasks/*/; do
+            test -f "$t/prompt.md"
+            test -f "$t/check.py"
+            # an empty workspace must fail cleanly (exit 1), not pass and not crash
+            rc=0; python3 "$t/check.py" "$(mktemp -d)" > /dev/null 2>&1 || rc=$?
+            [ "$rc" -eq 1 ] || { echo "$t: checker exit $rc on an empty workspace (want 1)"; exit 1; }
+          done
+  run:
+    if: github.event_name == 'workflow_dispatch'
+    needs: checkers
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    concurrency:
+      group: kimi-subscription  # one model job at a time: the subscription has a 5 h window
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code (pinned)
+        run: npm install -g @anthropic-ai/claude-code@2.1.285
+      - name: Run tasks
+        env:
+          ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.KIMI_API }}
+          ANTHROPIC_MODEL: ${{ inputs.model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          DISABLE_AUTOUPDATER: "1"
+          # inputs reach the shell as data, never as interpolated script
+          IN_TASKS: ${{ inputs.tasks }}
+          IN_ARMS: ${{ inputs.arms }}
+          IN_REPS: ${{ inputs.reps }}
+        run: |
+          python3 evals/agent/run.py evals/agent/tasks results --tasks "$IN_TASKS" \
+            --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
+          { echo "## agent-eval ($ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-eval
+          path: results/
