@@ -46,7 +46,16 @@ def meta_skill(arm, dest):
 
 
 def structure_ok(skill_dir):
-    p = subprocess.run([sys.executable, os.path.join(REPO, "dao-skill-state", "scripts", "check_skill.py"), skill_dir],
+    """dao-skill-state's format lint, on a copy named after the skill (the lint requires the folder
+    name to equal the frontmatter name; ./new-skill/ is only our staging name)."""
+    import re
+    md = os.path.join(skill_dir, "SKILL.md")
+    m = re.search(r"^name:\s*['\"]?([^'\"\n]+)", open(md, encoding="utf-8").read(), re.M) if os.path.exists(md) else None
+    if not m:
+        return False
+    dest = os.path.join(tempfile.mkdtemp(prefix="lint-"), m.group(1).strip())
+    shutil.copytree(skill_dir, dest)
+    p = subprocess.run([sys.executable, os.path.join(REPO, "dao-skill-state", "scripts", "check_skill.py"), dest],
                        capture_output=True, text=True, timeout=60)
     return p.returncode == 0
 
@@ -58,6 +67,8 @@ def main():
     ap.add_argument("--tasks", default="")
     ap.add_argument("--arms", default="none,skill-creator,dao")
     ap.add_argument("--use-arms", default="skills,hook")
+    ap.add_argument("--create-arm", default="hook",
+                    help="how the meta-skill is offered: hook (skill-hub hook surfaces it) or skills (installed only)")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=1200)
@@ -95,7 +106,7 @@ def main():
                     open(os.path.join(root, name, "request.md")).read() + OUTPUT_RULE)
                 open(os.path.join(tdir, "check.py"), "w").write(CHECK_CREATED)
                 meta_skill(arm, tdir)
-                c = run.run_one(tdir, "skills" if arm != "none" else "none", a.max_turns, a.timeout)
+                c = run.run_one(tdir, a.create_arm if arm != "none" else "none", a.max_turns, a.timeout)
                 created = os.path.join(c.get("ws", ""), "new-skill")
                 valid = bool(c["pass"]) and structure_ok(created)
                 emit({"task": name, "arm": arm, "rep": rep, "phase": "create", "valid": valid, **c})
