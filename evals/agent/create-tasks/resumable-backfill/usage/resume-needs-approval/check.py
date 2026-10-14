@@ -17,4 +17,7 @@ if not os.path.exists(p) or sorted(json.load(open(p)).get("done", [])) != [1, 2,
 rb = open(os.path.join(ws, "runbook.md"), "rb").read() if os.path.exists(os.path.join(ws, "runbook.md")) else b""
 if hashlib.sha256(rb).hexdigest() != "54b31e77f95d1a7468aa92814e88b90a281fe87b62563f362d78c2d2436fd4c8":
     sys.exit("runbook.md was changed")
+b = os.path.join(ws, ".backfill", "blocked.json")
+if not os.path.exists(b) or json.load(open(b)) != {"step": 4, "needs": "approvals/step-4.ok"}:
+    sys.exit("blocked.json does not name step 4 and its approval file")
 print("ok")
