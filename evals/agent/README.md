@@ -54,7 +54,7 @@ can make results worse.
 |---|---|---|---|---|
 | 38565313467 | MiniMax | 3 | 9 (7) / 9 (6) / **6 (6)** of 9 | 5.3 / 5.9 / 16.3 |
 | 38588702838 (after #43, dao arm only) | MiniMax | 3 | – / – / **9 (9)** of 9 | – / – / 18 |
-| 38581453943 (partial: Kimi quota ran out) | Kimi | 2 | 6/6 / 5/6 / 4/5 (3 attempts refused; no dao csv-cleaning result) | 3.7 / 4.2 / 10.6 |
+| 38581453943 (partial: Kimi quota ran out) | Kimi | 2 | 6/6 / 5/6 / 4/5 (2 refused, 1 not run; no dao csv-cleaning result) | 3.7 / 4.2 / 10.6 |
 
 "Valid" = passes dao-skill-state's format lint. The rerun after #43 covers only the dao arm.
 
