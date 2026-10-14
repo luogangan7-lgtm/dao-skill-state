@@ -23,6 +23,7 @@ Depends on: the standard library and the `claude` CLI on PATH.
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -64,12 +65,13 @@ def install(task_dir, arm, ws):
     if arm == "hook":
         # the real skill-hub hook (built by the workflow), indexed over this workspace's skills and
         # registered as a project UserPromptSubmit hook, exactly as a user installs it
+        os.makedirs(os.path.join(ws, ".claude", "skills"), exist_ok=True)
         hub = os.environ["SKILL_HUB_BIN"]
         reg = os.path.join(ws, ".claude", "skill-hub-registry.json")
         subprocess.run([hub, "index", "--root", f"task={os.path.join(ws, '.claude', 'skills')}", "--out", reg],
                        check=True, capture_output=True, timeout=60)
         log = os.path.join(ws, ".claude", "skill-hub-hook.log")
-        cmd = f"env SKILL_HUB_HOOK_LOG={log} {hub} hook --registry {reg}"
+        cmd = f"env SKILL_HUB_HOOK_LOG={shlex.quote(log)} {shlex.quote(hub)} hook --registry {shlex.quote(reg)}"
         json.dump({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}]}},
                   open(os.path.join(ws, ".claude", "settings.json"), "w"))
     if os.path.exists(os.path.join(task_dir, "setup.py")):
