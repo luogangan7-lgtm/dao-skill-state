@@ -1,8 +1,9 @@
 name: agent-eval
 # Evaluations B/C/D (charter 2026-10-14): Claude Code headless on frozen public tasks, with and
-# without skills, checked by each task's deterministic checker. The model runs on the owner's
-# Kimi For Coding subscription (Anthropic-compatible endpoint, secret KIMI_API); model jobs run
-# on manual dispatch only, so pull requests never spend the subscription window.
+# without skills, checked by each task's deterministic checker. The model runs on one of the owner's
+# subscriptions through its Anthropic-compatible endpoint: Kimi For Coding (secret KIMI_API) or
+# MiniMax (secret MINIMAX_API, China endpoint). Model jobs run on manual dispatch only, so pull
+# requests never spend a subscription window.
 on:
   workflow_dispatch:
     inputs:
@@ -13,8 +14,12 @@ on:
         default: none,skills
       reps:
         default: "1"
+      provider:
+        description: "kimi (KIMI_API, Kimi For Coding) or minimax (MINIMAX_API, MiniMax coding plan)"
+        default: kimi
       model:
-        default: k3
+        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3)"
+        default: ""
       suite:
         description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks)"
         default: run
@@ -53,7 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     concurrency:
-      group: kimi-subscription  # one model job at a time: the subscription has a 5 h window
+      # one model job at a time per subscription (each has a usage window); providers run in parallel
+      group: agent-eval-${{ inputs.provider }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,10 +96,14 @@ jobs:
           echo "SKILL_SOURCES=$RUNNER_TEMP/sources" >> "$GITHUB_ENV"
       - name: Run tasks
         env:
-          ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.KIMI_API }}
-          ANTHROPIC_MODEL: ${{ inputs.model }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
+          # Anthropic-compatible endpoints of the owner's subscriptions; only the chosen one's key is set
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          # each key is set only for its own provider (an `a && b || c` fallback could send one
+          # provider's key to the other's endpoint if a secret were missing)
+          KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
+          KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
           # inputs reach the shell as data, never as interpolated script
@@ -101,7 +111,12 @@ jobs:
           IN_ARMS: ${{ inputs.arms }}
           IN_REPS: ${{ inputs.reps }}
           IN_SUITE: ${{ inputs.suite }}
+          IN_PROVIDER: ${{ inputs.provider }}
         run: |
+          case "$IN_PROVIDER" in kimi|minimax) ;; *) echo "unknown provider"; exit 1 ;; esac
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}"
+          unset KEY_KIMI KEY_MINIMAX
+          [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = evolve ]; then
             python3 evals/agent/evolve.py evals/agent/evolve-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
@@ -112,7 +127,7 @@ jobs:
             python3 evals/agent/run.py evals/agent/tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
           fi
-          { echo "## agent-eval ($ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "## agent-eval ($IN_PROVIDER: $ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
