@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise a `dao` store after the intake benchmark (.github/workflows/intake-bench.yml).
 
-  intake_bench_report.py STORE OUT_DIR
+  intake_bench_report.py STORE LOGS_DIR OUT_DIR   (LOGS_DIR holds the `dao intake` JSON summaries)
 
 Reads only what the pipeline wrote (locks/, scans/, cards/, relations.json, evals/, admissions/)
 and prints a markdown report: skills per source, scan verdicts and top rules, card status,
@@ -22,19 +22,20 @@ def load(path):
         return json.load(f)
 
 
-def main(store, out):
+def main(store, logs, out):
     os.makedirs(out, exist_ok=True)
     digests = sorted(d for d in os.listdir(os.path.join(store, "objects")) if len(d) == 64)
-    source_of = {}
+    source_of, rejected = {}, []
+    for lp in sorted(glob.glob(os.path.join(logs, "intake-*.json"))):
+        run = load(lp)
+        repo = run.get("origin", "?").replace("https://github.com/", "")
+        for o in run.get("outcomes", []):
+            if o.get("digest"):
+                source_of[o["digest"]] = repo
+            if o.get("outcome") == "rejected":
+                rejected.append((repo, o.get("subpath"), "; ".join(o.get("reasons", []))))
     for d in digests:
-        locks = glob.glob(os.path.join(store, "locks", d, "*.json"))
-        repo = "?"
-        for lp in locks:
-            lk = load(lp)
-            repo = (lk.get("source") or lk.get("url") or lk.get("git") or repo)
-            if isinstance(repo, dict):
-                repo = repo.get("url") or repo.get("git") or "?"
-        source_of[d] = str(repo).replace("https://github.com/", "")
+        source_of.setdefault(d, "?")
 
     scans = {d: load(p) for d in digests if os.path.exists(p := os.path.join(store, "scans", f"{d}.json"))}
     cards = {d: load(p) for d in digests if os.path.exists(p := os.path.join(store, "cards", f"{d}.json"))}
@@ -79,6 +80,18 @@ def main(store, out):
             f"{k} {v['passed']}/{v['total']} (unreachable {v['unreachable']})"
             for k, v in receipt.get("kinds", {}).items()))
     lines.append("Refusing gates: " + (", ".join(f"{k} {v}" for k, v in refused_gates.most_common()) or "none"))
+    if rejected:
+        lines += ["", "Rejected at intake:"] + [f"- {r} `{p}`: {why}" for r, p, why in rejected]
+    refused = [(a.get("name") or d[:12], source_of[d], [g for g in a["gates"] if not g["passed"]])
+               for d, a in adm.items() if not a["admitted"]]
+    if refused:
+        lines += ["", "Refused at admission (gate: evidence):"]
+        for name, src, gates in sorted(refused, key=lambda x: (x[1], x[0])):
+            why = "; ".join(f"{g.get('name', g.get('gate', '?'))}: {str(g.get('evidence', ''))[:160]}" for g in gates)
+            lines.append(f"- {src} `{name}`: {why}")
+    if receipt and receipt.get("failures"):
+        lines += ["", "Routing-eval failures (case: kept hits):"] + [
+            f"- `{case}`: {', '.join(hits) or 'nothing kept'}" for case, hits in receipt["failures"]]
     print("\n".join(lines))
     json.dump({"staged": len(digests), "verdicts": verdicts, "rules": rules, "card_status": status,
                "relations": kinds, "admitted": admitted, "decisions": len(adm), "refused_gates": refused_gates,
@@ -88,4 +101,4 @@ def main(store, out):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3])

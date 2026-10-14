@@ -56,7 +56,7 @@ jobs:
           echo "store=$S" >> "$GITHUB_ENV"
       - name: Report
         run: |
-          python3 crates/dao/tools/intake_bench_report.py "$store" results | tee report.md
+          python3 crates/dao/tools/intake_bench_report.py "$store" "$RUNNER_TEMP/logs" results | tee report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -65,3 +65,8 @@ jobs:
           path: |
             results/
             ${{ runner.temp }}/logs/
+            ${{ runner.temp }}/store/scans/
+            ${{ runner.temp }}/store/cards/
+            ${{ runner.temp }}/store/admissions/
+            ${{ runner.temp }}/store/evals/
+            ${{ runner.temp }}/store/relations.json
