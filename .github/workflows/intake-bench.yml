@@ -71,7 +71,10 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml==6.0.2
           python3 crates/dao/tools/card_fidelity.py --selftest
-          python3 crates/dao/tools/card_fidelity.py "$store" | tee -a "$GITHUB_STEP_SUMMARY"
+          rc=0; python3 crates/dao/tools/card_fidelity.py "$store" > fidelity.txt || rc=$?
+          # third-party names are printed: keep them out of markdown rendering
+          { echo '```'; cat fidelity.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
