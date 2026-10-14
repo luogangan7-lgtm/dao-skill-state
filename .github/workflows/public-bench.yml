@@ -1,0 +1,35 @@
+name: public-bench
+# Evaluation A4: generate the public routing benchmark (requests that need one of the pinned
+# third-party skills) with a model, as an artifact to review and commit as
+# crates/skill-hub/tools/selector_eval/public_cases.json. Manual only; the skills are rebuilt from
+# the pins in crates/dao/tools/intake_bench.json and never committed (their own licenses apply).
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency: agent-eval-minimax  # shares the subscription with agent-eval
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dao and skill-hub
+        run: |
+          (cd crates/dao && cargo build --release --locked)
+          (cd crates/skill-hub && cargo build --release --locked)
+      - name: Registry of the pinned third-party skills
+        run: crates/skill-hub/tools/selector_eval/public_registry.sh "$RUNNER_TEMP/store" "$RUNNER_TEMP/reg.json"
+      - name: Generate requests
+        env:
+          ANTHROPIC_BASE_URL: https://api.minimaxi.com/anthropic
+          ANTHROPIC_MODEL: MiniMax-M3
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API }}
+        run: python3 crates/skill-hub/tools/selector_eval/public_bench.py gen "$RUNNER_TEMP/reg.json" public_cases.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-cases
+          path: public_cases.json
