@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 
-from rerank_server import HOOK_TAU, Batcher, split, to_hook_scale
+from rerank_server import CANARY, HOOK_TAU, Batcher, split, to_hook_scale, with_canary
 
 
 class ScaleTest(unittest.TestCase):
@@ -63,6 +63,22 @@ class BatcherTest(unittest.TestCase):
             raise RuntimeError("model failed")
         with self.assertRaises(RuntimeError):
             Batcher(broken, 64, 10)("q", ["t"])
+
+
+class CanaryTest(unittest.TestCase):
+    def test_canary_passes_healthy_passes_and_rejects_corrupted_ones(self):
+        state = {"canary": 0.9}
+
+        def score(pairs):
+            return [[state["canary"]] if p == CANARY else [0.3] * len(p[1]) for p in pairs]
+        checked = with_canary(score)
+        self.assertEqual(checked([("q", ["a", "b"])]), [[0.3, 0.3]])  # canary row removed
+        state["canary"] = 0.905  # tiny drift (float16, padding): accepted
+        self.assertEqual(checked([("q", ["a"])]), [[0.3]])
+        for bad in (0.2, float("nan")):  # a faulty GPU pass: wrong finite value or NaN
+            state["canary"] = bad
+            with self.assertRaises(RuntimeError):
+                checked([("q", ["a"])])
 
 
 if __name__ == "__main__":
