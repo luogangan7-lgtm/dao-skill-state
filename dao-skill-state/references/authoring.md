@@ -7,6 +7,10 @@
 - A method becomes a decision procedure, not a quote collection. Distinguish evidence, author preference, and your inference. Use create/merge/discard against the nearest existing asset; an explicit request for an independently maintained product can justify create despite overlap.
 - Use a host-provided creator or initializer when it is available and saves work; it is not a required dependency. Do not initialize an existing skill or copy a large scaffold to get one file.
 
+## Choose the form
+
+A skill is either **fixed steps** (the default: one decision workflow that finishes within a session) or **stateful** (long, resumable work where a restart would lose decisions, work position, approvals or receipts). For a stateful skill follow the [state contract](state-contract.md): name the single state owner, the fields, and how a run resumes. Say which form you chose and why; do not add state to a short task.
+
 ## Write the contract
 
 Specify trigger and non-trigger, required input, decision workflow, output, stopping conditions, tool requirements and the pass/fail check. Explain only what a capable agent would not reliably infer.

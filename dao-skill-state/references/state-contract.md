@@ -9,6 +9,10 @@ Read this only for resumable, multi-step work. Short tasks remain stateless. Thi
 - Open-ended research/design needs selective evidence rereads and possibly evolving schemas. Do not pretend a small fixed summary is always sufficient.
 - “Fixed instructions + current state + latest observation” only becomes runtime context isolation if the host actually controls each model request. Without that control label the mode **checkpoint-assisted**; never tell the model that saying “forget history” has removed it.
 
+## This skill's own long runs
+
+The same contract applies to this meta-skill. An evolution loop, a skill family or a review that spans sessions keeps its state in the user's task system when one exists. Otherwise keep one checkpoint per run at project `.dao/state/<run>.json` (goal, phase and next action, decisions, approvals, artifact and evidence paths with hashes, updated-at), outside any distributable skill. Re-read it before resuming and re-observe the real files before an irreversible step; it is checkpoint-assisted, not a runtime.
+
 ## Define only necessary fields
 
 Choose typed fields from: task/owner, schema and policy versions, revision, phase/next action, bounded decisions and unknowns, artifact/evidence references, pending action and receipt, source checked-at/valid-until, and a measured size budget. Do not append all transcripts, screenshots, source texts, or every prior event.
