@@ -69,6 +69,8 @@ def ask(name, description):
     req = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"].rstrip("/") + "/v1/messages",
                                  data=json.dumps(body).encode(), method="POST", headers={
                                      "content-type": "application/json", "anthropic-version": "2023-06-01",
+                                     "user-agent": "dao-skill-state-public-bench/1",
+                                     "x-api-key": os.environ["ANTHROPIC_AUTH_TOKEN"],
                                      "authorization": "Bearer " + os.environ["ANTHROPIC_AUTH_TOKEN"]})
     out = json.load(urllib.request.urlopen(req, timeout=180))
     text = "".join(b.get("text", "") for b in out.get("content", []) if b.get("type") == "text")
@@ -101,9 +103,12 @@ def gen(registry, out):
                 prompts = ask(name, desc[name])
                 break
             except Exception as e:  # noqa: BLE001 — record and go on; the summary shows the count
-                err = type(e).__name__
+                err = type(e).__name__ + (f" {e.code}" if hasattr(e, "code") else "")  # status only, never the body
         if prompts is None:
             failed.append(f"{name}: {err}")
+            if len(failed) == 3 and not cases:  # the endpoint refuses everything: stop, keep the quota
+                print("first 3 skills all failed:", "; ".join(failed))
+                return 1
             continue
         kept = [p for p in prompts if not names_itself(p, name)]
         dropped += len(prompts) - len(kept)
