@@ -44,23 +44,36 @@ def redact(text):
     return text.replace(tok, "[REDACTED]") if tok else text
 
 
-def run_one(task_dir, arm, max_turns, timeout_s):
-    ws = tempfile.mkdtemp(prefix="ws-")
-    home = tempfile.mkdtemp(prefix="home-")
-    if os.path.isdir(os.path.join(task_dir, "files")):
-        shutil.copytree(os.path.join(task_dir, "files"), ws, dirs_exist_ok=True)
+def install(task_dir, arm, ws):
+    """Skills for the skills arm (task skills/ and pinned third-party refs), then setup.py."""
     if arm == "skills":
         dest = os.path.join(ws, ".claude", "skills")
         if os.path.isdir(os.path.join(task_dir, "skills")):
             shutil.copytree(os.path.join(task_dir, "skills"), dest, dirs_exist_ok=True)
         sj = os.path.join(task_dir, "skills.json")
         if os.path.exists(sj):
+            root = os.path.realpath(os.environ["SKILL_SOURCES"])
             for ref in json.load(open(sj)):
-                src = os.path.join(os.environ["SKILL_SOURCES"], ref["repo"].replace("/", "_"), ref["path"])
-                shutil.copytree(src, os.path.join(dest, os.path.basename(ref["path"])), dirs_exist_ok=True)
+                src = os.path.realpath(os.path.join(root, ref["repo"].replace("/", "_"), ref["path"]))
+                if not src.startswith(root + os.sep):
+                    raise ValueError("skill path escapes the sources")
+                shutil.copytree(src, os.path.join(dest, os.path.basename(src)), dirs_exist_ok=True)
     if os.path.exists(os.path.join(task_dir, "setup.py")):
         subprocess.run([sys.executable, os.path.join(task_dir, "setup.py")], cwd=ws, check=True, timeout=120,
                        env={k: os.environ[k] for k in KEEP_ENV if k in os.environ})
+
+
+def run_one(task_dir, arm, max_turns, timeout_s):
+    ws = tempfile.mkdtemp(prefix="ws-")
+    home = tempfile.mkdtemp(prefix="home-")
+    if os.path.isdir(os.path.join(task_dir, "files")):
+        shutil.copytree(os.path.join(task_dir, "files"), ws, dirs_exist_ok=True)
+    try:
+        install(task_dir, arm, ws)
+    except (OSError, KeyError, ValueError, subprocess.SubprocessError) as e:
+        return {"pass": False, "check": f"setup failed: {type(e).__name__}", "rc": "setup", "is_error": True,
+                "turns": None, "duration_s": 0, "input_tokens": None, "output_tokens": None,
+                "cache_read": None, "cache_write": None}
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
     env = model_env(home)
     t0 = time.time()

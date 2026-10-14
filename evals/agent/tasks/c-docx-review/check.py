@@ -12,8 +12,29 @@ if not heads or not (heads[0].style.name.startswith("Heading") or heads[0].style
 want = [["Region", "Q1", "Q2"], ["North", "10", "12"], ["South", "8", "9"]]
 if not any([[c.text.strip() for c in r.cells] for r in t.rows] == want for t in d.tables):
     sys.exit("table missing or different")
-items = [x for x in d.paragraphs if x.text.strip() in ("Hire two engineers", "Ship the mobile app")]
-bullet = [x for x in items if "List" in x.style.name or x._p.pPr is not None and x._p.pPr.numPr is not None]
-if len(bullet) != 2:
-    sys.exit(f"bulleted items found: {len(bullet)}")
+def is_bullet(par):
+    if "Bullet" in par.style.name:
+        return True
+    num = par._p.pPr.numPr if par._p.pPr is not None else None
+    if num is None or num.numId is None:
+        return False
+    try:
+        root = d.part.numbering_part.element
+    except (KeyError, NotImplementedError):
+        return False
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    for n in root.findall(f"{ns}num"):
+        if n.get(f"{ns}numId") == str(num.numId.val):
+            aid = n.find(f"{ns}abstractNumId").get(f"{ns}val")
+            for a in root.findall(f"{ns}abstractNum"):
+                if a.get(f"{ns}abstractNumId") == aid:
+                    lvl = a.find(f"{ns}lvl")
+                    fmt = lvl.find(f"{ns}numFmt") if lvl is not None else None
+                    return fmt is not None and fmt.get(f"{ns}val") == "bullet"
+    return False
+
+
+bullets = [x.text.strip() for x in d.paragraphs if x.text.strip() and is_bullet(x)]
+if bullets != ["Hire two engineers", "Ship the mobile app"]:
+    sys.exit(f"bulleted items {bullets}")
 print("ok")

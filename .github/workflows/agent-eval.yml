@@ -63,7 +63,9 @@ jobs:
           python-version: "3.12"
       - name: Install Claude Code (pinned) and task tooling
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.285
+          npm install -g @anthropic-ai/claude-code@2.1.285 docx@9.8.1 pptxgenjs@4.0.1
+          # LibreOffice: the office skills convert and recalculate with it; both arms get it
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libreoffice-calc libreoffice-writer libreoffice-impress > /dev/null
           # the same libraries are available to the agent in both arms; checkers use them too
           pip install openpyxl==3.1.5 python-docx==1.1.2 pypdf==5.1.0 python-pptx==1.0.2 reportlab==4.2.5 pytest==8.3.4
       - name: Fetch third-party skills at pinned commits (never committed)
@@ -71,7 +73,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sources"
           jq -r '.sources[] | "\(.repo) \(.rev)"' crates/dao/tools/intake_bench.json | while read -r repo rev; do
             d="$RUNNER_TEMP/sources/${repo//\//_}"
-            git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$rev" && git -C "$d" checkout -q FETCH_HEAD
+            git init -q "$d"
+            git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$rev"
+            git -C "$d" checkout -q FETCH_HEAD
             # skills are data for the agent: no hooks from them
             rm -rf "$d/.git"
           done
