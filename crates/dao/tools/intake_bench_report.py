@@ -32,7 +32,7 @@ def main(store, logs, out):
         for o in run.get("outcomes", []):
             if o.get("digest"):
                 source_of[o["digest"]] = repo
-            if o.get("outcome") == "rejected":
+            if o.get("outcome") in ("rejected", "error"):
                 rejected.append((repo, o.get("subpath"), "; ".join(o.get("reasons", []))))
     for d in digests:
         source_of.setdefault(d, "?")
