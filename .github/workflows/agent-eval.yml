@@ -34,9 +34,11 @@ jobs:
           persist-credentials: false
       - run: |
           for t in evals/agent/tasks/*/; do
-            test -f "$t/prompt.md" && test -f "$t/check.py"
-            empty=$(mktemp -d)
-            if python3 "$t/check.py" "$empty" > /dev/null 2>&1; then echo "$t: checker passes an empty workspace"; exit 1; fi
+            test -f "$t/prompt.md"
+            test -f "$t/check.py"
+            # an empty workspace must fail cleanly (exit 1), not pass and not crash
+            rc=0; python3 "$t/check.py" "$(mktemp -d)" > /dev/null 2>&1 || rc=$?
+            [ "$rc" -eq 1 ] || { echo "$t: checker exit $rc on an empty workspace (want 1)"; exit 1; }
           done
   run:
     if: github.event_name == 'workflow_dispatch'
@@ -59,13 +61,17 @@ jobs:
           ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.KIMI_API }}
           ANTHROPIC_MODEL: ${{ inputs.model }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ inputs.model }}
-          DISABLE_TELEMETRY: "1"
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
+          # inputs reach the shell as data, never as interpolated script
+          IN_TASKS: ${{ inputs.tasks }}
+          IN_ARMS: ${{ inputs.arms }}
+          IN_REPS: ${{ inputs.reps }}
         run: |
-          python3 evals/agent/run.py evals/agent/tasks results --tasks "${{ inputs.tasks }}" \
-            --arms "${{ inputs.arms }}" --reps "${{ inputs.reps }}" | tee summary.txt
-          { echo "## agent-eval (${{ inputs.model }})"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
+          python3 evals/agent/run.py evals/agent/tasks results --tasks "$IN_TASKS" \
+            --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
+          { echo "## agent-eval ($ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
