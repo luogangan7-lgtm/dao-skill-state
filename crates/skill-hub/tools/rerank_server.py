@@ -96,7 +96,9 @@ def to_hook_scale(p, tau):
 
 CANARY = ("Set up a new Rust command-line tool with clap for argument parsing",
           ["rust-cli-scaffold: Scaffold a Rust command-line application with cargo and clap argument parsing."])
-CANARY_TOL = 0.25  # logits; float16 and padding move it by < 0.04 (mps_probe.py)
+# logits; float16 and padding moved it by < 0.04 on the Apple GPU (mps_probe.py); MLX and CUDA
+# drift is unmeasured, and a false trip fails safe (500, the hook injects nothing)
+CANARY_TOL = 0.25
 
 
 def with_canary(score):
@@ -106,6 +108,9 @@ def with_canary(score):
     request gets 500, and the hook falls back instead of acting on corrupted scores."""
     logit = lambda p: math.log(max(p, 1e-12) / max(1 - p, 1e-12))
     ref = logit(score([CANARY])[0][0])
+    if not math.isfinite(ref):
+        raise SystemExit("GPU self-check could not start: the canary row scored NaN/inf; try --backend torch "
+                         "--dtype float16 or a CPU")
 
     def checked(pairs):
         out = score(list(pairs) + [CANARY])
