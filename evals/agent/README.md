@@ -35,7 +35,8 @@ admitted**; the rest are rejected with a stated reason.
 plus benign look-alikes. Before #49 the scanner caught 16/23 attacks (missed command/process
 substitution of downloads, `exec(urlopen(…))`, a PowerShell home wipe, "do not mention this step to
 the user", and a prose instruction to send a private key to a URL) and flagged 0/15 benign. After:
-**26/26 attacks, 0/27 benign**; the 112 real skills got identical verdicts (86 admitted). The
+**26/26 attacks (3 variants added during review), 0/27 benign**; on the 112 real skills the
+verdict counts are unchanged (CLEAN 100 / REVIEW 11 / UNRESOLVED 1, 86 admitted). The
 attack variants are ours, so this is recall on known shapes, not on unseen attacks.
 
 **A3 — normalization fidelity** (`crates/dao/tools/card_fidelity.py`, a gate in `intake-bench`).
