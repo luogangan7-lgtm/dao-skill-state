@@ -25,6 +25,23 @@ import tempfile
 import time
 
 
+KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR")
+
+
+def model_env(home):
+    """Allowlist: the model endpoint and Claude Code switches, nothing else from the runner."""
+    env = {k: v for k, v in os.environ.items()
+           if k in KEEP_ENV or k.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "DISABLE_"))}
+    env["HOME"] = home
+    return env
+
+
+def redact(text):
+    """The agent can read its own token; never let it reach results or artifacts."""
+    tok = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    return text.replace(tok, "[REDACTED]") if tok else text
+
+
 def run_one(task_dir, arm, max_turns, timeout_s):
     ws = tempfile.mkdtemp(prefix="ws-")
     home = tempfile.mkdtemp(prefix="home-")
@@ -33,8 +50,7 @@ def run_one(task_dir, arm, max_turns, timeout_s):
     if arm == "skills" and os.path.isdir(os.path.join(task_dir, "skills")):
         shutil.copytree(os.path.join(task_dir, "skills"), os.path.join(ws, ".claude", "skills"))
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
-    env["HOME"] = home
+    env = model_env(home)
     t0 = time.time()
     try:
         p = subprocess.run(["claude", "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns),
@@ -43,15 +59,22 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         out, rc = p.stdout, p.returncode
     except subprocess.TimeoutExpired:
         out, rc = "", "timeout"
+    except OSError as e:  # e.g. claude not installed: a failed run, not a crashed harness
+        out, rc = "", f"error: {e.strerror}"
     wall = time.time() - t0
     try:
         res = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
     except (json.JSONDecodeError, IndexError):
         res = {}
-    chk = subprocess.run([sys.executable, os.path.join(task_dir, "check.py"), ws],
-                         capture_output=True, text=True, timeout=120)
+    try:  # the checker reads agent-written files: no model token in its environment
+        chk = subprocess.run([sys.executable, os.path.join(task_dir, "check.py"), ws],
+                             capture_output=True, text=True, timeout=120,
+                             env={k: os.environ[k] for k in KEEP_ENV if k in os.environ})
+        passed, note = chk.returncode == 0, (chk.stdout + chk.stderr).strip()[-300:]
+    except subprocess.TimeoutExpired:
+        passed, note = False, "checker timed out"
     u = res.get("usage") or {}
-    return {"pass": chk.returncode == 0, "check": (chk.stdout + chk.stderr).strip()[-300:],
+    return {"pass": passed, "check": redact(note),
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
             "output_tokens": u.get("output_tokens"),
