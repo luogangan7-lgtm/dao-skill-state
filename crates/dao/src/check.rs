@@ -1220,7 +1220,8 @@ pub fn check_skill(arg: &str) -> CheckResult {
     match get("name") {
         Some(Val::Str(name)) if (1..=64).contains(&name.chars().count()) => {
             if *name != dir_name {
-                r.errors.push(issue("name", mismatch_message(name, &dir_name)));
+                r.errors
+                    .push(issue("name", mismatch_message(name, &dir_name)));
             } else if *name != name.to_lowercase() {
                 r.errors
                     .push(issue("name", "name must not contain uppercase characters"));
