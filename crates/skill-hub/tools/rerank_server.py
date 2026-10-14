@@ -94,6 +94,33 @@ def to_hook_scale(p, tau):
     return max(y, HOOK_TAU) if p >= tau else min(y, HOOK_TAU - 1e-6)
 
 
+CANARY = ("Set up a new Rust command-line tool with clap for argument parsing",
+          ["rust-cli-scaffold: Scaffold a Rust command-line application with cargo and clap argument parsing."])
+# logits; float16 and padding moved it by < 0.04 on the Apple GPU (mps_probe.py); MLX and CUDA
+# drift is unmeasured, and a false trip fails safe (500, the hook injects nothing)
+CANARY_TOL = 0.25
+
+
+def with_canary(score):
+    """GPU self-check: every pass also scores a fixed row and compares it with the value from
+    start-up. On GitHub's virtual Macs the Apple GPU sometimes failed a pass without raising and
+    returned NaN or wrong finite scores (D7 rounds 6-7, PR #26-27); a failed check raises, the
+    request gets 500, and the hook falls back instead of acting on corrupted scores."""
+    logit = lambda p: math.log(max(p, 1e-12) / max(1 - p, 1e-12))
+    ref = logit(score([CANARY])[0][0])
+    if not math.isfinite(ref):
+        raise SystemExit("GPU self-check could not start: the canary row scored NaN/inf; try --backend torch "
+                         "--dtype float16 or a CPU")
+
+    def checked(pairs):
+        out = score(list(pairs) + [CANARY])
+        c = logit(out.pop()[0])
+        if not abs(c - ref) <= CANARY_TOL:  # written so a NaN fails too
+            raise RuntimeError("GPU self-check failed")
+        return out
+    return checked
+
+
 class Batcher:
     """One model thread. Requests that arrive while it is busy run together in the next forward
     pass (up to max_rows texts), so a burst of agents costs a few passes, not one per agent.
@@ -269,6 +296,8 @@ def main():
     else:
         model_score, variant = cross_encoder_scorer(a.model, a.max_length, dev, a.revision), None
     tau = TUNED_TAU.get(variant) if a.model == QWEN else None
+    if dev != "cpu":  # one extra row per pass (~10% at 10 candidates); CPUs did not show the fault
+        model_score = with_canary(model_score)
     if tau is not None and tau != HOOK_TAU:
         raw = model_score
         model_score = lambda pairs: [[to_hook_scale(p, tau) for p in ps] for ps in raw(pairs)]
@@ -301,7 +330,10 @@ def main():
                     raise ValueError("query or text too long")
             except (ValueError, KeyError, TypeError) as e:
                 return self.send_error(400, str(e))
-            scores = score(q, texts) if texts else []
+            try:
+                scores = score(q, texts) if texts else []
+            except Exception:  # noqa: BLE001 — the model or the GPU self-check failed; no details out
+                return self.send_error(500, "model error")
             if scores is None:
                 return self.send_error(503, "busy")
             if any(s != s for s in scores):

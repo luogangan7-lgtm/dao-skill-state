@@ -67,8 +67,9 @@ pub struct Rerank<'a> {
     pub score: &'a Scorer<'a>,
     pub tau: f32,
     /// When the reranker (and Jev, if set) gives no answer, inject nothing instead of the lexical
-    /// rule (`SKILL_HUB_RERANK_FALLBACK=none`). D7 round 6: the lexical rule fired on 23 of 36
-    /// chit-chat prompts, so under a burst of agents "nothing" is the safer degradation.
+    /// rule (the default; `SKILL_HUB_RERANK_FALLBACK=lexical` restores the rule). D7 round 6: the
+    /// lexical rule fired on 23 of 36 chit-chat prompts, so under a burst of agents "nothing" is
+    /// the safer degradation.
     pub fallback_none: bool,
 }
 
@@ -361,7 +362,9 @@ pub fn run(registry: Option<String>, top_k: usize) -> Option<String> {
                     })
             })
             .unwrap_or(RERANK_TAU),
-        fallback_none: std::env::var("SKILL_HUB_RERANK_FALLBACK").is_ok_and(|v| v == "none"),
+        // default "none": a configured reranker that cannot answer injects nothing; "lexical" opts
+        // back into the BM25 rule, which fired on 23 of 36 chit-chat prompts in D7 round 6
+        fallback_none: std::env::var("SKILL_HUB_RERANK_FALLBACK").as_deref() != Ok("lexical"),
     });
     let decision = decide(
         &cands,

@@ -153,6 +153,9 @@ jobs:
   mps-fp32-probe:
     # D7 round 6: float32 on the Apple GPU scored 88/112 against 98 on CPU and in float16. Compare
     # the served scores for the same synthetic rows to locate the error (diagnostic, not a gate).
+    # Answered (#24-#27: intermittent Metal faults on the virtual runner); manual runs only, since
+    # reloading the model per comparison can exceed the job limit on a slow runner.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
