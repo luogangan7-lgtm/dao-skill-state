@@ -1097,10 +1097,24 @@ mod tests {
         // Intake benchmark A1 (112 public skills): "What is 17 times 23?" kept a skill whose
         // description says "what is it doing", because "what"/"is"/"it" scored as terms.
         let root = tmp("stopwords");
-        put(&root, "a", "diagnose-session", "Use when asked what is it doing or why it is so slow");
-        put(&root, "b", "model-picker", "Find the best model for a task and compare benchmark scores");
+        put(
+            &root,
+            "a",
+            "diagnose-session",
+            "Use when asked what is it doing or why it is so slow",
+        );
+        put(
+            &root,
+            "b",
+            "model-picker",
+            "Find the best model for a task and compare benchmark scores",
+        );
         let reg = reg_for(&root);
-        for chit_chat in ["What is 17 times 23?", "Thanks, that is all for now.", "Say it back to me."] {
+        for chit_chat in [
+            "What is 17 times 23?",
+            "Thanks, that is all for now.",
+            "Say it back to me.",
+        ] {
             assert!(search(&reg, chit_chat, 5).is_empty(), "{chit_chat}");
         }
         // content words still retrieve, with or without function words around them
