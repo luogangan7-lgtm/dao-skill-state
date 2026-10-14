@@ -734,10 +734,7 @@ mod tests {
             set.subjects.insert("x".into(), d('b'));
         }
         let g = eval_gate_of(&e);
-        assert!(
-            !g.passed && g.evidence.contains("share the name x"),
-            "{g:?}"
-        );
+        assert!(!g.passed && g.evidence.contains("share the name x"), "{g:?}");
         let u = eval_gate_of(&ev(
             "CLEAN",
             None,
