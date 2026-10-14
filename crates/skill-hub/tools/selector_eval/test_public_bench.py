@@ -11,7 +11,11 @@ class PublicBench(unittest.TestCase):
     def test_a_request_naming_its_skill_is_too_easy(self):
         self.assertTrue(names_itself("Use pdf-tools to merge these", "pdf-tools"))
         self.assertTrue(names_itself("use the PDF tools to merge", "pdf-tools"))
+        self.assertTrue(names_itself("run pdf_tools on it", "pdf-tools"))
         self.assertFalse(names_itself("merge these two PDFs into one", "pdf-tools"))
+        self.assertFalse(names_itself("my-pdf-tools-fork is broken", "pdf-tools"))
+        # a one-word name is the domain's own word
+        self.assertFalse(names_itself("merge these two PDF files", "pdf"))
 
     def test_split_keeps_a_skills_requests_together(self):
         a, b = {"prompt": "x", "expect": ["pdf"]}, {"prompt": "y", "expect": ["pdf"]}

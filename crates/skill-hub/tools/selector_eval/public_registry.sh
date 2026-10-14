@@ -8,7 +8,9 @@ dao=$root/crates/dao/target/release/dao
 hub=$root/crates/skill-hub/target/release/skill-hub
 jq -c '.sources[]' "$root/crates/dao/tools/intake_bench.json" | while read -r src; do
   repo=$(jq -r .repo <<<"$src"); rev=$(jq -r .rev <<<"$src")
-  "$dao" intake --store "$1" --git "https://github.com/$repo" --rev "$rev" --all > /dev/null
+  # stdin closed: a child must not swallow the remaining source lines
+  "$dao" intake --store "$1" --git "https://github.com/$repo" --rev "$rev" --all < /dev/null > /dev/null
 done
 "$hub" index --root thirdparty="$1/objects" --out "$2"
-jq '.skills | length' "$2" | sed 's/^/skills in registry: /'
+n=$(jq '.skills | length' "$2"); echo "skills in registry: $n"
+[ "$n" -ge 100 ] || { echo "expected the 112 pinned skills, got $n"; exit 1; }
