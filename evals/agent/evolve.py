@@ -109,6 +109,9 @@ def main():
                     if not e["pass"]:
                         summary.append((name, arm, use_arm, None, base))
                         continue
+                    # keep the candidate (public task content only) so a regression can be traced to its rules
+                    shutil.copytree(os.path.join(e["ws"], "candidate"),
+                                    os.path.join(a.out_dir, "candidates", f"{name}-{arm}-{rep}"), dirs_exist_ok=True)
                     cand = replay(troot, os.path.join(e["ws"], "candidate"), use_arm, a.max_turns, a.timeout)
                     for case, r in cand.items():
                         emit({"task": name, "arm": arm, "rep": rep, "phase": "candidate", "case": case,
