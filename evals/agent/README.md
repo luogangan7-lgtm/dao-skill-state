@@ -30,6 +30,30 @@ scanner false positives (`printenv`/`env` and `crontab` matched inside words), a
 gap in routing and an unclear same-name rejection. After those fixes (#30, #31, #39): **86/112
 admitted**; the rest are rejected with a stated reason.
 
+**A2 — security scan, labeled set** (`labeled_bench_attack_variants_and_benign_look_alikes` in
+`crates/dao/src/scan.rs`, runs in CI). Synthetic attack variants mostly not in the other scan tests,
+plus benign look-alikes. Before #49 the scanner caught 16/23 attacks (missed command/process
+substitution of downloads, `exec(urlopen(…))`, a PowerShell home wipe, "do not mention this step to
+the user", and a prose instruction to send a private key to a URL) and flagged 0/15 benign. After:
+**26/26 attacks (3 variants added during review), 0/27 benign**; on the 112 real skills the
+verdict counts are unchanged (CLEAN 100 / REVIEW 11 / UNRESOLVED 1, 86 admitted). The
+attack variants are ours, so this is recall on known shapes, not on unseen attacks.
+
+**A3 — normalization fidelity** (`crates/dao/tools/card_fidelity.py`, a gate in `intake-bench`).
+Every routing-card field must be copied from the skill: name/description equal the YAML values
+(trimmed), sentences are parts of the description, headings are `## ` lines, invocation entries are
+frontmatter lines. On the 112 real skills: **0/111 violations**; the first run's 2 differences were
+a trailing newline normalize trims on purpose, now stated in its contract (#50).
+
+**A3 — relations**, hand-labeled on the same run (54 relations): drift 1/1, family 8/8 and
+name_conflict 2/2 correct; the one near_duplicate (vercel `writing-guidelines` /
+`web-design-guidelines`) is a shared body template for different domains — true as defined, not a
+duplicate skill; of 42 references, 3 are false (names openai's `skill-creator` uses only as
+examples: `docx`, `brand-guidelines`, `gh-address-comments`) and the other 39 are cross-references
+inside skill families (superpowers, figma, hf-cloud), not each verified. Recall is not measured: the
+set has no translations and no labeled list of relations that should exist. Hand labels are
+evidence E2 (one reviewer, no second rater).
+
 ### C. Skill effect (`run`, Kimi, run 38525090200, 8 tasks × 3 reps)
 
 | Arm | Pass | Runs that opened a skill |
