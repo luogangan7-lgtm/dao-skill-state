@@ -12,7 +12,7 @@ Runs in CI only (`.github/workflows/selector-eval.yml`); nothing here runs on a 
                                         (bgem3|qwen3emb) at depth K; tau tuned on dev only
   eval.py report OUT_DIR                markdown table + paired exact McNemar tests
 
-Bundle (decrypted from data.json.enc; key = SELECTOR_EVAL_KEY in the `selector-eval` environment):
+Bundle (public_bench.py bundle: public_cases.json + a registry of the pinned third-party skills):
   {"registry": <skill-hub registry>, "dev"|"held": {"cases": [{id, prompt, expect: [ids]}],
    "cands": {case_id: [{id, description, score}]}}}   ("cands" is added by the `cands` step)
 Rows, artifacts and the summary carry case ids and numbers only, never skill names or prompts.
