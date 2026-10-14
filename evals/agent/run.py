@@ -163,6 +163,11 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "skill_calls": skill_calls, "tools": tools,
             # on an API error (quota window, rate limit) keep what the host said, redacted
+            # the host's last message: why a run stopped (asked a question, wrote elsewhere, gave up)
+            "final": redact(str(res.get("result") or ""))[-600:],
+            # what the agent left in the workspace (paths only), to see where outputs went
+            "files": sorted(os.path.relpath(os.path.join(d, f), ws) for d, _, fs in os.walk(ws)
+                            if "/.claude" not in d + "/" and "/node_modules" not in d for f in fs)[:60],
             "error": (redact(str(res.get("result") or ""))[:300] or f"rc={rc}") if res.get("is_error")
             else (f"no result (rc={rc})" if not res else None),
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
