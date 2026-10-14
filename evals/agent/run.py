@@ -43,9 +43,12 @@ def model_env(home):
 
 
 def redact(text):
-    """The agent can read its own token; never let it reach results or artifacts."""
-    tok = os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    return text.replace(tok, "[REDACTED]") if tok else text
+    """The agent can read the model settings it is given (token, endpoint, any other key passed
+    through model_env); never let their values reach results or artifacts."""
+    for k, v in os.environ.items():
+        if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) and len(v) >= 8:
+            text = text.replace(v, "[REDACTED]")
+    return text
 
 
 def install(task_dir, arm, ws):
