@@ -91,7 +91,7 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         install(task_dir, arm, ws)
     except (OSError, KeyError, ValueError, subprocess.SubprocessError) as e:
         return {"pass": False, "check": redact(f"setup failed: {type(e).__name__}: {e}"[-400:]), "rc": "setup",
-                "is_error": True, "skill_calls": [], "tools": {},
+                "is_error": True, "skill_calls": [], "tools": {}, "ws": ws, "hook": None,
                 "turns": None, "duration_s": 0, "input_tokens": None, "output_tokens": None,
                 "cache_read": None, "cache_write": None}
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()

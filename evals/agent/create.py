@@ -62,6 +62,11 @@ def main():
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=1200)
     a = ap.parse_args()
+    if a.arms == "none,skills":  # the workflow's generic default: mean all creator arms here
+        a.arms = "none,skill-creator,dao"
+    bad = set(a.arms.split(",")) - {"none", "skill-creator", "dao"}
+    if bad:
+        sys.exit(f"unknown creator arms: {sorted(bad)} (use none, skill-creator, dao)")
     root = os.path.abspath(a.tasks_dir)
     names = [t for t in a.tasks.split(",") if t] or sorted(
         d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "request.md")))
