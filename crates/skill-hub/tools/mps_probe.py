@@ -68,6 +68,16 @@ def main():
         d = [a - b for a, b in zip(s, lr)]
         print(f"long rows mps {name}: max |dlogit| {max(map(abs, d)):.4f} mean dlogit {sum(d) / len(d):+.4f} "
               f"flips at 0.865: {sum((x > 1.857) != (y > 1.857) for x, y in zip(s, lr))}/{len(d)}")
+    # uneven rows, as real candidates are: one very long text pads the short ones by hundreds of tokens
+    mixed = TEXTS[:4] + ["long-skill: " + "Handles every step of the release, from changelog to tags. " * 30]
+    for name, dtype in (("fp32", torch.float32), ("fp16", torch.float16)):
+        for q in (QUERIES[0], LONG_Q):
+            ref_m = scores("cpu", torch.float32, "eager", True, [q], mixed)
+            s = scores("mps", dtype, "eager", True, [q], mixed)
+            nan = sum(x != x for x in s)
+            d = [a - b for a, b in zip(s, ref_m) if a == a]
+            print(f"uneven rows mps {name} ({'long' if q is LONG_Q else 'short'} prompt): NaN {nan}/{len(s)} "
+                  f"max |dlogit| {max(map(abs, d)) if d else float('nan'):.4f}")
     # per padded row: is the error tied to how much left padding a row got?
     s = scores("mps", torch.float32, "eager", True)
     for qi, q in enumerate(QUERIES):

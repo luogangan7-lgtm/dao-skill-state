@@ -86,7 +86,7 @@ def split(pairs, flat):
 def to_hook_scale(p, tau):
     """Shift a backend's probabilities so its own tuned tau lands on the hook's default
     (HOOK_TAU): monotonic, so rankings and every keep/abstain decision at tau are unchanged."""
-    q = min(max(p, 1e-7), 1 - 1e-7)
+    q = min(max(p, 1e-7), 1 - 1e-7)  # p first: max/min return it when it is NaN, so NaN survives to the guard
     logit = lambda x: math.log(x / (1 - x))
     y = 1 / (1 + math.exp(-(logit(q) - logit(tau) + logit(HOOK_TAU))))
     # rounding must not move a score across the threshold: at or above tau stays at or above the
@@ -250,9 +250,13 @@ def main():
         apple = sys.platform == "darwin" and platform.machine() == "arm64"
         backend = "mlx" if a.model == QWEN and apple and importlib.util.find_spec("mlx_lm") else "torch"
     dev = "mlx" if backend == "mlx" else device()
-    # D7 round 6: float32 on the Apple GPU scored 88/112 against 98 for float16 and for float32 on
-    # CPU (cause still open), so the Apple GPU defaults to float16
+    # D7 rounds 6-7: float32 on the Apple GPU scored 88 and 92/112 against 98 for float16 and for
+    # float32 on CPU, because some requests came back NaN (run 38489180747), so it defaults to float16
     dtype = a.dtype if a.dtype != "auto" else ("float16" if dev == "mps" else "float32")
+    if dev == "mps" and dtype == "float32":
+        print("warning: float32 on the Apple GPU returned NaN scores for some requests (D7 round 7); "
+              "those requests now fail over to the hook's fallback. float16 or MLX is recommended.",
+              file=sys.stderr, flush=True)
     if dev == "cpu":
         print("warning: running on CPU; a hook request takes seconds, longer than the hook's default "
               "SKILL_HUB_RERANK_TIMEOUT_MS=3000, so raise it or the hook falls back", file=sys.stderr, flush=True)
@@ -300,6 +304,10 @@ def main():
             scores = score(q, texts) if texts else []
             if scores is None:
                 return self.send_error(503, "busy")
+            if any(s != s for s in scores):
+                # a NaN never clears tau, so it would read as "no skill" when the model failed
+                # (seen with torch float32 on the Apple GPU, D7 round 7); the hook falls back instead
+                return self.send_error(500, "model returned NaN")
             body = json.dumps([{"index": i, "score": float(s)} for i, s in enumerate(scores)]).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
