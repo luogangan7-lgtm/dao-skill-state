@@ -5,8 +5,10 @@ and check the result with each task's own deterministic checker.
   run.py TASKS_DIR OUT_DIR [--tasks a,b] [--arms none,skills] [--reps 1] [--max-turns 30]
 
 A task is a directory: prompt.md (the user request), optional files/ (copied into the workspace),
-optional skills/ (installed as project skills for the "skills" arm), check.py (exit 0 = pass;
-reads the workspace path as argv[1]). Each run gets a fresh workspace and a fresh HOME, so no
+optional setup.py (run in the workspace before the agent), optional skills/ and/or skills.json
+([{repo, path}] resolved under $SKILL_SOURCES/<owner>_<repo>, third-party skills fetched by the
+workflow at pinned commits, never committed) installed as project skills for the "skills" arm,
+check.py (exit 0 = pass; reads the workspace path as argv[1]). Each run gets a fresh workspace and a fresh HOME, so no
 user settings, memory or skills leak in. The model endpoint comes from the environment
 (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL); nothing here names a provider.
 
@@ -25,7 +27,7 @@ import tempfile
 import time
 
 
-KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR")
+KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR", "NODE_PATH")  # NODE_PATH: global npm libraries
 
 
 def model_env(home):
@@ -42,13 +44,36 @@ def redact(text):
     return text.replace(tok, "[REDACTED]") if tok else text
 
 
+def install(task_dir, arm, ws):
+    """Skills for the skills arm (task skills/ and pinned third-party refs), then setup.py."""
+    if arm == "skills":
+        dest = os.path.join(ws, ".claude", "skills")
+        if os.path.isdir(os.path.join(task_dir, "skills")):
+            shutil.copytree(os.path.join(task_dir, "skills"), dest, dirs_exist_ok=True)
+        sj = os.path.join(task_dir, "skills.json")
+        if os.path.exists(sj):
+            root = os.path.realpath(os.environ["SKILL_SOURCES"])
+            for ref in json.load(open(sj)):
+                src = os.path.realpath(os.path.join(root, ref["repo"].replace("/", "_"), ref["path"]))
+                if not src.startswith(root + os.sep):
+                    raise ValueError("skill path escapes the sources")
+                shutil.copytree(src, os.path.join(dest, os.path.basename(src)), dirs_exist_ok=True)
+    if os.path.exists(os.path.join(task_dir, "setup.py")):
+        subprocess.run([sys.executable, os.path.join(task_dir, "setup.py")], cwd=ws, check=True, timeout=120,
+                       env={k: os.environ[k] for k in KEEP_ENV if k in os.environ})
+
+
 def run_one(task_dir, arm, max_turns, timeout_s):
     ws = tempfile.mkdtemp(prefix="ws-")
     home = tempfile.mkdtemp(prefix="home-")
     if os.path.isdir(os.path.join(task_dir, "files")):
         shutil.copytree(os.path.join(task_dir, "files"), ws, dirs_exist_ok=True)
-    if arm == "skills" and os.path.isdir(os.path.join(task_dir, "skills")):
-        shutil.copytree(os.path.join(task_dir, "skills"), os.path.join(ws, ".claude", "skills"))
+    try:
+        install(task_dir, arm, ws)
+    except (OSError, KeyError, ValueError, subprocess.SubprocessError) as e:
+        return {"pass": False, "check": f"setup failed: {type(e).__name__}", "rc": "setup", "is_error": True,
+                "turns": None, "duration_s": 0, "input_tokens": None, "output_tokens": None,
+                "cache_read": None, "cache_write": None}
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
     env = model_env(home)
     t0 = time.time()
