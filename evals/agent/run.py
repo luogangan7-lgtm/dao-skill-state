@@ -5,8 +5,10 @@ and check the result with each task's own deterministic checker.
   run.py TASKS_DIR OUT_DIR [--tasks a,b] [--arms none,skills] [--reps 1] [--max-turns 30]
 
 A task is a directory: prompt.md (the user request), optional files/ (copied into the workspace),
-optional skills/ (installed as project skills for the "skills" arm), check.py (exit 0 = pass;
-reads the workspace path as argv[1]). Each run gets a fresh workspace and a fresh HOME, so no
+optional setup.py (run in the workspace before the agent), optional skills/ and/or skills.json
+([{repo, path}] resolved under $SKILL_SOURCES/<owner>_<repo>, third-party skills fetched by the
+workflow at pinned commits, never committed) installed as project skills for the "skills" arm,
+check.py (exit 0 = pass; reads the workspace path as argv[1]). Each run gets a fresh workspace and a fresh HOME, so no
 user settings, memory or skills leak in. The model endpoint comes from the environment
 (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL); nothing here names a provider.
 
@@ -47,8 +49,18 @@ def run_one(task_dir, arm, max_turns, timeout_s):
     home = tempfile.mkdtemp(prefix="home-")
     if os.path.isdir(os.path.join(task_dir, "files")):
         shutil.copytree(os.path.join(task_dir, "files"), ws, dirs_exist_ok=True)
-    if arm == "skills" and os.path.isdir(os.path.join(task_dir, "skills")):
-        shutil.copytree(os.path.join(task_dir, "skills"), os.path.join(ws, ".claude", "skills"))
+    if arm == "skills":
+        dest = os.path.join(ws, ".claude", "skills")
+        if os.path.isdir(os.path.join(task_dir, "skills")):
+            shutil.copytree(os.path.join(task_dir, "skills"), dest, dirs_exist_ok=True)
+        sj = os.path.join(task_dir, "skills.json")
+        if os.path.exists(sj):
+            for ref in json.load(open(sj)):
+                src = os.path.join(os.environ["SKILL_SOURCES"], ref["repo"].replace("/", "_"), ref["path"])
+                shutil.copytree(src, os.path.join(dest, os.path.basename(ref["path"])), dirs_exist_ok=True)
+    if os.path.exists(os.path.join(task_dir, "setup.py")):
+        subprocess.run([sys.executable, os.path.join(task_dir, "setup.py")], cwd=ws, check=True, timeout=120,
+                       env={k: os.environ[k] for k in KEEP_ENV if k in os.environ})
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
     env = model_env(home)
     t0 = time.time()
