@@ -1,12 +1,10 @@
 name: selector-eval
-# D7 experiment: which local model best picks one skill (or none) for `skill-hub hook`.
-# Experiments run here, never on a developer machine. The candidate data holds private skill
-# descriptions and prompts, so it is committed encrypted (data.json.enc, gzip) and decrypted with the
-# SELECTOR_EVAL_KEY secret; logs, artifacts and the summary carry only aggregate numbers.
-# The key lives only in the `selector-eval` environment, which only `main` may deploy to: a pull
-# request (even one editing this file) cannot obtain it, so PRs run the rules check only.
-# The `jev` model sends each case's prompt and candidate descriptions to the hosted Jev API
-# (TypeSafe) with the JEV_API secret of the same environment; the owner approved this on 2026-10-13.
+# D7 / A4 experiment: which local model best picks one skill (or none) for `skill-hub hook`, and
+# the threshold (tau) each needs. Experiments run here, never on a developer machine.
+# Data is public (evaluation A4): requests in selector_eval/public_cases.json against a registry of
+# the pinned third-party skills (crates/dao/tools/intake_bench.json), rebuilt in the cands job and
+# never committed. The candidates artifact carries those skills' descriptions only for the eval
+# jobs (1 day); the bundle with the full registry stays inside the cands job.
 on:
   workflow_dispatch:
   pull_request:
@@ -29,24 +27,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s crates/skill-hub/tools/selector_eval -p 'test_*.py'
-  preflight:
-    # model jobs: manual dispatch on main only, and only when the key is available
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    environment: selector-eval
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      has_key: ${{ steps.k.outputs.has_key }}
-    steps:
-      - id: k
-        env:
-          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
-        run: echo "has_key=$([ -n "$KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
   cands:
     # rebuild every case's top-10 once, the way skill-hub ranks (BM25 + bge-m3 dense, RRF)
-    needs: [rules, preflight]
-    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.has_key == 'true'
-    environment: selector-eval
+    needs: [rules]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     outputs:
@@ -64,49 +48,39 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-cands-v2-${{ hashFiles('crates/skill-hub/tools/selector_eval/revisions.json') }}  # v2: + Qwen3-Embedding
-      - name: Build skill-hub
-        working-directory: crates/skill-hub
-        run: cargo build --release --locked
-      # the key is only ever in openssl's environment, never in a step that runs model code
-      - name: Decrypt data
-        env:
-          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
+      - name: Build dao and skill-hub
         run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
-            -in crates/skill-hub/tools/selector_eval/data.json.enc -pass env:KEY | gunzip > "$RUNNER_TEMP/bundle.json"
+          (cd crates/dao && cargo build --release --locked)
+          (cd crates/skill-hub && cargo build --release --locked)
+      - name: Public bundle
+        run: |
+          crates/skill-hub/tools/selector_eval/public_registry.sh "$RUNNER_TEMP/store" "$RUNNER_TEMP/reg.json"
+          python crates/skill-hub/tools/selector_eval/public_bench.py bundle "$RUNNER_TEMP/reg.json" \
+            crates/skill-hub/tools/selector_eval/public_cases.json "$RUNNER_TEMP/bundle.json"
       - id: c
         name: Candidates
         run: |
           trap 'rm -f "$RUNNER_TEMP/bundle.json"' EXIT
           python crates/skill-hub/tools/selector_eval/eval.py cands "$RUNNER_TEMP/bundle.json" \
-            "$PWD/crates/skill-hub/target/release/skill-hub" "$RUNNER_TEMP/cands.json" | tee ceiling.txt
+            "$PWD/crates/skill-hub/target/release/skill-hub" cands.json | tee ceiling.txt
           echo "ceiling=$(tr '\n' ';' < ceiling.txt)" >> "$GITHUB_OUTPUT"
-      - name: Encrypt candidates
-        env:
-          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
-        run: |
-          trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt \
-            -in "$RUNNER_TEMP/cands.json" -out cands.json.enc -pass env:KEY
       - uses: actions/upload-artifact@v4
         with:
           name: selector-cands
-          path: cands.json.enc
-          retention-days: 3
+          path: cands.json
+          retention-days: 1
   eval:
-    needs: [preflight, cands]
-    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.has_key == 'true'
-    environment: selector-eval
+    needs: [cands]
     runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        # round 7: rerun the round-6 outlier (srv-fp32 on the Apple GPU, 88/112) next to the same
-        # server scorer in float32 on CPU; mps_probe.py found MPS fp32 identical to CPU on synthetic rows
+        # A4: the shipped scorer (CPU float32 and Apple MLX 4-bit) and the no-model hook, tau tuned on public dev
         include:
-          - {model: srv-fp32, src: bgem3, k: 10, os: macos-latest}
+          - {model: lexical, src: bgem3, k: 10}
           - {model: srv-fp32, src: bgem3, k: 10}
+          - {model: srv-mlx4, src: bgem3, k: 10, os: macos-latest}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -116,8 +90,6 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
             pip install torch==2.6.0 mlx-lm==0.31.3
-            # the system openssl is LibreSSL; use OpenSSL 3 (preinstalled by Homebrew) for -pbkdf2
-            echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
           else
             pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
           fi
@@ -130,20 +102,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: selector-cands
-      - name: Decrypt candidates
-        env:
-          KEY: ${{ secrets.SELECTOR_EVAL_KEY }}
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
-            -in cands.json.enc -out "$RUNNER_TEMP/cands.json" -pass env:KEY
       - name: Evaluate
         env:
           # the Jev key reaches the jev job only; it is sent to api.typesafe.ai and nowhere else
           JEV_API: ${{ matrix.model == 'jev' && secrets.JEV_API || '' }}
           SELECTOR_TAG: ${{ runner.os == 'macOS' && '@mps' || '' }}
         run: |
-          trap 'rm -f "$RUNNER_TEMP/cands.json"' EXIT
-          python crates/skill-hub/tools/selector_eval/eval.py run "$RUNNER_TEMP/cands.json" "${{ matrix.model }}" results \
+          python crates/skill-hub/tools/selector_eval/eval.py run cands.json "${{ matrix.model }}" results \
             "${{ matrix.src }}" "${{ matrix.k }}"
       - uses: actions/upload-artifact@v4
         with:
@@ -151,8 +116,8 @@ jobs:
           path: results/
           retention-days: 14
   report:
-    needs: [preflight, cands, eval]
-    if: always() && needs.preflight.outputs.has_key == 'true'
+    needs: [cands, eval]
+    if: always() && needs.cands.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -166,7 +131,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## skill-hub selector eval, round 7: server fp32 on Apple GPU vs CPU (rerun of the round-6 outlier) (tau tuned on dev per config, applied once to held-out)"
+            echo "## skill-hub selector eval, A4 on public data (requests generated from the pinned third-party skills; easier than real traffic) (tau tuned on dev per config, applied once to held-out)"
             echo
             echo "Recall of each retrieval list (gold skill within the first k): ${{ needs.cands.outputs.ceiling }}"
             echo
