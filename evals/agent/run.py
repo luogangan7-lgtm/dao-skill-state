@@ -91,7 +91,7 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         install(task_dir, arm, ws)
     except (OSError, KeyError, ValueError, subprocess.SubprocessError) as e:
         return {"pass": False, "check": redact(f"setup failed: {type(e).__name__}: {e}"[-400:]), "rc": "setup",
-                "is_error": True, "skill_calls": [], "tools": {},
+                "is_error": True, "skill_calls": [], "tools": {}, "ws": ws, "hook": None,
                 "turns": None, "duration_s": 0, "input_tokens": None, "output_tokens": None,
                 "cache_read": None, "cache_write": None}
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
@@ -139,7 +139,7 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         lines = open(hook_log).read().splitlines() if os.path.exists(hook_log) else []
         hook = [{"via": e.get("via"), "picked": e.get("picked")} for e in map(json.loads, lines)] or "did not run"
     u = res.get("usage") or {}
-    return {"pass": passed, "check": redact(note), "hook": hook,
+    return {"pass": passed, "check": redact(note), "hook": hook, "ws": ws,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "skill_calls": skill_calls, "tools": tools,
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
