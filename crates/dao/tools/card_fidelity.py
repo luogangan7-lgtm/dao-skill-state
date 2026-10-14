@@ -35,7 +35,7 @@ def split(text):
 def check_card(card, skill_md):
     """Violations of the copy-only invariant for one card with status ok."""
     fm_lines, body = split(skill_md)
-    fm = yaml.safe_load("\n".join(fm_lines)) or {}
+    fm = yaml.safe_load("\n".join(fm_lines) + "\n") or {}  # as check_skill.py feeds PyYAML
     bad = []
     for key in ("name", "description"):
         if card.get(key) != fm.get(key):
