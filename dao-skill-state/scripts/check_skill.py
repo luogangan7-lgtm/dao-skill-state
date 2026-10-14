@@ -99,7 +99,12 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
     if not isinstance(name, str) or not 1 <= len(name) <= 64:
         result["errors"].append(_issue("name", "name must be a string of 1..64 characters"))
     elif name != root.name:
-        result["errors"].append(_issue("name", "name must match the skill directory name"))
+        result["errors"].append(_issue(
+            "name",
+            f"name '{name}' must match the skill directory name '{root.name}': set name to "
+            f"'{root.name}' if that is a valid name; do not rename or move a folder the user asked "
+            "for, report the mismatch instead",
+        ))
     elif name != name.lower():
         result["errors"].append(_issue("name", "name must not contain uppercase characters"))
     elif not all(part and all(ch.isalnum() for ch in part) for part in name.split("-")):
