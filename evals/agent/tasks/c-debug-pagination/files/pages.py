@@ -1,5 +1,5 @@
 def page_count(total, size):
-    """Number of pages needed for `total` items, `size` per page."""
+    """Number of pages needed for `total` items, `size` per page (no items: no pages)."""
     return total // size + 1
 
 
