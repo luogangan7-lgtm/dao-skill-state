@@ -1114,6 +1114,27 @@ pub(crate) fn parse_frontmatter(text: &str) -> Result<Vec<(String, Val)>, &'stat
     }
 }
 
+/// Names both values and the fix: agents otherwise moved or nested a folder the user asked for
+/// to satisfy this error. Kept identical to dao-skill-state/scripts/check_skill.py.
+fn mismatch_message(name: &str, folder: &str) -> String {
+    let alnum = Regex::new(r"^[\p{L}\p{N}]+$").unwrap();
+    let valid = (1..=64).contains(&folder.chars().count())
+        && folder == folder.to_lowercase()
+        && folder.split('-').all(|p| alnum.is_match(p));
+    if valid {
+        format!(
+            "name '{name}' must match the skill directory name '{folder}': set name to '{folder}' \
+             or move the skill to a folder named '{name}'; keep a folder the user asked for and \
+             report any mismatch"
+        )
+    } else {
+        format!(
+            "name '{name}' must match the skill directory name '{folder}', which is not a valid skill \
+             name: keep a folder the user asked for, keep a valid name and report the mismatch"
+        )
+    }
+}
+
 pub fn check_skill(arg: &str) -> CheckResult {
     let path = py_path_str(arg);
     let mut r = CheckResult {
@@ -1199,8 +1220,7 @@ pub fn check_skill(arg: &str) -> CheckResult {
     match get("name") {
         Some(Val::Str(name)) if (1..=64).contains(&name.chars().count()) => {
             if *name != dir_name {
-                r.errors
-                    .push(issue("name", "name must match the skill directory name"));
+                r.errors.push(issue("name", mismatch_message(name, &dir_name)));
             } else if *name != name.to_lowercase() {
                 r.errors
                     .push(issue("name", "name must not contain uppercase characters"));
@@ -1324,6 +1344,21 @@ mod tests {
         ] {
             assert_eq!(res.implicit(v), t, "{v:?}");
         }
+    }
+
+    #[test]
+    fn name_mismatch_message_matches_python() {
+        assert_eq!(
+            mismatch_message("clean-csv", "new-skill"),
+            "name 'clean-csv' must match the skill directory name 'new-skill': set name to \
+             'new-skill' or move the skill to a folder named 'clean-csv'; keep a folder the user \
+             asked for and report any mismatch"
+        );
+        assert_eq!(
+            mismatch_message("my-skill", "My_Skill"),
+            "name 'my-skill' must match the skill directory name 'My_Skill', which is not a valid \
+             skill name: keep a folder the user asked for, keep a valid name and report the mismatch"
+        );
     }
 
     #[test]
