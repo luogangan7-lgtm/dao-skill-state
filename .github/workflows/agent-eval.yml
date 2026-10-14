@@ -69,6 +69,10 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libreoffice-calc libreoffice-writer libreoffice-impress > /dev/null
           # the same libraries are available to the agent in both arms; checkers use them too
           pip install openpyxl==3.1.5 python-docx==1.1.2 pypdf==5.1.0 python-pptx==1.0.2 reportlab==4.2.5 pytest==8.3.4
+      - name: Build skill-hub (for the hook arm)
+        run: |
+          (cd crates/skill-hub && cargo build --release --locked)
+          echo "SKILL_HUB_BIN=$PWD/crates/skill-hub/target/release/skill-hub" >> "$GITHUB_ENV"
       - name: Fetch third-party skills at pinned commits (never committed)
         run: |
           mkdir -p "$RUNNER_TEMP/sources"
