@@ -43,9 +43,12 @@ def model_env(home):
 
 
 def redact(text):
-    """The agent can read its own token; never let it reach results or artifacts."""
-    tok = os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    return text.replace(tok, "[REDACTED]") if tok else text
+    """The agent can read the model settings it is given (token, endpoint, any other key passed
+    through model_env); never let their values reach results or artifacts."""
+    for k, v in os.environ.items():
+        if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) and len(v) >= 8:
+            text = text.replace(v, "[REDACTED]")
+    return text
 
 
 def install(task_dir, arm, ws):
@@ -129,7 +132,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
     except OSError as e:  # e.g. claude not installed: a failed run, not a crashed harness
         out, rc = "", f"error: {e.strerror}"
     wall = time.time() - t0
-    res, tools, skill_calls = {}, {}, []
+    res, tools, skill_calls, bash = {}, {}, [], []
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -142,6 +145,8 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
                 if isinstance(item, dict) and item.get("type") == "tool_use":
                     name = item.get("name", "?")
                     tools[name] = tools.get(name, 0) + 1
+                    if name == "Bash" and len(bash) < 40:  # what the extra turns were spent on
+                        bash.append(redact(str((item.get("input") or {}).get("command", "")))[:120])
                     if name == "Skill":
                         skill_calls.append(str((item.get("input") or {}).get("skill") or (item.get("input") or {}).get("command") or "?"))
                     elif name == "Read" and "/.claude/skills/" in str((item.get("input") or {}).get("file_path", "")):
@@ -161,7 +166,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
     u = res.get("usage") or {}
     return {"pass": passed, "check": redact(note), "hook": hook, "ws": ws,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
-            "skill_calls": skill_calls, "tools": tools,
+            "skill_calls": skill_calls, "tools": tools, "bash": bash,
             # on an API error (quota window, rate limit) keep what the host said, redacted
             # the host's last message: why a run stopped (asked a question, wrote elsewhere, gave up)
             "final": redact(str(res.get("result") or ""))[-600:],
