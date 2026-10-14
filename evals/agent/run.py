@@ -4,6 +4,9 @@ and check the result with each task's own deterministic checker.
 
   run.py TASKS_DIR OUT_DIR [--tasks a,b] [--arms none,skills] [--reps 1] [--max-turns 30]
 
+Arms: none (no skills), skills (installed as project skills; the host decides whether to use them),
+hook (installed, plus the real skill-hub hook registered as a project UserPromptSubmit hook over
+them; its log records what it injected).
 A task is a directory: prompt.md (the user request), optional files/ (copied into the workspace),
 optional setup.py (run in the workspace before the agent), optional skills/ and/or skills.json
 ([{repo, path}] resolved under $SKILL_SOURCES/<owner>_<repo>, third-party skills fetched by the
@@ -20,6 +23,7 @@ Depends on: the standard library and the `claude` CLI on PATH.
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -46,7 +50,7 @@ def redact(text):
 
 def install(task_dir, arm, ws):
     """Skills for the skills arm (task skills/ and pinned third-party refs), then setup.py."""
-    if arm == "skills":
+    if arm in ("skills", "hook"):
         dest = os.path.join(ws, ".claude", "skills")
         if os.path.isdir(os.path.join(task_dir, "skills")):
             shutil.copytree(os.path.join(task_dir, "skills"), dest, dirs_exist_ok=True)
@@ -58,9 +62,24 @@ def install(task_dir, arm, ws):
                 if not src.startswith(root + os.sep):
                     raise ValueError("skill path escapes the sources")
                 shutil.copytree(src, os.path.join(dest, os.path.basename(src)), dirs_exist_ok=True)
+    if arm == "hook":
+        # the real skill-hub hook (built by the workflow), indexed over this workspace's skills and
+        # registered as a project UserPromptSubmit hook, exactly as a user installs it
+        os.makedirs(os.path.join(ws, ".claude", "skills"), exist_ok=True)
+        hub = os.environ["SKILL_HUB_BIN"]
+        reg = os.path.join(ws, ".claude", "skill-hub-registry.json")
+        subprocess.run([hub, "index", "--root", f"task={os.path.join(ws, '.claude', 'skills')}", "--out", reg],
+                       check=True, capture_output=True, timeout=60)
+        log = os.path.join(ws, ".claude", "skill-hub-hook.log")
+        cmd = f"env SKILL_HUB_HOOK_LOG={shlex.quote(log)} {shlex.quote(hub)} hook --registry {shlex.quote(reg)}"
+        json.dump({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}]}},
+                  open(os.path.join(ws, ".claude", "settings.json"), "w"))
     if os.path.exists(os.path.join(task_dir, "setup.py")):
-        subprocess.run([sys.executable, os.path.join(task_dir, "setup.py")], cwd=ws, check=True, timeout=120,
-                       env={k: os.environ[k] for k in KEEP_ENV if k in os.environ})
+        r = subprocess.run([sys.executable, os.path.join(task_dir, "setup.py")], cwd=ws, timeout=120,
+                           capture_output=True, text=True,
+                           env={**{k: os.environ[k] for k in KEEP_ENV if k in os.environ}, "HOME": ws})
+        if r.returncode != 0:
+            raise ValueError("setup.py: " + (r.stderr or r.stdout).strip()[-300:])
 
 
 def run_one(task_dir, arm, max_turns, timeout_s):
@@ -71,26 +90,42 @@ def run_one(task_dir, arm, max_turns, timeout_s):
     try:
         install(task_dir, arm, ws)
     except (OSError, KeyError, ValueError, subprocess.SubprocessError) as e:
-        return {"pass": False, "check": f"setup failed: {type(e).__name__}", "rc": "setup", "is_error": True,
+        return {"pass": False, "check": redact(f"setup failed: {type(e).__name__}: {e}"[-400:]), "rc": "setup",
+                "is_error": True, "skill_calls": [], "tools": {},
                 "turns": None, "duration_s": 0, "input_tokens": None, "output_tokens": None,
                 "cache_read": None, "cache_write": None}
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
     env = model_env(home)
     t0 = time.time()
     try:
-        p = subprocess.run(["claude", "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns),
-                            "--dangerously-skip-permissions"],
+        # stream-json: every assistant message, so we can see which tools and skills were used
+        p = subprocess.run(["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
+                            "--max-turns", str(max_turns), "--dangerously-skip-permissions"],
                            cwd=ws, env=env, capture_output=True, text=True, timeout=timeout_s)
         out, rc = p.stdout, p.returncode
-    except subprocess.TimeoutExpired:
-        out, rc = "", "timeout"
+    except subprocess.TimeoutExpired as e:  # keep the partial trace: timeouts are the runs worth reading
+        raw = e.stdout or b""
+        out, rc = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw), "timeout"
     except OSError as e:  # e.g. claude not installed: a failed run, not a crashed harness
         out, rc = "", f"error: {e.strerror}"
     wall = time.time() - t0
-    try:
-        res = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
-    except (json.JSONDecodeError, IndexError):
-        res = {}
+    res, tools, skill_calls = {}, {}, []
+    for line in out.splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "result":
+            res = ev
+        elif ev.get("type") == "assistant":
+            for item in (ev.get("message") or {}).get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "tool_use":
+                    name = item.get("name", "?")
+                    tools[name] = tools.get(name, 0) + 1
+                    if name == "Skill":
+                        skill_calls.append(str((item.get("input") or {}).get("skill") or (item.get("input") or {}).get("command") or "?"))
+                    elif name == "Read" and "/.claude/skills/" in str((item.get("input") or {}).get("file_path", "")):
+                        skill_calls.append("read:" + str(item["input"]["file_path"]).split("/.claude/skills/")[1].split("/")[0])
     try:  # the checker reads agent-written files: no model token in its environment
         chk = subprocess.run([sys.executable, os.path.join(task_dir, "check.py"), ws],
                              capture_output=True, text=True, timeout=120,
@@ -98,9 +133,15 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         passed, note = chk.returncode == 0, (chk.stdout + chk.stderr).strip()[-300:]
     except subprocess.TimeoutExpired:
         passed, note = False, "checker timed out"
+    hook_log = os.path.join(ws, ".claude", "skill-hub-hook.log")
+    hook = None
+    if arm == "hook":
+        lines = open(hook_log).read().splitlines() if os.path.exists(hook_log) else []
+        hook = [{"via": e.get("via"), "picked": e.get("picked")} for e in map(json.loads, lines)] or "did not run"
     u = res.get("usage") or {}
-    return {"pass": passed, "check": redact(note),
+    return {"pass": passed, "check": redact(note), "hook": hook,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
+            "skill_calls": skill_calls, "tools": tools,
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
             "output_tokens": u.get("output_tokens"),
             "cache_read": u.get("cache_read_input_tokens"), "cache_write": u.get("cache_creation_input_tokens")}
@@ -116,6 +157,7 @@ def main():
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
     a = ap.parse_args()
+    a.tasks_dir = os.path.abspath(a.tasks_dir)  # setup.py runs with the workspace as cwd
     names = [t for t in a.tasks.split(",") if t] or sorted(
         d for d in os.listdir(a.tasks_dir) if os.path.isfile(os.path.join(a.tasks_dir, d, "prompt.md")))
     os.makedirs(a.out_dir, exist_ok=True)
@@ -129,14 +171,17 @@ def main():
                     rows.append(r)
                     f.write(json.dumps(r) + "\n")
                     f.flush()
-                    print(f"{name} {arm} rep{rep}: {'PASS' if r['pass'] else 'FAIL'} turns={r['turns']} "
+                    print(f"{name} {arm} rep{rep}: {'PASS' if r['pass'] else 'FAIL'} skill={','.join(r['skill_calls']) or '-'} turns={r['turns']} "
                           f"{r['duration_s']}s in={r['input_tokens']} out={r['output_tokens']} rc={r['rc']}",
                           flush=True)
-    print("\n| task | arm | pass | runs |\n|---|---|---|---|")
+    print("\n| task | arm | pass | runs | runs that used a skill | mean turns |\n|---|---|---|---|---|---|")
     for name in names:
         for arm in a.arms.split(","):
             rs = [r for r in rows if r["task"] == name and r["arm"] == arm]
-            print(f"| {name} | {arm} | {sum(r['pass'] for r in rs)} | {len(rs)} |")
+            turns = [r["turns"] for r in rs if r["turns"] is not None]
+            print(f"| {name} | {arm} | {sum(r['pass'] for r in rs)} | {len(rs)} | "
+                  f"{sum(1 for r in rs if r['skill_calls'])} | {sum(turns) / len(turns):.1f} |" if turns else
+                  f"| {name} | {arm} | {sum(r['pass'] for r in rs)} | {len(rs)} | - | - |")
 
 
 if __name__ == "__main__":
