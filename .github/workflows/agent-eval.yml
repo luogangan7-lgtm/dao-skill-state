@@ -111,11 +111,12 @@ jobs:
           IN_ARMS: ${{ inputs.arms }}
           IN_REPS: ${{ inputs.reps }}
           IN_SUITE: ${{ inputs.suite }}
+          IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "${{ inputs.provider }}" in kimi|minimax) ;; *) echo "unknown provider"; exit 1 ;; esac
+          case "$IN_PROVIDER" in kimi|minimax) ;; *) echo "unknown provider"; exit 1 ;; esac
           export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}"
           unset KEY_KIMI KEY_MINIMAX
-          [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider ${{ inputs.provider }}"; exit 1; }
+          [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = evolve ]; then
             python3 evals/agent/evolve.py evals/agent/evolve-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
@@ -126,7 +127,7 @@ jobs:
             python3 evals/agent/run.py evals/agent/tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
           fi
-          { echo "## agent-eval (${{ inputs.provider }}: $ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "## agent-eval ($IN_PROVIDER: $ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
