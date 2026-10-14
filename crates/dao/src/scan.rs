@@ -125,7 +125,8 @@ fn rules() -> Vec<Rule> {
         rule("destructive-rm", "malicious_code", Some(B), Some(R),
             r#"\brm\s+((-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)[a-zA-Z]*|-[rR]\s+-f|-f\s+-[rR]|--recursive\s+--force|--force\s+--recursive)\s+(--no-preserve-root\s+)?("?/"?|~/?|\$HOME/?|"\$HOME"/?|/\*)(\s|$|")"#),
         rule("persistence", "malicious_code", Some(R), Some(R),
-            r"(?i)(>>?\s*~?/?\.(bashrc|zshrc|profile|bash_profile)\b|\bcrontab\s+(-\s|-$|[^-\s|&;]+)|\|\s*crontab\b|LaunchAgents/|\bschtasks\b|authorized_keys)"),
+            // `crontab` is matched as the lowercase command: a "Crontab Guru" link is not persistence
+            r"(?i)(>>?\s*~?/?\.(bashrc|zshrc|profile|bash_profile)\b|\b(?-i:crontab)\s+(-\s|-$|[^-\s|&;]+)|\|\s*(?-i:crontab)\b|LaunchAgents/|\bschtasks\b|authorized_keys)"),
         // downloading is normal; download + chmod +x in one script is the review item (below)
         rule("download-to-disk", "suspicious_download", Some(I), Some(I),
             r"(?i)\b(curl|wget)\b[^\n]*\s(-o|-O|--output)\s|\bpip3?\s+install\s+(git\+|https?://)|\bnpm\s+(i|install)\s+(https?://|git\+)"),
@@ -137,7 +138,9 @@ fn rules() -> Vec<Rule> {
         // credentials
         rule("secret-path", "credential_handling", Some(R), Some(I), SECRET_PATH),
         rule("env-secret-dump", "credential_handling", Some(R), Some(R),
-            r"(?i)\b(printenv|env)\s*(>|\|\s*(curl|nc|ncat|base64|xxd|openssl))|json\.dumps\(\s*(dict\()?os\.environ|JSON\.stringify\(\s*process\.env\s*\)|Get-ChildItem\s+env:[^\n]*\|"),
+            // `printenv`/`env` as a command (line start or after a shell separator, lowercase):
+            // TypeScript generics like `PagesFunction<Env>` are not a dump (intake benchmark A1)
+            r"(?i)(?:^|[\s;&|(`])(?-i:printenv|env)\s*(>|\|\s*(curl|nc|ncat|base64|xxd|openssl))|json\.dumps\(\s*(dict\()?os\.environ|JSON\.stringify\(\s*process\.env\s*\)|Get-ChildItem\s+env:[^\n]*\|"),
         rule("secret-solicitation", "credential_handling", Some(R), Some(R),
             r"(?i)\b(enter|paste|send|provide|share|type|give)\b[^\n]{0,30}\b(seed\s+phrase|mnemonic|private\s+key|recovery\s+phrase)\b"),
         rule("hardcoded-secret", "hardcoded_secret", Some(B), Some(B),
