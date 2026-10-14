@@ -87,8 +87,9 @@ def run_one(task_dir, arm, max_turns, timeout_s):
                             "--max-turns", str(max_turns), "--dangerously-skip-permissions"],
                            cwd=ws, env=env, capture_output=True, text=True, timeout=timeout_s)
         out, rc = p.stdout, p.returncode
-    except subprocess.TimeoutExpired:
-        out, rc = "", "timeout"
+    except subprocess.TimeoutExpired as e:  # keep the partial trace: timeouts are the runs worth reading
+        raw = e.stdout or b""
+        out, rc = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw), "timeout"
     except OSError as e:  # e.g. claude not installed: a failed run, not a crashed harness
         out, rc = "", f"error: {e.strerror}"
     wall = time.time() - t0
