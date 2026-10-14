@@ -8,9 +8,6 @@ def lines(n):
 for n in [1, 2, 3, 4, 5]:
     if lines(n) != ["run"]:
         sys.exit(f"step {n} ran {len(lines(n))} times (want once in total)")
-for n in []:
-    if lines(n):
-        sys.exit(f"step {n} ran but should not have")
 p = os.path.join(ws, ".backfill", "progress.json")
 if not os.path.exists(p) or sorted(json.load(open(p)).get("done", [])) != [1, 2, 3, 4, 5]:
     sys.exit("progress.json done is not [1, 2, 3, 4, 5]")

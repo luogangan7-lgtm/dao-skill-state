@@ -11,7 +11,7 @@ Read this only for resumable, multi-step work. Short tasks remain stateless. Thi
 
 ## This skill's own long runs
 
-The same contract applies to this meta-skill. An evolution loop, a skill family or a review that spans sessions keeps its state in the user's task system when one exists. Otherwise keep one checkpoint per run at project `.dao/state/<run>.json` (goal, phase and next action, decisions, approvals, artifact and evidence paths with hashes, updated-at), outside any distributable skill. Re-read it before resuming and re-observe the real files before an irreversible step; it is checkpoint-assisted, not a runtime.
+The same contract applies to this meta-skill. An evolution loop, a skill family or a review that spans sessions keeps its state in the user's task system when one exists. Otherwise keep one checkpoint per run at project `.dao/state/<run>.json` (goal, phase and next action, decisions, approvals, artifact and evidence paths with hashes, updated-at); never inside a skill directory, and keep `.dao/` out of anything published (ignore it in version control). Re-read it before resuming and re-observe the real files before an irreversible step; it is checkpoint-assisted, not a runtime.
 
 ## Define only necessary fields
 
@@ -31,7 +31,7 @@ Specify the authoritative location, initialization, allowed transitions, complet
 
 Before an external action persist a pending record with stable action identity and authorization reference. After execution verify the external receipt before marking done. On restart inspect pending actions and the real system; do not resend a non-idempotent action merely because a local receipt is absent. Missing idempotency/reconciliation means human review, not an exactly-once claim.
 
-Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, then continue from the next unfinished action. State limits nothing else: a run does as many steps as the task allows, and stops only where the contract says (a gate, an approval, an error). Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
+Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, reconcile any pending action first, then continue from the next unfinished action. State adds no step limit: a run goes on until completion, a gate or approval, an error, a failed recheck, or the user stops it. Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
 
 ## Acceptance before runtime adoption
 
