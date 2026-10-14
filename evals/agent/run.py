@@ -27,7 +27,7 @@ import tempfile
 import time
 
 
-KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR")
+KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR", "NODE_PATH")  # NODE_PATH: global npm libraries
 
 
 def model_env(home):

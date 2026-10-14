@@ -14,7 +14,9 @@ def title_and_body(slide):
     texts = [sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text.strip()]
     title = slide.shapes.title if slide.shapes.title is not None and slide.shapes.title.text.strip() else (
         min(texts, key=lambda sh: (sh.top or 0, sh.left or 0)) if texts else None)
-    body = [pa.text.strip() for sh in texts if sh is not title for pa in sh.text_frame.paragraphs if pa.text.strip()]
+    # python-pptx builds a new proxy per access: compare the underlying XML elements
+    tid = title._element if title is not None else None
+    body = [pa.text.strip() for sh in texts if sh._element is not tid for pa in sh.text_frame.paragraphs if pa.text.strip()]
     return (title.text.strip() if title is not None else ""), body
 
 
