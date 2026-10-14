@@ -82,7 +82,25 @@ def install(task_dir, arm, ws):
             raise ValueError("setup.py: " + (r.stderr or r.stdout).strip()[-300:])
 
 
+QUOTA_STREAK = [0]  # consecutive runs the host ended at once with an API error
+
+
+def guard_quota(r):
+    """Three runs in a row that end within seconds on an API error mean the model endpoint is
+    refusing (quota window, rate limit): stop instead of recording them as task failures."""
+    instant = r.get("is_error") and (r.get("turns") or 0) <= 1 and (r.get("duration_s") or 0) < 10
+    QUOTA_STREAK[0] = QUOTA_STREAK[0] + 1 if instant else 0
+    if QUOTA_STREAK[0] >= 3:
+        print(f"model endpoint refusing (3 instant API errors; last: {r.get('error')}); stopping", flush=True)
+        sys.exit(3)
+    return r
+
+
 def run_one(task_dir, arm, max_turns, timeout_s):
+    return guard_quota(_run_one(task_dir, arm, max_turns, timeout_s))
+
+
+def _run_one(task_dir, arm, max_turns, timeout_s):
     ws = tempfile.mkdtemp(prefix="ws-")
     home = tempfile.mkdtemp(prefix="home-")
     if os.path.isdir(os.path.join(task_dir, "files")):
