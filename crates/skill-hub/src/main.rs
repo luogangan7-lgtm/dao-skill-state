@@ -1119,10 +1119,15 @@ mod tests {
         }
         // content words still retrieve, with or without function words around them
         assert_eq!(
-            search(&reg, "what model should I use for this task?", 1)[0].1.name,
+            search(&reg, "what model should I use for this task?", 1)[0]
+                .1
+                .name,
             "model-picker"
         );
-        assert_eq!(search(&reg, "why is it so slow", 1)[0].1.name, "diagnose-session");
+        assert_eq!(
+            search(&reg, "why is it so slow", 1)[0].1.name,
+            "diagnose-session"
+        );
     }
 
     #[test]
