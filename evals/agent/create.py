@@ -51,13 +51,20 @@ def structure_ok(skill_dir):
     import re
     md = os.path.join(skill_dir, "SKILL.md")
     m = re.search(r"^name:\s*['\"]?([^'\"\n]+)", open(md, encoding="utf-8").read(), re.M) if os.path.exists(md) else None
-    if not m:
+    name = m.group(1).split("#")[0].strip() if m else ""
+    # the name is agent-written: only a plain skill name may become a folder (the lint rejects others anyway)
+    if not re.fullmatch(r"[a-z0-9-]{1,64}", name):
         return False
-    dest = os.path.join(tempfile.mkdtemp(prefix="lint-"), m.group(1).strip())
-    shutil.copytree(skill_dir, dest)
-    p = subprocess.run([sys.executable, os.path.join(REPO, "dao-skill-state", "scripts", "check_skill.py"), dest],
-                       capture_output=True, text=True, timeout=60)
-    return p.returncode == 0
+    tmp = tempfile.mkdtemp(prefix="lint-")
+    try:
+        shutil.copytree(skill_dir, os.path.join(tmp, name))
+        p = subprocess.run([sys.executable, os.path.join(REPO, "dao-skill-state", "scripts", "check_skill.py"),
+                            os.path.join(tmp, name)], capture_output=True, text=True, timeout=60)
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main():

@@ -143,7 +143,8 @@ def run_one(task_dir, arm, max_turns, timeout_s):
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "skill_calls": skill_calls, "tools": tools,
             # on an API error (quota window, rate limit) keep what the host said, redacted
-            "error": redact(str(res.get("result") or ""))[:300] if res.get("is_error") else None,
+            "error": (redact(str(res.get("result") or ""))[:300] or f"rc={rc}") if res.get("is_error")
+            else (f"no result (rc={rc})" if not res else None),
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
             "output_tokens": u.get("output_tokens"),
             "cache_read": u.get("cache_read_input_tokens"), "cache_write": u.get("cache_creation_input_tokens")}
