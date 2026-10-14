@@ -1,0 +1,67 @@
+name: intake-bench
+# Evaluation A1: the DAO supply chain on real public third-party skills (pinned commits in
+# crates/dao/tools/intake_bench.json): intake -> scan -> normalize -> relations -> routing eval
+# -> admission -> publish (dry run). Measures every stage; nothing is published or committed.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - crates/dao/**
+      - crates/skill-hub/src/**
+      - .github/workflows/intake-bench.yml
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash  # -eo pipefail
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            crates/dao/target
+            crates/skill-hub/target
+          key: cargo-intake-${{ hashFiles('crates/*/Cargo.lock') }}
+      - name: Build dao and skill-hub
+        run: |
+          (cd crates/dao && cargo build --release --locked)
+          (cd crates/skill-hub && cargo build --release --locked)
+      - name: Run the supply chain
+        run: |
+          DAO=$PWD/crates/dao/target/release/dao
+          HUB=$PWD/crates/skill-hub/target/release/skill-hub
+          S=$RUNNER_TEMP/store; L=$RUNNER_TEMP/logs; mkdir -p "$L"
+          jq -c '.sources[]' crates/dao/tools/intake_bench.json | while read -r src; do
+            repo=$(jq -r .repo <<<"$src"); rev=$(jq -r .rev <<<"$src")
+            "$DAO" intake --store "$S" --git "https://github.com/$repo" --rev "$rev" --all > "$L/intake-${repo//\//_}.json"
+          done
+          "$DAO" scan --store "$S" --all > "$L/scan.json"
+          "$DAO" normalize --store "$S" --all > "$L/normalize.json"
+          "$DAO" relations --store "$S" > "$L/relations.json"
+          "$HUB" index --root thirdparty="$S/objects" --out "$RUNNER_TEMP/reg.json" > "$L/index.json"
+          "$DAO" eval gen --store "$S" > "$L/eval-gen.json"
+          "$DAO" eval run --store "$S" --registry "$RUNNER_TEMP/reg.json" --searcher "$HUB" > "$L/eval-run.json"
+          for d in $(ls "$S/objects" | grep -E '^[0-9a-f]{64}$'); do
+            if "$DAO" admit --store "$S" --digest "$d" > /dev/null 2>&1; then
+              "$DAO" promote --store "$S" --digest "$d" > /dev/null
+            fi
+          done
+          mkdir -p "$RUNNER_TEMP/target"
+          "$DAO" publish --store "$S" --target "$RUNNER_TEMP/target" > "$L/publish-dry.json" || echo "publish dry run reported conflicts (exit $?)"
+          echo "store=$S" >> "$GITHUB_ENV"
+      - name: Report
+        run: |
+          python3 crates/dao/tools/intake_bench_report.py "$store" results | tee report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: intake-bench
+          path: |
+            results/
+            ${{ runner.temp }}/logs/
