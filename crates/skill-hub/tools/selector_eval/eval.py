@@ -283,6 +283,7 @@ def summary(rows, tau):
         "false_abstain": sum(1 for r in pos if not picks(r, tau)),
         "wrong_skill": sum(1 for r in picked if r["pos"] and not r["top_ok"]),
         "false_fire": sum(1 for r in picked if not r["pos"]),
+        "nan": sum(1 for r in rows if r["best"] is not None and r["best"] != r["best"]),
         "p50_ms": round(ms[len(ms) // 2]), "p95_ms": round(ms[min(len(ms) - 1, math.ceil(len(ms) * 0.95) - 1)]),
     }
 
