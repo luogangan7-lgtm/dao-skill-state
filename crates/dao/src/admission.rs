@@ -144,7 +144,9 @@ fn eval_gate(
         return (
             false,
             format!(
-                "{} of {} cases were not scored ({n} is not an id in the evaluated registry?): {}",
+                "{} of {} cases were not scored ({n} is not an id in the evaluated registry; if several \
+                 staged skills share this name, skill-hub gives each a root-qualified id: resolve the \
+                 name conflict): {}",
                 unscored.len(),
                 mine.len(),
                 unscored.join(", ")
@@ -286,10 +288,17 @@ pub fn decide(digest: &str, ev: &Evidence) -> Admission {
             } else if subject.map(String::as_str) != Some(digest) {
                 (
                     false,
-                    format!(
-                        "the eval set's subject for {n} is {}, not this digest",
-                        subject.map_or("none", |s| short(s))
-                    ),
+                    match subject {
+                        // several staged skills share the name: a host can hold only one, so none
+                        // is admitted until one is chosen and the others removed or renamed
+                        Some(other) => format!(
+                            "staged skills share the name {n} (the eval set's subject is {}, not this \
+                             digest): a host can hold one skill per name; keep one and remove or \
+                             rename the others (name conflict)",
+                            short(other)
+                        ),
+                        None => format!("the eval set has no subject named {n}"),
+                    },
                 )
             } else {
                 match receipt {
