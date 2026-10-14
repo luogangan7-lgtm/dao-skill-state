@@ -54,6 +54,22 @@ def replay(task_root, skill_dir, use_arm, max_turns, timeout):
     return out
 
 
+def keep_candidate(src, dest, exts=(".md", ".py", ".json", ".yaml", ".yml", ".txt"), max_bytes=256 * 1024):
+    """Copy the candidate's small text files into the uploaded artifact, so a regression can be traced
+    to the rule that caused it. The folder is agent-written: symlinks and other or large files are
+    skipped, so nothing outside it (or a runner file it links to) can reach the artifact."""
+    if os.path.islink(src):
+        return
+    for root, _, files in os.walk(src):  # os.walk does not follow symlinked folders
+        for f in files:
+            p = os.path.join(root, f)
+            if os.path.islink(p) or not os.path.isfile(p) or not f.endswith(exts) or os.path.getsize(p) > max_bytes:
+                continue
+            out = os.path.join(dest, os.path.relpath(p, src))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            shutil.copyfile(p, out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("tasks_dir")
@@ -109,6 +125,8 @@ def main():
                     if not e["pass"]:
                         summary.append((name, arm, use_arm, None, base))
                         continue
+                    keep_candidate(os.path.join(e["ws"], "candidate"),
+                                   os.path.join(a.out_dir, "candidates", f"{name}-{arm}-{use_arm}-{rep}"))
                     cand = replay(troot, os.path.join(e["ws"], "candidate"), use_arm, a.max_turns, a.timeout)
                     for case, r in cand.items():
                         emit({"task": name, "arm": arm, "rep": rep, "phase": "candidate", "case": case,
