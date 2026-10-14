@@ -218,7 +218,8 @@ def score_split(fn, split):
         rows.append({"id": c["id"], "pos": bool(c["expect"]),
                      "top_ok": bool(s) and hs[best]["id"] in c["expect"],
                      "in_cands": any(h["id"] in c["expect"] for h in hs),
-                     "best": s[best] if s else None, "ms": ms})
+                     "best": s[best] if s else None, "ms": ms,
+                     "nan": any(x != x for x in s)})
     return rows
 
 
@@ -283,6 +284,7 @@ def summary(rows, tau):
         "false_abstain": sum(1 for r in pos if not picks(r, tau)),
         "wrong_skill": sum(1 for r in picked if r["pos"] and not r["top_ok"]),
         "false_fire": sum(1 for r in picked if not r["pos"]),
+        "nan": sum(1 for r in rows if r.get("nan")),  # cases with any NaN score (the server 500s them)
         "p50_ms": round(ms[len(ms) // 2]), "p95_ms": round(ms[min(len(ms) - 1, math.ceil(len(ms) * 0.95) - 1)]),
     }
 
