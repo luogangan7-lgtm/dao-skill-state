@@ -4,8 +4,8 @@
 //! Called by: `main` (`dao normalize`), relations (reads cards).
 //! Invariants:
 //! - Every text field is copied from the skill, never paraphrased or generated: name and
-//!   description are the YAML-decoded values (so folded/quoted scalars are decoded, not byte
-//!   substrings); sentences, headings and invocation lines are verbatim substrings. A skill
+//!   description are the YAML-decoded values with surrounding whitespace trimmed (so
+//!   folded/quoted scalars are decoded, not byte substrings); sentences, headings and invocation lines are verbatim substrings. A skill
 //!   without a usable value gets a status (`needs_description`, `needs_name`, `stub`,
 //!   `invalid_frontmatter`, `invalid_encoding`), never a made-up value.
 //! - The card is a pure function of the object bytes, its manifest and its locks

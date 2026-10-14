@@ -5,7 +5,7 @@
   card_fidelity.py --selftest     show that the check fails on a paraphrased card
 
 normalize.rs promises that every text field is copied, never paraphrased: name and description are
-the YAML-decoded values; use_when / not_for sentences are verbatim parts of the description;
+the YAML-decoded values with surrounding whitespace trimmed; use_when / not_for sentences are verbatim parts of the description;
 headings are verbatim parts of the body; invocation entries are verbatim frontmatter lines.
 Prints the counts and every violation; exits 1 if there is any. Public third-party content only.
 
@@ -38,7 +38,8 @@ def check_card(card, skill_md):
     fm = yaml.safe_load("\n".join(fm_lines) + "\n") or {}  # as check_skill.py feeds PyYAML
     bad = []
     for key in ("name", "description"):
-        if card.get(key) != fm.get(key):
+        want = fm.get(key).strip() if isinstance(fm.get(key), str) else None  # normalize trims
+        if card.get(key) != want:
             bad.append(f"{key} differs from the YAML value")
     desc = card.get("description") or ""
     for key in ("use_when", "not_for"):
@@ -51,7 +52,7 @@ def check_card(card, skill_md):
 
 def selftest():
     md = "---\nname: a-skill\ndescription: >\n  Use when cleaning CSV.\n  Not for Excel.\n---\n## Steps\nDo it.\n"
-    good = {"name": "a-skill", "description": "Use when cleaning CSV. Not for Excel.\n",
+    good = {"name": "a-skill", "description": "Use when cleaning CSV. Not for Excel.",
             "use_when": ["Use when cleaning CSV."], "not_for": ["Not for Excel."], "headings": ["Steps"],
             "invocation": []}
     assert check_card(good, md) == [], check_card(good, md)
