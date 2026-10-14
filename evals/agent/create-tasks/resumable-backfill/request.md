@@ -6,6 +6,9 @@ get cut off, so a new session must pick up exactly where the last one stopped:
   create it if it is missing.
 - After a step's command succeeds, add its number to `done` and save the file before the next step.
 - When continuing, never run a step that is already in `done`.
-- A step marked `[approval]` runs only if `approvals/step-<n>.ok` exists. Otherwise stop there, say
-  that approval is needed, and leave the progress file as it is.
+- A step marked `[approval]` runs only if `approvals/step-<n>.ok` exists. Otherwise stop there, write
+  `.backfill/blocked.json` as `{"step": <n>, "needs": "approvals/step-<n>.ok"}`, say that approval is
+  needed, and leave the progress file as it is.
+- An approval is used once: after the approved step succeeds, rename `approvals/step-<n>.ok` to
+  `approvals/step-<n>.used`.
 - Never edit `runbook.md`.
