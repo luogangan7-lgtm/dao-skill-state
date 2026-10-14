@@ -78,6 +78,24 @@ def main():
             d = [a - b for a, b in zip(s, ref_m) if a == a]
             print(f"uneven rows mps {name} ({'long' if q is LONG_Q else 'short'} prompt): NaN {nan}/{len(s)} "
                   f"max |dlogit| {max(map(abs, d)) if d else float('nan'):.4f}")
+    # the uneven long case again, row by row on the GPU (no padding, small attention), and on MLX,
+    # the Apple Silicon default: does either avoid the GPU command-buffer errors seen above?
+    import math
+    ref_u = scores("cpu", torch.float32, "eager", True, [LONG_Q], mixed)
+    for name, dtype in (("fp32", torch.float32), ("fp16", torch.float16)):
+        s = scores("mps", dtype, "eager", False, [LONG_Q], mixed)
+        print(f"uneven long one-by-one mps {name}: max |dlogit| {max(abs(a - b) for a, b in zip(s, ref_u)):.4f}")
+    try:
+        mlx = rs.qwen3_mlx_scorer()
+    except ImportError:
+        print("mlx not installed")
+    else:
+        for label, q, tx in (("uneven long", LONG_Q, mixed), ("long", LONG_Q, LONG_T)):
+            ref_l = ref_u if tx is mixed else scores("cpu", torch.float32, "eager", True, [q], tx)
+            p = mlx([(q, tx)])[0]
+            lg = [math.log(max(x, 1e-12) / max(1 - x, 1e-12)) for x in p]
+            print(f"{label} mlx 4bit: max |dlogit| {max(abs(a - b) for a, b in zip(lg, ref_l)):.4f} "
+                  f"flips at 0.865 (raw scale, informational): {sum((x > 1.857) != (y > 1.857) for x, y in zip(lg, ref_l))}/{len(lg)}")
     # per padded row: is the error tied to how much left padding a row got?
     s = scores("mps", torch.float32, "eager", True)
     for qi, q in enumerate(QUERIES):
