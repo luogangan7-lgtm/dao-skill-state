@@ -35,6 +35,18 @@ sys.exit(0 if os.path.isfile(os.path.join(sys.argv[1], "new-skill", "SKILL.md"))
 '''
 
 
+META_NAME = {"skill-creator": "skill-creator", "dao": "dao-skill-state"}
+
+
+def invoke(arm, prompt, how):
+    """How the meta-skill is offered. explicit: the request names it, as its own docs ask
+    (dao-skill-state is explicit-only: allow_implicit_invocation false, so skill-hub never surfaces
+    it); hook / installed: left to the hook or the host."""
+    if arm in META_NAME and how == "explicit":
+        return f"Use the {META_NAME[arm]} skill for this.\n\n" + prompt
+    return prompt
+
+
 def meta_skill(arm, dest):
     """Install the arm's meta-skill as a project skill under dest/skills/."""
     if arm == "skill-creator":
@@ -74,8 +86,9 @@ def main():
     ap.add_argument("--tasks", default="")
     ap.add_argument("--arms", default="none,skill-creator,dao")
     ap.add_argument("--use-arms", default="skills,hook")
-    ap.add_argument("--create-arm", default="hook",
-                    help="how the meta-skill is offered: hook (skill-hub hook surfaces it) or skills (installed only)")
+    ap.add_argument("--meta", default="explicit", choices=["explicit", "hook", "installed"],
+                    help="how the meta-skill is offered: named in the request (default), surfaced by the "
+                         "skill-hub hook, or only installed")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=1200)
@@ -109,11 +122,12 @@ def main():
             for rep in range(a.reps):
                 # phase 1: create, in a throwaway task dir holding the request and the meta-skill
                 tdir = tempfile.mkdtemp(prefix="create-")
-                open(os.path.join(tdir, "prompt.md"), "w").write(
-                    open(os.path.join(root, name, "request.md")).read() + OUTPUT_RULE)
+                open(os.path.join(tdir, "prompt.md"), "w").write(invoke(
+                    arm, open(os.path.join(root, name, "request.md")).read() + OUTPUT_RULE, a.meta))
                 open(os.path.join(tdir, "check.py"), "w").write(CHECK_CREATED)
                 meta_skill(arm, tdir)
-                c = run.run_one(tdir, a.create_arm if arm != "none" else "none", a.max_turns, a.timeout)
+                c = run.run_one(tdir, ("hook" if a.meta == "hook" else "skills") if arm != "none" else "none",
+                                a.max_turns, a.timeout)
                 created = os.path.join(c.get("ws", ""), "new-skill")
                 valid = bool(c["pass"]) and structure_ok(created)
                 emit({"task": name, "arm": arm, "rep": rep, "phase": "create", "valid": valid, **c})

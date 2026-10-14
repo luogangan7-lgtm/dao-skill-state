@@ -1,6 +1,7 @@
 email,name,signup_date,lifetime_value
   Ann@Example.com ,  ann   marie smith ,2024-03-05,"$1,234.50"
-bob@example.com,BOB JONES,05/03/2024,99
+bob@example.com,"JONES, BOB",05/03/2024,99
 ,No Email,2024-01-01,10
 ann@example.com,Ann Smith,"Apr 9, 2024",12.345
 carl@example.com,carl  oneil,"Jan 2, 2023",0.5
+qa-bot@example.org,QA Bot,2024-02-02,1
