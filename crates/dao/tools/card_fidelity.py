@@ -72,7 +72,7 @@ def selftest():
     assert check_card(good, md.replace("\n", "\r\n")) == []
     for field, value, msg in [
         ("name", "b-skill", "name differs"),
-        ("description", "Use when cleaning CSV.", "description differs"),
+        ("description", "Use when cleaning CSV. Not for Excel. Also TSV.", "description differs"),
         ("use_when", ["Use this to clean CSV files."], "use_when not in description"),
         ("not_for", ["Not for spreadsheets."], "not_for not in description"),
         ("headings", ["Usage"], "heading is not a ## line"),  # in the body, but not a heading
