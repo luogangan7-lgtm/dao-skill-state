@@ -50,6 +50,15 @@ metadata:
             self.assertEqual(result["status"], "invalid")
             self.assertTrue(any(item["kind"] == "name" for item in result["errors"]))
 
+    def test_name_mismatch_says_how_to_fix_without_moving_the_folder(self):
+        # agents renamed or nested a requested folder to satisfy this error (eval B, run 38610369890)
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = write_skill(Path(tmp), "new-skill", "name: clean-csv\ndescription: short\n")
+            message = next(item["message"] for item in check_skill(skill)["errors"] if item["kind"] == "name")
+            self.assertIn("'clean-csv'", message)
+            self.assertIn("'new-skill'", message)
+            self.assertIn("do not rename or move", message)
+
     def test_duplicate_key_bad_type_and_nested_non_string_metadata_fail(self):
         cases = [
             "name: x-{i}\nname: x-{i}\ndescription: short\n",
