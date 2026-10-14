@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/cache@v4
         with:
           path: |
@@ -38,7 +40,11 @@ jobs:
           S=$RUNNER_TEMP/store; L=$RUNNER_TEMP/logs; mkdir -p "$L"
           jq -c '.sources[]' crates/dao/tools/intake_bench.json | while read -r src; do
             repo=$(jq -r .repo <<<"$src"); rev=$(jq -r .rev <<<"$src")
-            "$DAO" intake --store "$S" --git "https://github.com/$repo" --rev "$rev" --all > "$L/intake-${repo//\//_}.json"
+            out="$L/intake-${repo//\//_}.json"
+            "$DAO" intake --store "$S" --git "https://github.com/$repo" --rev "$rev" --all > "$out"
+            # a source that pins to another commit or stages nothing is a broken benchmark, not a result
+            jq -e --arg rev "$rev" '.commit == $rev and ([.outcomes[] | select(.outcome == "staged")] | length) > 0' "$out" > /dev/null \
+              || { echo "intake of $repo did not stage anything at $rev"; exit 1; }
           done
           "$DAO" scan --store "$S" --all > "$L/scan.json"
           "$DAO" normalize --store "$S" --all > "$L/normalize.json"
@@ -47,9 +53,12 @@ jobs:
           "$DAO" eval gen --store "$S" > "$L/eval-gen.json"
           "$DAO" eval run --store "$S" --registry "$RUNNER_TEMP/reg.json" --searcher "$HUB" > "$L/eval-run.json"
           for d in $(ls "$S/objects" | grep -E '^[0-9a-f]{64}$'); do
-            if "$DAO" admit --store "$S" --digest "$d" > /dev/null 2>&1; then
-              "$DAO" promote --store "$S" --digest "$d" > /dev/null
-            fi
+            rc=0; "$DAO" admit --store "$S" --digest "$d" > /dev/null || rc=$?
+            case $rc in
+              0) "$DAO" promote --store "$S" --digest "$d" > /dev/null ;;
+              1) ;;  # refused: a result, listed in the report
+              *) echo "admit failed on $d (exit $rc)"; exit 1 ;;
+            esac
           done
           mkdir -p "$RUNNER_TEMP/target"
           "$DAO" publish --store "$S" --target "$RUNNER_TEMP/target" > "$L/publish-dry.json" || echo "publish dry run reported conflicts (exit $?)"
