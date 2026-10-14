@@ -5,7 +5,8 @@ and check the result with each task's own deterministic checker.
   run.py TASKS_DIR OUT_DIR [--tasks a,b] [--arms none,skills] [--reps 1] [--max-turns 30]
 
 Arms: none (no skills), skills (installed as project skills; the host decides whether to use them),
-hook (installed, plus the context skill-hub's hook would inject naming them, ahead of the request).
+hook (installed, plus the real skill-hub hook registered as a project UserPromptSubmit hook over
+them; its log records what it injected).
 A task is a directory: prompt.md (the user request), optional files/ (copied into the workspace),
 optional setup.py (run in the workspace before the agent), optional skills/ and/or skills.json
 ([{repo, path}] resolved under $SKILL_SOURCES/<owner>_<repo>, third-party skills fetched by the
@@ -22,7 +23,6 @@ Depends on: the standard library and the `claude` CLI on PATH.
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -47,37 +47,6 @@ def redact(text):
     return text.replace(tok, "[REDACTED]") if tok else text
 
 
-HOOK_HEAD = ("skill-hub retrieved these skills as possibly relevant to the request (load one with "
-             "`skill-hub get <id>`, or by name if it is installed; ignore them if none fits):")
-
-
-def frontmatter(skill_md):
-    """name and description from a SKILL.md frontmatter (single-line or folded values)."""
-    text = open(skill_md, encoding="utf-8").read()
-    m = re.match(r"---\n(.*?)\n---", text, re.S)
-    fields, key = {}, None
-    for line in (m.group(1) if m else "").splitlines():
-        km = re.match(r"([A-Za-z_-]+):\s*(.*)", line)
-        if km:
-            key, val = km.group(1), km.group(2).strip()
-            fields[key] = "" if val in (">", "|", ">-", "|-") else val.strip("\"'")
-        elif key and line.startswith((" ", "\t")):
-            fields[key] = (fields[key] + " " + line.strip()).strip()
-    return fields.get("name", os.path.basename(os.path.dirname(skill_md))), fields.get("description", "")
-
-
-def hook_context(ws):
-    """What skill-hub's hook injects for a pre-selected skill: the same header and one line per
-    skill (name: first 300 characters of the description)."""
-    lines = []
-    root = os.path.join(ws, ".claude", "skills")
-    for d in sorted(os.listdir(root)) if os.path.isdir(root) else []:
-        if os.path.exists(os.path.join(root, d, "SKILL.md")):
-            name, desc = frontmatter(os.path.join(root, d, "SKILL.md"))
-            lines.append(f"- {name}: {desc[:300]}")
-    return HOOK_HEAD + "\n" + "\n".join(lines) if lines else ""
-
-
 def install(task_dir, arm, ws):
     """Skills for the skills arm (task skills/ and pinned third-party refs), then setup.py."""
     if arm in ("skills", "hook"):
@@ -92,6 +61,17 @@ def install(task_dir, arm, ws):
                 if not src.startswith(root + os.sep):
                     raise ValueError("skill path escapes the sources")
                 shutil.copytree(src, os.path.join(dest, os.path.basename(src)), dirs_exist_ok=True)
+    if arm == "hook":
+        # the real skill-hub hook (built by the workflow), indexed over this workspace's skills and
+        # registered as a project UserPromptSubmit hook, exactly as a user installs it
+        hub = os.environ["SKILL_HUB_BIN"]
+        reg = os.path.join(ws, ".claude", "skill-hub-registry.json")
+        subprocess.run([hub, "index", "--root", f"task={os.path.join(ws, '.claude', 'skills')}", "--out", reg],
+                       check=True, capture_output=True, timeout=60)
+        log = os.path.join(ws, ".claude", "skill-hub-hook.log")
+        cmd = f"env SKILL_HUB_HOOK_LOG={log} {hub} hook --registry {reg}"
+        json.dump({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}]}},
+                  open(os.path.join(ws, ".claude", "settings.json"), "w"))
     if os.path.exists(os.path.join(task_dir, "setup.py")):
         r = subprocess.run([sys.executable, os.path.join(task_dir, "setup.py")], cwd=ws, timeout=120,
                            capture_output=True, text=True,
@@ -113,8 +93,6 @@ def run_one(task_dir, arm, max_turns, timeout_s):
                 "turns": None, "duration_s": 0, "input_tokens": None, "output_tokens": None,
                 "cache_read": None, "cache_write": None}
     prompt = open(os.path.join(task_dir, "prompt.md"), encoding="utf-8").read()
-    if arm == "hook":  # the skill-hub hook's additionalContext, ahead of the user's request
-        prompt = hook_context(ws) + "\n\n" + prompt
     env = model_env(home)
     t0 = time.time()
     try:
@@ -153,8 +131,13 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         passed, note = chk.returncode == 0, (chk.stdout + chk.stderr).strip()[-300:]
     except subprocess.TimeoutExpired:
         passed, note = False, "checker timed out"
+    hook_log = os.path.join(ws, ".claude", "skill-hub-hook.log")
+    hook = None
+    if arm == "hook":
+        lines = open(hook_log).read().splitlines() if os.path.exists(hook_log) else []
+        hook = [{"via": e.get("via"), "picked": e.get("picked")} for e in map(json.loads, lines)] or "did not run"
     u = res.get("usage") or {}
-    return {"pass": passed, "check": redact(note),
+    return {"pass": passed, "check": redact(note), "hook": hook,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "skill_calls": skill_calls, "tools": tools,
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
