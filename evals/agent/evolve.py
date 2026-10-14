@@ -6,7 +6,8 @@
 
 A task holds skill/ (a skill with a seeded defect), failure.md (one observed failure: the request,
 the wrong artifact and the reviewer's verdict; never the checker or expected answers) and usage/:
-fail-case (the observed failure), old-ok (passed with the original skill) and heldout (never shown).
+fail-case (the observed failure), old-* (passed with the original skill; their requests are shown)
+and heldout* (never shown).
 
 1. Evolve: Claude Code gets the skill as ./skill/, failure.md and the list of requests that already
    worked, and must write an improved copy into ./candidate/. Arms as in create.py: none,
@@ -36,9 +37,10 @@ REQUEST = """The skill in ./skill/ failed in use. The observation is below.
 These requests already worked with the skill and must keep working:
 {old}
 
-Improve the skill so this failure does not happen again. Write the complete improved skill into
-./candidate/ (copy the skill and edit the copy; leave ./skill/ unchanged). Change only what the
-evidence supports."""
+Improve the skill so this failure does not happen again. Write the complete improved skill
+directly into ./candidate/ (./candidate/SKILL.md plus any files it needs; ./candidate/ is only a
+staging folder, keep the skill's name) and leave ./skill/ unchanged. Change only what the evidence
+supports."""
 
 
 def replay(task_root, skill_dir, use_arm, max_turns, timeout):
@@ -112,10 +114,10 @@ def main():
                         emit({"task": name, "arm": arm, "rep": rep, "phase": "candidate", "case": case,
                               "use_arm": use_arm, **r})
                     summary.append((name, arm, use_arm, cand, base))
-    print("\n| task | evolver | use | candidate made | fixed | regressed | held-out passes | base: fail-case / old / held-out |")
+    print("\n| task | evolver | use | candidate made | fixed | regressed | held-out passes | base (cases in name order) |")
     print("|---|---|---|---|---|---|---|---|")
     for name, arm, use_arm, cand, base in summary:
-        b = "/".join("P" if base[c]["pass"] else "F" for c in ("fail-case", "old-ok", "heldout") if c in base)
+        b = "/".join("P" if base[c]["pass"] else "F" for c in sorted(base))
         if cand is None:
             print(f"| {name} | {arm} | {use_arm} | no | - | - | - | {b} |")
             continue
