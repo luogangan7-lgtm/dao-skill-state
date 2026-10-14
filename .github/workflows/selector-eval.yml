@@ -104,8 +104,6 @@ jobs:
           name: selector-cands
       - name: Evaluate
         env:
-          # the Jev key reaches the jev job only; it is sent to api.typesafe.ai and nowhere else
-          JEV_API: ${{ matrix.model == 'jev' && secrets.JEV_API || '' }}
           SELECTOR_TAG: ${{ runner.os == 'macOS' && '@mps' || '' }}
         run: |
           python crates/skill-hub/tools/selector_eval/eval.py run cands.json "${{ matrix.model }}" results \

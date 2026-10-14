@@ -209,7 +209,7 @@ def score_split(fn, split):
         t = time.time()
         try:
             s = fn(c["prompt"], hs) if hs else []
-        except Exception as e:  # the case id only: a traceback could carry the private prompt
+        except Exception as e:  # the case id only: keeps the logs short and free of prompts
             raise SystemExit(f"selector failed on case {c['id']}: {type(e).__name__}: "
                              f"{e if isinstance(e, RuntimeError) else ''}") from None
         ms = (time.time() - t) * 1000
@@ -307,7 +307,7 @@ def run(bundle_path, model, out, src="bgem3", k="10"):
     k = int(k)
     name = run_name(model, src, k) + os.environ.get("SELECTOR_TAG", "")  # e.g. "@mps": same config, other machine
     t = time.time()
-    fn = None if model == "lexical" else load(model)  # before the private data is in this process
+    fn = None if model == "lexical" else load(model)  # before the data is in this process
     load_s = time.time() - t
     bundle = json.load(open(bundle_path))
     if model not in ("jev", "lexical"):  # nothing to warm up
@@ -383,7 +383,7 @@ def cands(bundle_path, skill_hub, out):
         for split in ("dev", "held"):
             by_src = {k: {} for k in dense_models}
             for c in bundle[split]["cases"]:
-                # errors name the case id only: argv holds the private prompt, and a traceback
+                # errors name the case id only: argv holds the prompt, and a traceback
                 # would put it into a public Actions log
                 try:
                     p = subprocess.run([skill_hub, "search", "--registry", reg_path, "--top-k", "50",
