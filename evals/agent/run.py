@@ -139,7 +139,7 @@ def run_one(task_dir, arm, max_turns, timeout_s):
         lines = open(hook_log).read().splitlines() if os.path.exists(hook_log) else []
         hook = [{"via": e.get("via"), "picked": e.get("picked")} for e in map(json.loads, lines)] or "did not run"
     u = res.get("usage") or {}
-    return {"pass": passed, "check": redact(note), "hook": hook,
+    return {"pass": passed, "check": redact(note), "hook": hook, "ws": ws,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "skill_calls": skill_calls, "tools": tools,
             "duration_s": round(wall, 1), "input_tokens": u.get("input_tokens"),
