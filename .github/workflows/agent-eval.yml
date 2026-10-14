@@ -132,4 +132,6 @@ jobs:
         if: always()
         with:
           name: agent-eval
-          path: results/*.jsonl
+          path: |
+            results/*.jsonl
+            results/candidates/
