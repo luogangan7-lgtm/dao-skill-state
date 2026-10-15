@@ -184,7 +184,7 @@ skills are kept in each run's artifact (`created/`); the form was read from them
 | 1 | skill-creator | 2/3 | 2/3 | same |
 | 1 | dao | 2/3 | 3/3 | declared and as the rule says 6/6 |
 | 2-4 (38729806153, 38731985167, 38731994978, 38738110671, 38738121250) | dao, after each authoring fix | 13/15 | 9/10 | as the rule says except 3 status-task skills that chose stateful anyway (they still checked the warehouse; 2 passed, 1 refused the runbook) |
-| 5 (38770795491) | dao, after the open-input rule | 5/5 | 5/5 | as the rule says 10/10 (5 fixed + check; 5 stateful with a pending marker, 4 of them stopped safely at the unknown batch) |
+| 5 (38770795491) | dao, after the open-input rule | 5/5 (2 with work left to resume) | 5/5 | as the rule says 10/10 (5 fixed + check; 5 stateful with a pending/in-flight marker, 4 of them stopped safely at the unknown batch) |
 
 - No dao-made skill loaded a batch twice (0/41 runs). Without a meta-skill one run did (round 1,
   no-status task: a progress file without a pending marker).
@@ -196,9 +196,11 @@ skills are kept in each run's artifact (`created/`); the form was read from them
   authoring.md (take inputs as the request describes them; test a created skill on input written that
   way) lowered but did not remove this. Round 5 added one more: when the request leaves an input's
   format open, the skill has the agent read it directly and writes a parser only for a fixed format;
-  a helper that finds nothing is not proof of absence. Round 5 had no refusal (10/10), but in 3 of
-  its 5 status-task runs session 1 had already finished all 8 batches, so those runs tested the
-  resume less hard; n=5 per cell does not rule the defect out.
+  a helper that finds nothing is not proof of absence. No refusal was observed in round 5 (10/10).
+  The open input here is how a runbook names its check command (the step format is fixed by the
+  request, so parsing steps is allowed); only the status task exercises it. In 3 of the 5 status-task
+  runs session 1 had already finished all 8 batches, leaving nothing to resume. With n=5 and no
+  control arm this is not evidence that the rule caused the change, and it does not rule the defect out.
 - "One step per session" (a skill that stops after each step) appeared in skills made without a
   meta-skill and by dao; the form standard now says state does not limit a run to one step.
 - Rounds ran on successive commits of the branch; n=3-5 per cell, one model, one task family.
