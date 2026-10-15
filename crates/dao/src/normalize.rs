@@ -255,8 +255,9 @@ fn skill_form(body: &str) -> (String, Vec<String>, Vec<String>) {
     }
     static F: OnceLock<Form> = OnceLock::new();
     let f = F.get_or_init(|| Form {
-        // named records only: "learning progress" or "save memory" in one sentence is not state
-        persist: Regex::new(r"(?i)\b(progress|checkpoint|state)\s+(file|ledger|log)\b|\bledger\s+file\b|\b(progress|state|checkpoint)\.jsonl?\b|\b(write|save|persist|store)\w*\b[^.\n]{0,30}\b(to|on)\s+disk\b|\bresume\s+protocol\b").unwrap(),
+        // named records only: "learning progress", "save memory" or "write snippets to disk"
+        // (figma-use) is not a run's state
+        persist: Regex::new(r"(?i)\b(progress|checkpoint|state)\s+(file|ledger|log)\b|\bledger\s+file\b|\b(progress|state|checkpoint)\.jsonl?\b|\bresume\s+protocol\b").unwrap(),
         location: Regex::new(r"(?i)[\w~./-]+\.(json|jsonl|ya?ml|md|txt|db|sqlite)\b|`[^`\s]+/[^`\s]*`").unwrap(),
         resume: Regex::new(r"(?i)\b(resum\w*|continu\w*|pick(s|ing)?\s+up|restart\w*|next\s+session|interrupt\w*)\b").unwrap(),
         reconcile: Regex::new(r"(?i)\b(pending|in[- ]progress|idempot\w*|reconcil\w*|may\s+or\s+may\s+not|(check|verify)\s+the\s+(real|actual|external))\b").unwrap(),
@@ -551,6 +552,8 @@ mod tests {
         // the path on the line after the evidence counts as its location
         let figma = "**State persistence**: write the state ledger to disk:\n`/tmp/dsb-state.json`\nResume protocol: read it at session start.\n";
         assert!(!skill_form(figma).2.contains(&"location".to_string()));
+        let snippets = "call them out and write to disk so you can reuse in the future.\n";
+        assert_eq!(skill_form(snippets).0, "fixed");
     }
 
     #[test]
