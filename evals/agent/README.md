@@ -157,6 +157,14 @@ may have run, check the system".
   `fixed` / `fixed-check` runs that finished 6-8, three read the stand-in store's log files
   directly (probing a system the runbook never named) and one skipped step 5 unverified and
   flagged it afterwards (per-run rows in each run's `resume.jsonl`).
+- Routing (run 38703260705, arms `hook:<form>`): the prompts do not name the skill and five
+  third-party skills (executing-plans, subagent-driven-development, …) are installed beside it.
+  The skill-hub hook picked `backfill-runbook` in 12/12 sessions (lexical path; both prompts
+  say "backfill", so this is the easy case) and every session 2 loaded it. `stateful-pending` 3/3;
+  `fixed-check` 2/3: in the miss, session 1 had gone on to finish 1-8, and session 2 checked
+  steps 1-5 only (`status.py 1`…`5` in that row's `s2.bash` in `resume.jsonl`) and loaded 6-8
+  again. One run (n=1), but it shows the gap: without a record of where the last session stopped,
+  a fixed runbook checks only what it assumes is unfinished.
 - Cost is similar (fresh tokens per run 35–60k); `stateful-pending` spends more turns in session 1
   on bookkeeping and fewer in session 2.
 - Consequence for skills: choose `stateful` only with the full contract (pending action + settle

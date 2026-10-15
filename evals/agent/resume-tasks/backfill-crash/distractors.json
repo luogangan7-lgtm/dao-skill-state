@@ -1,0 +1,7 @@
+[
+ {"repo": "obra/superpowers", "path": "skills/executing-plans"},
+ {"repo": "obra/superpowers", "path": "skills/subagent-driven-development"},
+ {"repo": "obra/superpowers", "path": "skills/systematic-debugging"},
+ {"repo": "obra/superpowers", "path": "skills/verification-before-completion"},
+ {"repo": "anthropics/skills", "path": "skills/xlsx"}
+]
