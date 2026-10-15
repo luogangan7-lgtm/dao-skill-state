@@ -260,7 +260,9 @@ fn skill_form(body: &str) -> (String, Vec<String>, Vec<String>) {
         // a named record kept to resume from; "learning progress", "save memory" or "write
         // snippets to disk" (figma-use) is not a run's state
         record: Regex::new(r"(?i)\b(progress|checkpoint|state|handoff)\s+(files?|ledgers?|logs?)\b|\bledger\s+files?\b|\b(progress|state|checkpoint|handoff)\.(jsonl?|md)\b|\bresume\s+protocol\b").unwrap(),
-        negated: Regex::new(r"(?i)\b(do\s+not|don't|never|without|no)\b[^.]{0,40}\b(progress|checkpoint|state|handoff|ledger)\b").unwrap(),
+        // the negation must govern the record itself ("do not write a progress file"), not
+        // another clause of the line ("never rerun a step; update progress.json")
+        negated: Regex::new(r"(?i)\b(do\s+not|don't|never|without|no)\s+(\w+\s+){0,2}(an?\s+|any\s+)?(progress|checkpoint|state|handoff|ledger)\b").unwrap(),
         location: Regex::new(r"(?i)[\w~./-]+\.(json|jsonl|ya?ml|md|txt|db|sqlite)\b|`[^`\s]+/[^`\s]*`").unwrap(),
         resume: Regex::new(r"(?i)\b(resum\w*|when\s+continuing|pick(s|ing)?\s+up\s+where|next\s+session|after\s+(an?\s+)?interrupt\w*|restart\w*\s+from)\b").unwrap(),
         reconcile: Regex::new(r"(?i)\b(pending\s+(step|action|record|marker|load|write)s?|idempot\w*|reconcil\w*|may\s+or\s+may\s+not|(check|verify)\s+the\s+(real|actual|external)|unknown\s+outcome)\b").unwrap(),
@@ -582,6 +584,10 @@ mod tests {
             "fixed"
         );
         assert_eq!(skill_form("Keep progress files per batch.\n").0, "stateful");
+        assert_eq!(
+            skill_form("Never rerun a step; update progress.json after each step.\n").0,
+            "stateful"
+        );
         assert_eq!(
             skill_form("Write handoff.md before you stop.\n").0,
             "stateful"
