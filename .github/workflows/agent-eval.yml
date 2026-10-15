@@ -1,8 +1,8 @@
 name: agent-eval
 # Evaluations B/C/D (charter 2026-10-14): Claude Code headless on frozen public tasks, with and
 # without skills, checked by each task's deterministic checker. The model runs on one of the owner's
-# subscriptions through its Anthropic-compatible endpoint: Kimi For Coding (secret KIMI_API) or
-# MiniMax (secret MINIMAX_API, China endpoint). Model jobs run on manual dispatch only, so pull
+# subscriptions through its Anthropic-compatible endpoint: Kimi For Coding (secret KIMI_API),
+# MiniMax (secret MINIMAX_API, China endpoint) or DeepSeek (secret DEEPSEEK_API). Model jobs run on manual dispatch only, so pull
 # requests never spend a subscription window.
 on:
   workflow_dispatch:
@@ -15,10 +15,10 @@ on:
       reps:
         default: "1"
       provider:
-        description: "kimi (KIMI_API, Kimi For Coding) or minimax (MINIMAX_API, MiniMax coding plan)"
+        description: "kimi (KIMI_API, Kimi For Coding), minimax (MINIMAX_API, MiniMax coding plan) or deepseek (DEEPSEEK_API)"
         default: kimi
       model:
-        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3)"
+        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash)"
         default: ""
       suite:
         description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks); resume = fixed steps vs stateful skill on an interrupted task (resume-tasks)"
@@ -97,13 +97,14 @@ jobs:
       - name: Run tasks
         env:
           # Anthropic-compatible endpoints of the owner's subscriptions; only the chosen one's key is set
-          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
           # each key is set only for its own provider (an `a && b || c` fallback could send one
           # provider's key to the other's endpoint if a secret were missing)
           KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
           KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
-          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || 'k3') }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || 'k3') }}
+          KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
           # inputs reach the shell as data, never as interpolated script
@@ -113,9 +114,9 @@ jobs:
           IN_SUITE: ${{ inputs.suite }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "$IN_PROVIDER" in kimi|minimax) ;; *) echo "unknown provider"; exit 1 ;; esac
-          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}"
-          unset KEY_KIMI KEY_MINIMAX
+          case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
+          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
             pip install --quiet ./evals/agent/warehouse  # the stand-in external system (backfill-external, backfill-crash*)
