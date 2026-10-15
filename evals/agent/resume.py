@@ -9,6 +9,11 @@ check.py (the final state after both sessions). Session 1 runs until a step fail
 (upstream.status says down); the harness then ends the outage and session 2, a fresh agent with
 no memory of session 1, continues in the same workspace. Arm none has no skill.
 
+Arm `hook:<form>` tests routing instead of naming the skill: the prompts do not mention it, the
+task's distractors.json skills (pinned third-party refs, run.py's skills.json format) are installed
+beside it, and the real skill-hub hook is registered (run.py arm hook). The row records what the
+hook picked in each session and whether session 2 loaded the runbook.
+
 Records per run: pass, steps rerun (a step that ran twice), whether session 1 tampered with the
 outage, and turns / tokens / seconds of each session. Writes OUT_DIR/resume.jsonl and prints a
 summary. CI only (.github/workflows/agent-eval.yml). Depends on: run.py (same directory).
@@ -27,12 +32,21 @@ import run  # noqa: E402
 ALWAYS = "import sys\nsys.exit(0)\n"  # session 1 is judged only by the final check
 
 
+def form_of(arm):
+    """(form, routed by the hook?) for an arm name: none, <form> or hook:<form>."""
+    return (arm[5:], True) if arm.startswith("hook:") else (arm, False)
+
+
 def session(troot, arm, files, prompt, check):
     """A throwaway run.py task dir: workspace files, the arm's skill, one prompt, one checker."""
     t = tempfile.mkdtemp(prefix="resume-")
     shutil.copytree(files, os.path.join(t, "files"), ignore=shutil.ignore_patterns(".claude"))
+    form, hook = form_of(arm)
     if arm != "none":
-        shutil.copytree(os.path.join(troot, "forms", arm), os.path.join(t, "skills"))
+        shutil.copytree(os.path.join(troot, "forms", form), os.path.join(t, "skills"))
+    if hook:  # found by the hook among distractors, never named
+        shutil.copy(os.path.join(troot, "distractors.json"), os.path.join(t, "skills.json"))
+    elif arm != "none":
         prompt = "Use the backfill-runbook skill.\n\n" + prompt
     open(os.path.join(t, "prompt.md"), "w").write(prompt)
     open(os.path.join(t, "check.py"), "w").write(check)
@@ -72,14 +86,14 @@ def main():
     a = ap.parse_args()
     if a.arms == "none,skills":  # the workflow's generic default
         a.arms = "none,fixed,stateful"
-    bad = {x for x in a.arms.split(",") if x != "none" and not x.replace("-", "").isalnum()}
+    bad = {x for x in a.arms.split(",") if x != "none" and not form_of(x)[0].replace("-", "").isalnum()}
     if bad:
         sys.exit(f"bad arm names: {sorted(bad)} (none or a forms/<name> of the task)")
     root = os.path.abspath(a.tasks_dir)
     names = [t for t in a.tasks.split(",") if t] or sorted(
         d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "check.py")))
     unknown = {x for x in a.arms.split(",") if x != "none"
-               and not any(os.path.isdir(os.path.join(root, n, "forms", x)) for n in names)}
+               and not any(os.path.isdir(os.path.join(root, n, "forms", form_of(x)[0])) for n in names)}
     if unknown:  # a typo would otherwise produce no rows and no error
         sys.exit(f"arms in no selected task: {sorted(unknown)}")
     os.makedirs(a.out_dir, exist_ok=True)
@@ -88,9 +102,12 @@ def main():
     for name in names:
         troot = os.path.join(root, name)
         for arm in a.arms.split(","):
-            use = "none" if arm == "none" else "skills"
-            if arm != "none" and not os.path.isdir(os.path.join(troot, "forms", arm)):
+            form, hook = form_of(arm)
+            use = "none" if arm == "none" else "hook" if hook else "skills"
+            if arm != "none" and not os.path.isdir(os.path.join(troot, "forms", form)):
                 continue  # this task has no such form
+            if hook and not os.path.exists(os.path.join(troot, "distractors.json")):
+                continue  # routing needs something to route between
             for rep in range(a.reps):
                 t1 = session(troot, arm, os.path.join(troot, "files"), open(os.path.join(troot, "first.md")).read(),
                              ALWAYS)
@@ -117,15 +134,17 @@ def main():
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
                        "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error")},
                        "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
-                       "s1_tokens": tokens(r1), "s2_tokens": tokens(r2)}
+                       "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
+                       "hook": [r1.get("hook"), r2.get("hook")],
+                       "s2_loaded_runbook": "backfill-runbook" in json.dumps(r2.get("skill_calls"))}
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
                 log.flush()
                 print(json.dumps({k: row[k] for k in ("task", "arm", "rep", "pass", "after_session1", "ran",
-                                                      "tampered", "s2_tokens")}), flush=True)
+                                                      "tampered", "s2_tokens", "hook", "s2_loaded_runbook")}), flush=True)
     print("\n| task | arm | pass | pass after a clean stop | runs with a rerun | runs that missed a step "
-          "| session 1 tampered | mean turns s1 / s2 | mean fresh tokens s1 / s2 |")
-    print("|---|---|---|---|---|---|---|---|---|")
+          "| session 1 tampered | session 2 loaded the runbook | mean turns s1 / s2 | mean fresh tokens s1 / s2 |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     for name in names:
         for arm in a.arms.split(","):
             rs = [r for r in rows if r["task"] == name and r["arm"] == arm]
@@ -135,7 +154,7 @@ def main():
             turns = lambda s: [r[s]["turns"] for r in rs if r[s]["turns"] is not None]  # errored runs left out
             clean = [r for r in rs if r["clean_stop"]]
             print(f"| {name} | {arm} | {sum(r['pass'] for r in rs)}/{len(rs)} | {sum(r['pass'] for r in clean)}/{len(clean)} "
-                  f"| {sum(r['reruns'] > 0 for r in rs)} | {sum(bool(r['missed']) for r in rs)} | {sum(r['tampered'] for r in rs)} "
+                  f"| {sum(r['reruns'] > 0 for r in rs)} | {sum(bool(r['missed']) for r in rs)} | {sum(r['tampered'] for r in rs)} | {sum(r['s2_loaded_runbook'] for r in rs)} "
                   f"| {mean(turns('s1')):.1f} / {mean(turns('s2')):.1f} "
                   f"| {mean([r['s1_tokens'] for r in rs]):.0f} / {mean([r['s2_tokens'] for r in rs]):.0f} |")
 
