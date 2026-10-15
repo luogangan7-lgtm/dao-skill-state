@@ -99,6 +99,12 @@ def steps_ran(ws):
     return [int(x) for x in open(p).read().split()] if os.path.exists(p) else []
 
 
+def probed(*runs):
+    """Commands that read the stand-in warehouse's store directly instead of through the runbook's
+    status command: what a real agent would do by poking at a production system."""
+    return sum(1 for r in runs for c in (r.get("bash") or []) if "import warehouse" in c or "/warehouse" in c)
+
+
 def tokens(r):
     """Fresh tokens: input + output + cache writes (cache reads are cheap and would swamp the sum)."""
     return sum(r.get(k) or 0 for k in ("input_tokens", "cache_write", "output_tokens"))
@@ -183,7 +189,8 @@ def main():
                        "clean_stop": after1 == expect_s1(troot), "progress_file_after_s1": progress1,
                        "progress_after_s1": progress_text,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
-                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error")},
+                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
+                       "probes": probed(r1, r2),
                        "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
                        "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
                        "hook": [r1.get("hook"), r2.get("hook")],
@@ -197,8 +204,8 @@ def main():
                 print(json.dumps({k: row[k] for k in ("task", "arm", "rep", "pass", "after_session1", "ran",
                                                       "tampered", "s2_tokens", "hook", "s2_loaded_runbook")}), flush=True)
     print("\n| task | arm | pass | pass after a clean stop | runs with a rerun | runs that missed a step "
-          "| session 1 tampered | session 2 loaded the runbook | mean turns s1 / s2 | mean fresh tokens s1 / s2 |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
+          "| session 1 tampered | session 2 loaded the runbook | runs that probed the store | mean turns s1 / s2 | mean fresh tokens s1 / s2 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for name in names:
         for arm in a.arms.split(","):
             rs = [r for r in rows if r["task"] == name and r["arm"] == arm]
@@ -209,7 +216,7 @@ def main():
             turns = lambda s: [r[s]["turns"] for r in ran if r[s]["turns"] is not None]  # errored runs left out
             clean = [r for r in ran if r["clean_stop"]]
             print(f"| {name} | {arm} | {sum(r['pass'] for r in rs)}/{len(rs)} | {sum(r['pass'] for r in clean)}/{len(clean)} "
-                  f"| {sum(r['reruns'] > 0 for r in ran)} | {sum(bool(r['missed']) for r in ran)} | {sum(r['tampered'] for r in ran)} | {sum(r['s2_loaded_runbook'] for r in ran)} "
+                  f"| {sum(r['reruns'] > 0 for r in ran)} | {sum(bool(r['missed']) for r in ran)} | {sum(r['tampered'] for r in ran)} | {sum(r['s2_loaded_runbook'] for r in ran)} | {sum(r['probes'] > 0 for r in ran)} "
                   f"| {mean(turns('s1')):.1f} / {mean(turns('s2')):.1f} "
                   f"| {mean([r['s1_tokens'] for r in ran]):.0f} / {mean([r['s2_tokens'] for r in ran]):.0f} |")
 
