@@ -9,11 +9,13 @@
 
 ## Choose the form
 
-A skill is either **fixed steps** (the default: one decision workflow that finishes within a session) or **stateful** (long, resumable work where a restart would lose decisions, work position, approvals or receipts). For a stateful skill follow the [state contract](state-contract.md): name the single state owner, the fields, and how a run resumes. Say which form you chose and why; do not add state to a short task.
+A skill is either **fixed steps** (the default: one decision workflow that finishes within a session) or **stateful** (long, resumable work where a restart would lose decisions, work position, approvals or receipts). Pick it with the two questions in the [state contract's form standard](state-contract.md#form-standard-created-and-third-party-skills-alike) (can a run be cut off? can the next session learn from the system what took effect?); a stateful skill needs all three parts listed there. Say which form you chose and why; do not add state to a short task.
 
 ## Write the contract
 
 Specify trigger and non-trigger, required input, decision workflow, output, stopping conditions, tool requirements and the pass/fail check. Explain only what a capable agent would not reliably infer.
+
+Take inputs as the request describes them. Do not demand structure it did not specify (a heading, section, field or file layout); when the request says the input names something ("each runbook names the command"), tell the skill to find it in the input as written, and stop only when it is truly absent. An invented format makes the skill refuse real inputs; the same holds for a helper script's parser.
 
 Use a concise `SKILL.md` with `name` and `description` in YAML. Prefer portable lowercase ASCII letters, digits and single hyphens, at most 64 characters, matching the directory. Human-facing names can be localized in `agents/openai.yaml`. Descriptions are non-empty and at most 1024 characters; specificity matters, not an arbitrary minimum length.
 
@@ -26,7 +28,7 @@ For tool-coupled behavior name the available tool and actual required options. F
 ## Verify two levels
 
 1. **Generator:** test this skill's routing, boundary decisions and file production using realistic user requests.
-2. **Generated skill:** validate its format and use it on representative input; inspect correctness and forbidden side effects, not heading names. Include a boundary case and a prior failure if available. For evidence-dependent outputs, require a claim gate in the generated workflow: inspect **each exact user-facing claim**, including headlines and benefit copy, and map it to a source ID plus the supplied support text. Mark supported/inferred/unverified. Only supported claims enter an evidence-only deliverable; omit or explicitly separate inferred benefits. Check the actual claim table against the actual output before reporting PASS—an agent's self-reported PASS is not evidence.
+2. **Generated skill:** validate its format and use it on representative input (written the way the request describes it, never shaped to fit the skill's own parser or examples); inspect correctness and forbidden side effects, not heading names. Include a boundary case and a prior failure if available. For evidence-dependent outputs, require a claim gate in the generated workflow: inspect **each exact user-facing claim**, including headlines and benefit copy, and map it to a source ID plus the supplied support text. Mark supported/inferred/unverified. Only supported claims enter an evidence-only deliverable; omit or explicitly separate inferred benefits. Check the actual claim table against the actual output before reporting PASS—an agent's self-reported PASS is not evidence.
 
 Before a trial, choose a run directory **outside** the generated skill folder (a sibling is sufficient). At handoff enumerate the package files separately from trial inputs/outputs/logs and verify none of those run records entered the distributable payload. Explicitly requested synthetic examples may live in the package; private or actual run artifacts may not.
 
