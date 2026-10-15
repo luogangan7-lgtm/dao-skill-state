@@ -4,9 +4,21 @@ Read this only for resumable, multi-step work. Short tasks remain stateless. Thi
 
 ## Form standard (created and third-party skills alike)
 
-A skill is **stateful** when it keeps progress somewhere to resume from; otherwise it is **fixed steps**. Choose stateful only when one of these holds: a run spans sessions or can be cut off; steps have effects that are not idempotent and live outside the workspace; approvals or receipts must survive a restart. A stateful skill must state three things: **where** state lives (outside the skill directory), **how a run resumes** (read the state first), and **how an action with an unknown outcome is reconciled** (mark it pending before running it; on resume check the real system before running it again). `dao normalize` records each skill's form, the lines that make it stateful, and which of the three it leaves out (`form`, `state_evidence`, `state_gaps` on the routing card). It is a lexical review hint: a gap is a review note, not a rejection, and an empty gap list is not a pass.
+A skill is **stateful** when it keeps progress somewhere to resume from; otherwise it is **fixed steps**. Decide with two questions, for created and evolved skills alike:
 
-Measured (evals/agent/resume-tasks, PR #58; one task, MiniMax only, n=5 per arm, E3): with progress visible in the workspace, fixed and stateful skills resumed equally well (5/5 each); with progress only in an external system, both resumed (5/5), but the fixed skill only by probing that system. A crash after a committed step (state out of date) is being measured separately.
+1. **Can a run be cut off and continued by a fresh session** (it spans sessions or days, waits for approvals, or can crash mid-step)? No → fixed steps.
+2. **Can that session learn from the authoritative system, cheaply and without probing it, which steps took effect** (every step is idempotent, or the system answers "did step N take effect" for every step)? Yes → fixed steps plus a resume rule: before running any step, check it in the system, all of them, not only the one that failed. No → stateful.
+
+A stateful skill must state three things: **where** state lives (outside the skill directory, or a reference to the user's task system when it owns progress), **how a run resumes** (read the state first), and **how an action with an unknown outcome is reconciled** (mark it pending before running it; on resume check the real system before running it again; if there is no way to check, do not rerun it: stop and report). Never ship part of it: a progress file without the pending rule is worse than no state.
+
+When evolving an existing skill:
+- fixed → stateful: an observed resume failure (a non-idempotent action repeated, an approval or position lost) and question 2 answers no. If the system can answer, add the check rule instead.
+- stateful → fixed: question 1 or 2 now answers yes for every step, or the state duplicates a task system that already owns progress (reference it instead).
+- a stateful skill with a gap: add the missing part; do not delete state unless the questions say fixed.
+
+`dao normalize` records each skill's form, the lines that make it stateful, and which of the three parts it leaves out (`form`, `state_evidence`, `state_gaps` on the routing card). It is a lexical review hint: a gap is a review note, not a rejection, and an empty gap list is not a pass.
+
+Measured (evals/agent/README.md section E; one 8-step task with non-idempotent loads, MiniMax only, n=3–5 per arm, E3): progress visible in the workspace or queryable → fixed and stateful resumed equally (5/5); a crash after a committed step → a done-only progress file reloaded the step in 8/8 runs, the full contract and fixed-plus-check passed 5/5; no status query → the full contract stopped safely 3/3, fixed forms finished only by reading the store's files or by skipping the unknown step; one fixed-plus-check run reran steps an earlier session had finished, because it checked only the step it assumed unfinished.
 
 ## Decide whether it helps
 
