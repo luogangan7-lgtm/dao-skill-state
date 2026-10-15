@@ -577,14 +577,23 @@ mod tests {
         let snippets = "call them out and write to disk so you can reuse in the future.\n";
         assert_eq!(skill_form(snippets).0, "fixed");
         assert_eq!(skill_form("Do not write a progress file.\n").0, "fixed");
-        assert_eq!(skill_form("```\nsave(state_file)  # progress file\n```\n").0, "fixed");
+        assert_eq!(
+            skill_form("```\nsave(state_file)  # progress file\n```\n").0,
+            "fixed"
+        );
         assert_eq!(skill_form("Keep progress files per batch.\n").0, "stateful");
-        assert_eq!(skill_form("Write handoff.md before you stop.\n").0, "stateful");
+        assert_eq!(
+            skill_form("Write handoff.md before you stop.\n").0,
+            "stateful"
+        );
         // "continue to step 3" or a bare "pending" is not a resume or reconcile rule
         let loose = "Keep a progress file in `run/progress.json`.\nContinue to step 3. Two items are pending.\n";
         assert_eq!(skill_form(loose).2, ["resume", "reconcile"]);
         // the skill's own README is not where state lives
-        assert_eq!(skill_form("Keep a progress file; see README.md.\n").2[0], "location");
+        assert_eq!(
+            skill_form("Keep a progress file; see README.md.\n").2[0],
+            "location"
+        );
     }
 
     #[test]
