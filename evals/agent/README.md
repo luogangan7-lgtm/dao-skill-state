@@ -9,7 +9,7 @@ with programmatic checkers. Nothing runs on a developer machine.
 | `run` (C) | `run.py` | Does loading a skill change task success? Arms: `none`, `skills` (installed), `hook` (installed + skill-hub hook) |
 | `create` (B) | `create.py` | Does a meta-skill make better skills? Creator arms `none`, `skill-creator` (anthropics/skills, pinned), `dao` (this repo's `dao-skill-state`); the created skill is then used on tasks whose prompts never restate the rules |
 | `evolve` (D) | `evolve.py` | Can a meta-skill fix a skill from one observed failure without breaking it? The harness replays the fail case, a case that already worked and a held-out case with the original skill and with the candidate |
-| `resume` (E) | `resume.py` | Fixed steps or a stateful skill? Session 1 is interrupted mid-task; a fresh session 2 must finish without repeating a non-idempotent step |
+| `resume` (E, F) | `resume.py` | Fixed steps or a stateful skill? Session 1 is interrupted mid-task; a fresh session 2 must finish without repeating a non-idempotent step. Arm `make:<creator>` lets a meta-skill write the skill first |
 
 Run: Actions → `agent-eval` → Run workflow (`suite`, `tasks`, `arms`, `reps`, `provider`). The
 workflow needs an Anthropic-compatible key as a repository secret (`KIMI_API` or `MINIMAX_API`
@@ -169,6 +169,34 @@ may have run, check the system".
   on bookkeeping and fewer in session 2.
 - Consequence for skills: choose `stateful` only with the full contract (pending action + settle
   before rerun), see `dao-skill-state/references/state-contract.md`; a partial one is a regression.
+
+### F. Does a meta-skill pick the right form? (`resume`, arm `make:<creator>`, MiniMax)
+
+The creator writes the backfill skill from `request.md`, which describes the situation only;
+the two crash tasks differ in one line ("the warehouse can be asked whether a batch is loaded" /
+"offers no way to ask"), so by the form standard the right form differs: fixed steps checking every
+step, or stateful with a pending marker. Both sessions then run with the created skill. Created
+skills are kept in each run's artifact (`created/`); the form was read from them.
+
+| Round (runs) | creator | status task pass | no-status task pass | form chosen |
+|---|---|---|---|---|
+| 1 (38720176111, 38720180129) | none | 3/3 | 3/3 | mostly a progress file in both tasks; never declared |
+| 1 | skill-creator | 2/3 | 2/3 | same |
+| 1 | dao | 2/3 | 3/3 | declared and as the rule says 6/6 |
+| 2-4 (38729806153, 38731985167, 38731994978, 38738110671, 38738121250) | dao, after each authoring fix | 13/15 | 9/10 | as the rule says except 2 status-task skills that chose stateful anyway (they still checked the warehouse and passed) |
+
+- No dao-made skill loaded a batch twice (0/37 runs). Without a meta-skill one run did (round 1,
+  no-status task: a progress file without a pending marker).
+- Runs that read the stand-in store directly instead of through `status.py` (status task, round 1):
+  none 3/3, skill-creator 3/3, dao 0/3; later dao rounds 0/5, 1/5, 3/5.
+- Every dao failure was a refusal, never a wrong load: the skill demanded an input format the request
+  never gave (a `## Check command` heading, YAML frontmatter, an exit-code convention for the status
+  command) and stopped; once the session-2 agent edited `runbook.md` to fit it. The fixes added to
+  authoring.md (take inputs as the request describes them; test a created skill on input written that
+  way) lowered but did not remove this. Over-specification, not form choice, is dao's open defect.
+- "One step per session" (a skill that stops after each step) appeared in skills made without a
+  meta-skill and by dao; the form standard now says state does not limit a run to one step.
+- Rounds ran on successive commits of the branch; n=3-5 per cell, one model, one task family.
 
 ### Limits
 
