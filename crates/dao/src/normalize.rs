@@ -56,6 +56,18 @@ pub struct Card {
     pub tokens: Vec<String>,
     /// Hyphenated identifiers named in the body (`foo-bar`), sorted: candidate skill names.
     pub mentions: Vec<String>,
+    /// fixed | stateful: whether the skill keeps progress somewhere to resume from (the
+    /// form standard in dao-skill-state/references/state-contract.md).
+    #[serde(default)]
+    pub form: String,
+    /// The body lines (verbatim, trimmed, at most 6) that make it stateful.
+    #[serde(default)]
+    pub state_evidence: Vec<String>,
+    /// For a stateful skill, the parts of the state contract it does not state:
+    /// location (where state lives), resume (read it when continuing), reconcile (an action whose
+    /// outcome is unknown is checked against the real system before it is run again).
+    #[serde(default)]
+    pub state_gaps: Vec<String>,
     pub sources: Vec<SourceRef>,
 }
 
@@ -229,6 +241,48 @@ fn patterns() -> &'static Patterns {
     })
 }
 
+/// The form standard, applied the same way to created and third-party skills: a skill is stateful
+/// when its body keeps progress somewhere to resume from (a progress/checkpoint/ledger/handoff
+/// record, or a state file), otherwise fixed. A stateful skill should say where state lives, how a
+/// run resumes, and how an action with an unknown outcome is reconciled; missing parts are gaps.
+/// Lexical and conservative: it reports what the text states, not what the skill needs.
+fn skill_form(body: &str) -> (String, Vec<String>, Vec<String>) {
+    struct Form {
+        persist: Regex,
+        location: Regex,
+        resume: Regex,
+        reconcile: Regex,
+    }
+    static F: OnceLock<Form> = OnceLock::new();
+    let f = F.get_or_init(|| Form {
+        persist: Regex::new(r"(?i)\b(progress|checkpoint|ledger|handoff)\b.{0,60}\b(file|json|ya?ml|saved?|persist\w*|record(s|ed)?|stored?|writes?|written)\b|\b(save|write|persist|record|store)\w*\b.{0,60}\b(progress|checkpoint)\b|\bstate\s+file\b|\bstate\.json\b").unwrap(),
+        location: Regex::new(r"(?i)[\w~./-]+\.(json|jsonl|ya?ml|md|txt|db|sqlite)\b|`[^`\s]+/[^`\s]*`").unwrap(),
+        resume: Regex::new(r"(?i)\b(resum\w*|continu\w*|pick(s|ing)?\s+up|restart\w*|next\s+session|interrupt\w*)\b").unwrap(),
+        reconcile: Regex::new(r"(?i)\b(pending|in[- ]progress|idempot\w*|reconcil\w*|may\s+or\s+may\s+not|(check|verify)\s+the\s+(real|actual|external))\b").unwrap(),
+    });
+    let evidence: Vec<String> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| f.persist.is_match(l))
+        .take(6)
+        .map(str::to_string)
+        .collect();
+    if evidence.is_empty() {
+        return ("fixed".into(), vec![], vec![]);
+    }
+    let mut gaps = Vec::new();
+    if !evidence.iter().any(|l| f.location.is_match(l)) {
+        gaps.push("location".to_string());
+    }
+    if !f.resume.is_match(body) {
+        gaps.push("resume".to_string());
+    }
+    if !f.reconcile.is_match(body) {
+        gaps.push("reconcile".to_string());
+    }
+    ("stateful".into(), evidence, gaps)
+}
+
 /// Split SKILL.md into (frontmatter lines, body) the way check_skill delimits it.
 fn split(text: &str) -> (Vec<&str>, &str) {
     let mut lines = text.split_inclusive('\n');
@@ -341,6 +395,9 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
         files_sha256: hex(&files.finalize()),
         tokens: vec![],
         mentions: vec![],
+        form: String::new(),
+        state_evidence: vec![],
+        state_gaps: vec![],
         sources,
     };
     // check_skill calls non-UTF-8 "uncheckable": no lossy text ever reaches a card
@@ -406,6 +463,7 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
     let id_re = ID.get_or_init(|| {
         Regex::new(r"\b([a-z0-9]+(?:-[a-z0-9]+)+)\b|`/?([a-z0-9]+(?:-[a-z0-9]+)*)`").unwrap()
     });
+    let (form, state_evidence, state_gaps) = skill_form(body);
     let mentions: std::collections::BTreeSet<String> = id_re
         .captures_iter(&body[..cut])
         .filter_map(|c| c.get(1).or_else(|| c.get(2)))
@@ -435,6 +493,9 @@ pub fn card(store: &Path, digest: &str) -> Result<Card, String> {
         frontmatter_sha256: hex(&Sha256::digest(fm_lines.join("\n").as_bytes())),
         tokens: tokens(&body[..cut]),
         mentions: mentions.into_iter().collect(),
+        form,
+        state_evidence,
+        state_gaps,
         name,
         description,
         ..base
@@ -456,6 +517,24 @@ pub fn write_card(store: &Path, c: &Card) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn form_standard_fixed_stateful_and_gaps() {
+        let fixed = "# Changelog\n1. Read the commits.\n2. Write CHANGELOG-<v>.md.\n";
+        assert_eq!(skill_form(fixed), ("fixed".into(), vec![], vec![]));
+        // React state is not a run's state
+        let react = "Keep UI state in a store; the state is saved to localStorage.\n";
+        assert_eq!(skill_form(react).0, "fixed");
+        let basic = "1. Progress lives in `.backfill/progress.json` as {\"done\": []}.\n2. When continuing, read it first.\n";
+        let (form, ev, gaps) = skill_form(basic);
+        assert_eq!(form, "stateful");
+        assert_eq!(ev, ["1. Progress lives in `.backfill/progress.json` as {\"done\": []}."]);
+        assert_eq!(gaps, ["reconcile"]);
+        let full = format!("{basic}3. Set `pending` before a step; when continuing with a pending step check the real system first.\n");
+        assert!(skill_form(&full).2.is_empty());
+        let vague = "Record progress as you go so nothing is lost.\n";
+        assert_eq!(skill_form(vague).2, ["location", "resume", "reconcile"]);
+    }
 
     #[test]
     fn verbatim_fields_and_language() {

@@ -322,6 +322,9 @@ mod tests {
             files_sha256: "files".into(),
             tokens: tokens(body),
             mentions: vec![],
+            form: String::new(),
+            state_evidence: vec![],
+            state_gaps: vec![],
             sources: vec![SourceRef {
                 origin: "/h/.claude/skills".into(),
                 subpath: name.into(),

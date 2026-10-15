@@ -2,6 +2,12 @@
 
 Read this only for resumable, multi-step work. Short tasks remain stateless. This file is an authoring/review contract, **not an implementation of a SKILL.state runtime**.
 
+## Form standard (created and third-party skills alike)
+
+A skill is **stateful** when it keeps progress somewhere to resume from; otherwise it is **fixed steps**. Choose stateful only when one of these holds: a run spans sessions or can be cut off; steps have effects that are not idempotent and live outside the workspace; approvals or receipts must survive a restart. A stateful skill must state three things: **where** state lives (outside the skill directory), **how a run resumes** (read the state first), and **how an action with an unknown outcome is reconciled** (mark it pending before running it; on resume check the real system before running it again). `dao normalize` records each skill's form, the lines that make it stateful, and which of the three it leaves out (`form`, `state_evidence`, `state_gaps` on the routing card); a gap is a review note, not a rejection.
+
+Measured (evals/agent/resume-tasks, MiniMax, n=5 per arm): with progress visible in the workspace, fixed and stateful skills resumed equally well; with progress only in an external system, both resumed, but the fixed skill only by probing that system; a run that crashed after committing needs the pending/reconcile rule.
+
 ## Decide whether it helps
 
 - Use state when a restart would lose decisions, work position, approvals, or receipts.
