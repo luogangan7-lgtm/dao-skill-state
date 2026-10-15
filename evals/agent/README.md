@@ -9,6 +9,7 @@ with programmatic checkers. Nothing runs on a developer machine.
 | `run` (C) | `run.py` | Does loading a skill change task success? Arms: `none`, `skills` (installed), `hook` (installed + skill-hub hook) |
 | `create` (B) | `create.py` | Does a meta-skill make better skills? Creator arms `none`, `skill-creator` (anthropics/skills, pinned), `dao` (this repo's `dao-skill-state`); the created skill is then used on tasks whose prompts never restate the rules |
 | `evolve` (D) | `evolve.py` | Can a meta-skill fix a skill from one observed failure without breaking it? The harness replays the fail case, a case that already worked and a held-out case with the original skill and with the candidate |
+| `resume` (E) | `resume.py` | Fixed steps or a stateful skill? Session 1 is interrupted mid-task; a fresh session 2 must finish without repeating a non-idempotent step |
 
 Run: Actions → `agent-eval` → Run workflow (`suite`, `tasks`, `arms`, `reps`, `provider`). The
 workflow needs an Anthropic-compatible key as a repository secret (`KIMI_API` or `MINIMAX_API`
@@ -131,6 +132,35 @@ fixes it but breaks the US exports: `old-ok` (its request is shown to the evolve
   candidate". The prompt now names `./candidate/SKILL.md` (#45); that run is excluded above.
 - Candidates are now kept in the run artifact (`candidates/`) so a regression can be traced to
   the rule that caused it.
+
+### E. Fixed steps vs state on an interrupted task (`resume`, MiniMax)
+
+An 8-step backfill whose loads must not repeat. Session 1 is cut off; a fresh session 2 continues.
+Each form is a hand-written runbook with the same rules; `stateful` adds a progress file,
+`stateful-pending` also marks a step pending before running it and, on resume, settles a pending
+step against the real system first; `fixed-check` is fixed steps plus "before rerunning a step that
+may have run, check the system".
+
+| Task (run) | What is hard | none | fixed | fixed-check | stateful | stateful-pending |
+|---|---|---|---|---|---|---|
+| backfill-interrupted (38685135055) | outage at step 5; audit log visible | 4/5 | 5/5 | – | 5/5 | – |
+| backfill-external (38685410387) | progress only in an external store | 3/5 | 5/5 | – | 5/5 | – |
+| backfill-crash (38694187804, 38697589642) | step 5 commits, then "connection reset"; a status query exists | – | 5/5 | 5/5 | **0/5** | 5/5 |
+| backfill-crash-nostatus (38697639318) | same crash, no status query; pass = nothing loaded twice | – | 3/3 | 3/3 | **0/3** | 3/3 |
+
+- A progress file that records only finished steps is worse than none: after the crash it says
+  step 5 is not done, the agent trusts it and loads step 5 again (8/8 runs).
+- The pending marker fixes that; so does a fixed runbook that says to check the system. With a
+  status query both finish. Without one, `fixed-check` and `stateful-pending` both say "if the
+  runbook names no way to check, do not rerun: stop and report"; `stateful-pending` did so in 3/3,
+  `fixed-check` in 2/3. Pass there means nothing was loaded twice, so stopping passes. Of the four
+  `fixed` / `fixed-check` runs that finished 6-8, three read the stand-in store's log files
+  directly (probing a system the runbook never named) and one skipped step 5 unverified and
+  flagged it afterwards (per-run rows in each run's `resume.jsonl`).
+- Cost is similar (fresh tokens per run 35–60k); `stateful-pending` spends more turns in session 1
+  on bookkeeping and fewer in session 2.
+- Consequence for skills: choose `stateful` only with the full contract (pending action + settle
+  before rerun), see `dao-skill-state/references/state-contract.md`; a partial one is a regression.
 
 ### Limits
 
