@@ -184,16 +184,21 @@ skills are kept in each run's artifact (`created/`); the form was read from them
 | 1 | skill-creator | 2/3 | 2/3 | same |
 | 1 | dao | 2/3 | 3/3 | declared and as the rule says 6/6 |
 | 2-4 (38729806153, 38731985167, 38731994978, 38738110671, 38738121250) | dao, after each authoring fix | 13/15 | 9/10 | as the rule says except 3 status-task skills that chose stateful anyway (they still checked the warehouse; 2 passed, 1 refused the runbook) |
+| 5 (38770795491) | dao, after the open-input rule | 5/5 | 5/5 | as the rule says 10/10 (5 fixed + check; 5 stateful with a pending marker, 4 of them stopped safely at the unknown batch) |
 
-- No dao-made skill loaded a batch twice (0/31 runs). Without a meta-skill one run did (round 1,
+- No dao-made skill loaded a batch twice (0/41 runs). Without a meta-skill one run did (round 1,
   no-status task: a progress file without a pending marker).
 - Runs that read the stand-in store directly instead of through `status.py` (status task, round 1):
-  none 3/3, skill-creator 3/3, dao 0/3; later dao rounds 0/5, 1/5, 3/5.
+  none 3/3, skill-creator 3/3, dao 0/3; later dao rounds 0/5, 1/5, 3/5, 1/5.
 - Every dao failure was a refusal, never a wrong load: the skill demanded an input format the request
   never gave (a `## Check command` heading, YAML frontmatter, an exit-code convention for the status
   command) and stopped; once the session-2 agent edited `runbook.md` to fit it. The fixes added to
   authoring.md (take inputs as the request describes them; test a created skill on input written that
-  way) lowered but did not remove this. Over-specification, not form choice, is dao's open defect.
+  way) lowered but did not remove this. Round 5 added one more: when the request leaves an input's
+  format open, the skill has the agent read it directly and writes a parser only for a fixed format;
+  a helper that finds nothing is not proof of absence. Round 5 had no refusal (10/10), but in 3 of
+  its 5 status-task runs session 1 had already finished all 8 batches, so those runs tested the
+  resume less hard; n=5 per cell does not rule the defect out.
 - "One step per session" (a skill that stops after each step) appeared in skills made without a
   meta-skill and by dao; the form standard now says state does not limit a run to one step.
 - Rounds ran on successive commits of the branch; n=3-5 per cell, one model, one task family.
