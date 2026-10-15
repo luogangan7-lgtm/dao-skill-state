@@ -2,7 +2,10 @@
 
 Build, review and evolve reusable agent skills with measured, independently admitted changes.
 
-- `dao-skill-state/` — the skill itself (install by linking this folder into your agent's skills directory).
+- `dao-skill-state/` — the skill itself. In Claude Code install it as a plugin:
+  `claude plugin marketplace add luogangan7-lgtm/dao-skill-state`, then
+  `claude plugin install dao-skill-state@dao-skill-state` (or `/plugin` inside a session). Other agents (Codex and
+  any Agent Skills host): link or copy this folder into the agent's skills directory.
 - `skill-hub/` — thin entry skill that finds and loads hosted skills on demand (needs the binary below).
 - `crates/skill-hub/` — Rust CLI: `index` / `check` / `search` / `get` over a local skill registry, plus `hook` for prompt-time skill pre-selection (optional Jev decision model).
 - `crates/dao/` — DAO supply chain CLI. `dao intake` pins a source (git commit or local root), quarantines each skill (no execution; rejects escaping/dangling symlinks, devices/FIFOs, archives, oversize) and stores it content-addressed and read-only under `objects/<sha256>` with a content manifest and a per-source lock (commit, license evidence, symlink/hardlink/exec flags). Objects are read-only by design: `chmod -R u+w <store>` before deleting a store.

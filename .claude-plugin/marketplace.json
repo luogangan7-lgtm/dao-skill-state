@@ -1,0 +1,14 @@
+{
+  "name": "dao-skill-state",
+  "owner": {
+    "name": "humaux-dao"
+  },
+  "description": "道 · Skill.state: create, audit and evolve reusable agent skills, as fixed steps or with an optional long-task state contract.",
+  "plugins": [
+    {
+      "name": "dao-skill-state",
+      "source": "./dao-skill-state",
+      "description": "Create, audit and evolve reusable agent skills, as fixed steps or with an optional long-task state contract."
+    }
+  ]
+}
