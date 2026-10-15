@@ -528,7 +528,10 @@ mod tests {
         let basic = "1. Progress lives in `.backfill/progress.json` as {\"done\": []}.\n2. When continuing, read it first.\n";
         let (form, ev, gaps) = skill_form(basic);
         assert_eq!(form, "stateful");
-        assert_eq!(ev, ["1. Progress lives in `.backfill/progress.json` as {\"done\": []}."]);
+        assert_eq!(
+            ev,
+            ["1. Progress lives in `.backfill/progress.json` as {\"done\": []}."]
+        );
         assert_eq!(gaps, ["reconcile"]);
         let full = format!("{basic}3. Set `pending` before a step; when continuing with a pending step check the real system first.\n");
         assert!(skill_form(&full).2.is_empty());
