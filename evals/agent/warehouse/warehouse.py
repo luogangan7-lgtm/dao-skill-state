@@ -11,3 +11,9 @@ def load(n):
     wid = open(".warehouse_id").read().strip()
     with open(os.path.join(STORE, wid + ".log"), "a") as f:
         f.write(f"{n}\n")
+
+
+def loaded(n):
+    wid = open(".warehouse_id").read().strip()
+    p = os.path.join(STORE, wid + ".log")
+    return os.path.exists(p) and str(n) in open(p).read().split()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fixed steps vs stateful skill: the same interrupted task, resumed by a fresh session.
 
-  resume.py RESUME_TASKS_DIR OUT_DIR [--tasks a,b] [--arms none,fixed,stateful] [--reps 1]
+  resume.py RESUME_TASKS_DIR OUT_DIR [--tasks a,b] [--arms none,fixed,stateful,...] [--reps 1]
 
 A task holds files/ (the workspace), forms/<arm>/ (one skill per form, identical rules except
 that the stateful one keeps progress in a file), first.md and resume.md (the two prompts) and
@@ -66,9 +66,9 @@ def main():
     a = ap.parse_args()
     if a.arms == "none,skills":  # the workflow's generic default
         a.arms = "none,fixed,stateful"
-    bad = set(a.arms.split(",")) - {"none", "fixed", "stateful"}
+    bad = {x for x in a.arms.split(",") if x != "none" and not x.replace("-", "").isalnum()}
     if bad:
-        sys.exit(f"unknown arms: {sorted(bad)} (use none, fixed, stateful)")
+        sys.exit(f"bad arm names: {sorted(bad)} (none or a forms/<name> of the task)")
     root = os.path.abspath(a.tasks_dir)
     names = [t for t in a.tasks.split(",") if t] or sorted(
         d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "check.py")))
@@ -79,10 +79,13 @@ def main():
         troot = os.path.join(root, name)
         for arm in a.arms.split(","):
             use = "none" if arm == "none" else "skills"
+            if arm != "none" and not os.path.isdir(os.path.join(troot, "forms", arm)):
+                continue  # this task has no such form
             for rep in range(a.reps):
                 t1 = session(troot, arm, os.path.join(troot, "files"), open(os.path.join(troot, "first.md")).read(),
                              ALWAYS)
-                if name.endswith("-external"):  # this run's key in the external store
+                step = os.path.join(troot, "files", "step.py")
+                if os.path.exists(step) and "import warehouse" in open(step).read():  # this run's key in the store
                     open(os.path.join(t1, "files", ".warehouse_id"), "w").write(secrets.token_hex(8) + "\n")
                 r1 = run.run_one(t1, use, a.max_turns, a.timeout)
                 ws1 = r1["ws"]
