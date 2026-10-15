@@ -198,6 +198,30 @@ skills are kept in each run's artifact (`created/`); the form was read from them
   meta-skill and by dao; the form standard now says state does not limit a run to one step.
 - Rounds ran on successive commits of the branch; n=3-5 per cell, one model, one task family.
 
+Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 38778472384,
+`deepseek-flash`; Kimi run 38778479822, `k3`, stopped by the subscription's monthly limit after 14 of
+18 cells' runs, so Kimi has no dao row on the no-status task):
+
+| model | creator | status task pass | no-status task pass | form on the status task (rule: fixed + check) | runs that probed the store (status task) |
+|---|---|---|---|---|---|
+| DeepSeek | none | 3/3 | 3/3 | progress file 3/3 | 3/3 |
+| DeepSeek | skill-creator | 3/3 | 3/3 | progress file 3/3 | 3/3 |
+| DeepSeek | dao | 2/3 | 3/3 | as the rule says 2/3 (1 declared stateful) | 2/3 |
+| Kimi | none | 3/3 | 3/3 | progress file 3/3 | 0/3 |
+| Kimi | skill-creator | 2/3 | 2/2 | progress file 3/3 | 0/3 |
+| Kimi | dao | 3/3 | not run | as the rule says 3/3 | 0/3 |
+
+- On the no-status task every created skill on both models kept state with a started/pending marker,
+  which is what the rule gives there; no run on either model loaded a batch twice.
+- Only dao chose fixed steps where the warehouse can be asked (5 of 6); skills made without it or with
+  skill-creator kept a progress file every time, and on these tasks that cost nothing in pass rate.
+- The failures differ in kind. Kimi skill-creator, rep 2: its helper misread the check command's
+  output, recorded all 8 batches as loaded and reported the backfill complete without loading any
+  (a silent wrong result). DeepSeek dao, rep 2: the skill wrote a stop marker on the failed step that
+  "only a human clears" and so refused the user's "continue" in session 2 although the warehouse
+  answered; an invented gate, the same class as the invented input formats above (n=1, not yet a rule).
+- Not reading the store directly was a MiniMax result: on DeepSeek every arm probed it, dao included.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
