@@ -1,0 +1,8 @@
+[project]
+name = "warehouse"
+version = "0"
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools]
+py-modules = ["warehouse"]

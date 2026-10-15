@@ -118,6 +118,7 @@ jobs:
           unset KEY_KIMI KEY_MINIMAX
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
+            pip install --quiet ./evals/agent/warehouse  # the stand-in external system of the -external task
             python3 evals/agent/resume.py evals/agent/resume-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
           elif [ "$IN_SUITE" = evolve ]; then

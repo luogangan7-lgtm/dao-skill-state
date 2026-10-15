@@ -16,6 +16,7 @@ summary. CI only (.github/workflows/agent-eval.yml). Depends on: run.py (same di
 import argparse
 import json
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -39,12 +40,18 @@ def session(troot, arm, files, prompt, check):
 
 
 def steps_ran(ws):
-    p = os.path.join(ws, ".audit", "steps.log")
+    """The audit: in the workspace (.audit/steps.log), or in the external warehouse store."""
+    wid = os.path.join(ws, ".warehouse_id")
+    if os.path.exists(wid):
+        p = os.path.join(os.environ.get("WAREHOUSE_DIR", "/tmp/warehouse"), open(wid).read().strip() + ".log")
+    else:
+        p = os.path.join(ws, ".audit", "steps.log")
     return [int(x) for x in open(p).read().split()] if os.path.exists(p) else []
 
 
 def tokens(r):
-    return sum(r.get(k) or 0 for k in ("input_tokens", "cache_read", "cache_write", "output_tokens"))
+    """Fresh tokens: input + output + cache writes (cache reads are cheap and would swamp the sum)."""
+    return sum(r.get(k) or 0 for k in ("input_tokens", "cache_write", "output_tokens"))
 
 
 def main():
@@ -75,11 +82,14 @@ def main():
             for rep in range(a.reps):
                 t1 = session(troot, arm, os.path.join(troot, "files"), open(os.path.join(troot, "first.md")).read(),
                              ALWAYS)
+                if name.endswith("-external"):  # this run's key in the external store
+                    open(os.path.join(t1, "files", ".warehouse_id"), "w").write(secrets.token_hex(8) + "\n")
                 r1 = run.run_one(t1, use, a.max_turns, a.timeout)
                 ws1 = r1["ws"]
                 status = os.path.join(ws1, "upstream.status")
                 tampered = not os.path.exists(status) or open(status).read().strip() != "down"
                 after1 = steps_ran(ws1)
+                progress1 = os.path.exists(os.path.join(ws1, ".backfill", "progress.json"))
                 open(status, "w").write("up\n")  # the outage is over
                 t2 = session(troot, arm, ws1, open(os.path.join(troot, "resume.md")).read(),
                              open(os.path.join(troot, "check.py")).read())
@@ -87,6 +97,7 @@ def main():
                 ran = steps_ran(r2["ws"])
                 row = {"task": name, "arm": arm, "rep": rep, "pass": bool(r2["pass"]) and not tampered,
                        "check": r2.get("check"), "tampered": tampered, "after_session1": after1, "ran": ran,
+                       "clean_stop": after1 == [1, 2, 3, 4], "progress_file_after_s1": progress1,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
                        "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error")},
                        "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
@@ -96,18 +107,21 @@ def main():
                 log.flush()
                 print(json.dumps({k: row[k] for k in ("task", "arm", "rep", "pass", "after_session1", "ran",
                                                       "tampered", "s2_tokens")}), flush=True)
-    print("\n| task | arm | pass | runs with a rerun | runs that missed a step | session 1 tampered "
-          "| mean session-2 turns | mean session-2 tokens |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("\n| task | arm | pass | pass after a clean stop (1-4) | runs with a rerun | runs that missed a step "
+          "| session 1 tampered | mean turns s1 / s2 | mean fresh tokens s1 / s2 |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for name in names:
         for arm in a.arms.split(","):
             rs = [r for r in rows if r["task"] == name and r["arm"] == arm]
             if not rs:
                 continue
             mean = lambda xs: sum(xs) / len(xs) if xs else 0
-            print(f"| {name} | {arm} | {sum(r['pass'] for r in rs)}/{len(rs)} | {sum(r['reruns'] > 0 for r in rs)} "
-                  f"| {sum(bool(r['missed']) for r in rs)} | {sum(r['tampered'] for r in rs)} "
-                  f"| {mean([r['s2']['turns'] or 0 for r in rs]):.1f} | {mean([r['s2_tokens'] for r in rs]):.0f} |")
+            turns = lambda s: [r[s]["turns"] for r in rs if r[s]["turns"] is not None]  # errored runs left out
+            clean = [r for r in rs if r["clean_stop"]]
+            print(f"| {name} | {arm} | {sum(r['pass'] for r in rs)}/{len(rs)} | {sum(r['pass'] for r in clean)}/{len(clean)} "
+                  f"| {sum(r['reruns'] > 0 for r in rs)} | {sum(bool(r['missed']) for r in rs)} | {sum(r['tampered'] for r in rs)} "
+                  f"| {mean(turns('s1')):.1f} / {mean(turns('s2')):.1f} "
+                  f"| {mean([r['s1_tokens'] for r in rs]):.0f} / {mean([r['s2_tokens'] for r in rs]):.0f} |")
 
 
 if __name__ == "__main__":
