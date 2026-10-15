@@ -68,7 +68,8 @@ def session(troot, arm, files, prompt, check, made=None):
     shutil.copytree(files, os.path.join(t, "files"), ignore=shutil.ignore_patterns(".claude"))
     form, hook = form_of(arm)
     if made:  # (dir, name) of a skill a creator just wrote
-        shutil.copytree(made[0], os.path.join(t, "skills", made[1]))
+        shutil.copytree(made[0], os.path.join(t, "skills", made[1]),  # agent-written: links stay out
+                        ignore=lambda d, names: [n for n in names if os.path.islink(os.path.join(d, n))])
         prompt = f"Use the {made[1]} skill.\n\n" + prompt
     elif arm != "none":
         shutil.copytree(os.path.join(troot, "forms", form), os.path.join(t, "skills"))
@@ -219,6 +220,7 @@ def main():
                   f"| {sum(r['reruns'] > 0 for r in ran)} | {sum(bool(r['missed']) for r in ran)} | {sum(r['tampered'] for r in ran)} | {sum(r['s2_loaded_runbook'] for r in ran)} | {sum(r['probes'] > 0 for r in ran)} "
                   f"| {mean(turns('s1')):.1f} / {mean(turns('s2')):.1f} "
                   f"| {mean([r['s1_tokens'] for r in ran]):.0f} / {mean([r['s2_tokens'] for r in ran]):.0f} |")
+
 
 if __name__ == "__main__":
     main()
