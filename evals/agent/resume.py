@@ -94,6 +94,8 @@ def main():
         d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "check.py")))
     unknown = {x for x in a.arms.split(",") if x != "none"
                and not any(os.path.isdir(os.path.join(root, n, "forms", form_of(x)[0])) for n in names)}
+    unknown |= {x for x in a.arms.split(",") if form_of(x)[1]
+                and not any(os.path.exists(os.path.join(root, n, "distractors.json")) for n in names)}
     if unknown:  # a typo would otherwise produce no rows and no error
         sys.exit(f"arms in no selected task: {sorted(unknown)}")
     os.makedirs(a.out_dir, exist_ok=True)
