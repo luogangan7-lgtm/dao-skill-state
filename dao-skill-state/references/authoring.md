@@ -15,6 +15,8 @@ A skill is either **fixed steps** (the default: one decision workflow that finis
 
 Specify trigger and non-trigger, required input, decision workflow, output, stopping conditions, tool requirements and the pass/fail check. Explain only what a capable agent would not reliably infer.
 
+Take inputs as the request describes them. Do not demand structure it did not specify (a heading, section, field or file layout); when the request says the input names something ("each runbook names the command"), tell the skill to find it in the input as written, and stop only when it is truly absent. An invented format makes the skill refuse real inputs.
+
 Use a concise `SKILL.md` with `name` and `description` in YAML. Prefer portable lowercase ASCII letters, digits and single hyphens, at most 64 characters, matching the directory. Human-facing names can be localized in `agents/openai.yaml`. Descriptions are non-empty and at most 1024 characters; specificity matters, not an arbitrary minimum length.
 
 Preserve supported optional fields (`license`, `compatibility`, `metadata`, experimental `allowed-tools`) when relevant. `metadata` is a string-to-string map; quote versions. Host-specific fields may need an adapter and a host validator. Never present a host exception as the universal format. Headings are authoring choices, not format requirements.
