@@ -74,6 +74,12 @@ def main(store, logs, out):
     lines += ["", "Scan verdicts: " + ", ".join(f"{k} {v}" for k, v in verdicts.most_common()),
               "Top scan rules: " + ", ".join(f"{k} {v}" for k, v in rules.most_common(10)),
               "Card status: " + ", ".join(f"{k} {v}" for k, v in status.most_common()),
+              "Form (fixed / stateful): " + ", ".join(f"{k} {v}" for k, v in collections.Counter(
+                  c.get("form") or "-" for c in cards.values()).most_common())
+              + "; stateful contract gaps: " + (", ".join(f"{k} {v}" for k, v in collections.Counter(
+                  g for c in cards.values() for g in c.get("state_gaps", [])).most_common()) or "none"),
+              "Stateful skills: " + (", ".join(f"{c.get('name')} (gaps: {'/'.join(c.get('state_gaps')) or 'none'})"
+                                              for c in cards.values() if c.get("form") == "stateful") or "none"),
               "Relations: " + (", ".join(f"{k} {v}" for k, v in kinds.most_common()) or "none")]
     if receipt:
         lines.append("Routing eval (" + str(receipt.get("n_skills")) + " skills): " + ", ".join(

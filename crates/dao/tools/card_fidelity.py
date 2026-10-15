@@ -53,6 +53,9 @@ def check_card(card, skill_md):
     # headings: a `## ` line of the body, as normalize.rs takes them
     heads = {l[3:].strip() for l in body.split("\n") if l.rstrip("\r").startswith("## ")}
     bad += [f"heading is not a ## line: {h[:60]!r}" for h in card.get("headings", []) if h not in heads]
+    # state evidence (form standard): whole body lines, trimmed
+    lines = {l.strip() for l in body.split("\n")}
+    bad += [f"state evidence is not a body line: {e[:60]!r}" for e in card.get("state_evidence", []) if e not in lines]
     # invocation: whole consecutive frontmatter lines (trailing spaces trimmed)
     fm_r = [l.rstrip() for l in fm_lines]
     for v in card.get("invocation", []):
@@ -77,6 +80,7 @@ def selftest():
         ("not_for", ["Not for spreadsheets."], "not_for not in description"),
         ("headings", ["Usage"], "heading is not a ## line"),  # in the body, but not a heading
         ("invocation", ["disable-model-invocation: false"], "invocation is not frontmatter lines"),
+        ("state_evidence", ["Progress is saved somewhere."], "state evidence is not a body line"),
     ]:
         got = check_card(dict(good, **{field: value}), md)
         assert len(got) == 1 and got[0].startswith(msg), (field, got)

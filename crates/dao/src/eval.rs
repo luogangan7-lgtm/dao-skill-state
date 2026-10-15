@@ -545,6 +545,9 @@ mod tests {
             files_sha256: String::new(),
             tokens: vec![],
             mentions: vec![],
+            form: String::new(),
+            state_evidence: vec![],
+            state_gaps: vec![],
             sources: vec![SourceRef {
                 origin: "o".into(),
                 subpath: name.into(),
