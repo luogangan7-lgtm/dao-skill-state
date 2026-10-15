@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from public_bench import bundle, names_itself, split_of
+from public_bench import accepted, bundle, names_itself, split_of
 
 
 class PublicBench(unittest.TestCase):
@@ -16,6 +16,10 @@ class PublicBench(unittest.TestCase):
         self.assertFalse(names_itself("my-pdf-tools-fork is broken", "pdf-tools"))
         # a one-word name is the domain's own word
         self.assertFalse(names_itself("merge these two PDF files", "pdf"))
+
+    def test_a_sibling_skill_is_also_accepted(self):
+        self.assertEqual(accepted(["figma-use"]), ["figma", "figma-use"])
+        self.assertEqual(accepted(["pdf"]), ["pdf"])
 
     def test_split_keeps_a_skills_requests_together(self):
         a, b = {"prompt": "x", "expect": ["pdf"]}, {"prompt": "y", "expect": ["pdf"]}

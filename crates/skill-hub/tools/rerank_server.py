@@ -6,17 +6,19 @@ Serves text-embeddings-inference's `/rerank` API on loopback only:
 Scores are relevance probabilities in [0, 1].
 
 Default model: Qwen/Qwen3-Reranker-0.6B with a skill-routing instruction, scored as P(yes) from
-its yes/no answer logits. D7 round 3 (CI run 38379553491, 112 held-out cases, same RRF top-10):
-98/112 against 88/112 for bge-reranker-v2-m3 (paired exact McNemar 13 wins / 3 losses, p=0.021),
-with every chit-chat prompt correctly answered by no skill. The hook's default tau (0.865) was
-tuned for this model. `--model BAAI/bge-reranker-v2-m3` (or another sentence-transformers
+its yes/no answer logits. Public benchmark A4 (CI run 38642434283: requests for the 112 pinned
+third-party skills, crates/skill-hub/tools/selector_eval/public_cases.json, same RRF top-10, tau
+tuned on dev): 105/127 held-out (83/100 with a skill, 22/27 needing none) against 103/127 for the
+no-model hook, which picked a skill for 15 of the 27 no-skill requests. Earlier D7 rounds used a
+private set that is no longer in the repository. The server maps each backend's tuned tau onto
+the hook's default (0.865), so that default fits every backend. `--model BAAI/bge-reranker-v2-m3` (or another sentence-transformers
 cross-encoder) still works; set SKILL_HUB_RERANK_TAU=0.02 for bge, since tau is per model.
 
 Usage:
   python3 -I rerank_server.py [--port 8121] [--model Qwen/Qwen3-Reranker-0.6B]
   export SKILL_HUB_RERANK=http://127.0.0.1:8121
 On Apple Silicon with `mlx-lm` installed it serves a 4-bit MLX conversion of the same model
-(D7 round 6: 97/112, as accurate as float16, ~1.3 s per request, 0.9 GB); otherwise torch on
+(A4: 103/127 held-out vs 105/127 for float32 on CPU; ~1.9 s per request, 0.9 GB); otherwise torch on
 the Apple GPU (float16), CUDA or CPU. Scores are shifted per variant so the hook's default
 tau fits each. One model thread serves requests in arrival order (--max-batch-rows lets requests
 share a pass on a GPU where that pays; on an M1 it did not); a request that waited past
@@ -51,9 +53,10 @@ QWEN_REVISION = "e61197ed45024b0ed8a2d74b80b4d909f1255473"  # the commit evaluat
 QWEN_MLX = "mlx-community/Qwen3-Reranker-0.6B-4bit"
 QWEN_MLX_REVISION = "5f324548f1d20c2b5a450f126fc6ef2fb1126524"
 HOOK_TAU = 0.865  # skill-hub hook's default SKILL_HUB_RERANK_TAU (hook.rs RERANK_TAU)
-# Each Qwen3 variant's tau tuned on the same dev set (D7 round 6, run 38451676603); the server
-# shifts its scores so that tau reads as HOOK_TAU, and the hook default fits every backend.
-TUNED_TAU = {"mlx": 0.345, "float16": 0.865, "float32": 0.865}
+# Each Qwen3 variant's tau tuned on the public dev split (A4, run 38642434283: float32 on CPU and
+# MLX 4-bit); float16 was not run there and takes float32's (they matched on the earlier set). The
+# server shifts its scores so that tau reads as HOOK_TAU, and the hook default fits every backend.
+TUNED_TAU = {"mlx": 0.0395, "float16": 0.329, "float32": 0.329}
 QWEN_INSTRUCTION = ("Given a user's request to a coding agent, judge whether this skill (name: description) "
                     "should be loaded to carry out the request; small talk or general questions need no skill")
 

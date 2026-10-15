@@ -51,8 +51,8 @@ pub struct Candidate {
     pub dense: Option<f64>,
 }
 
-/// Default threshold for the reference server's model (Qwen3-Reranker-0.6B + skill instruction),
-/// tuned on the D7 dev split and then scored once on held-out data; bge-reranker-v2-m3 needs ~0.02.
+/// Default threshold on the reference server's scale: rerank_server.py maps each backend's tau,
+/// tuned on the public dev split (A4), onto this value; bge-reranker-v2-m3 needs ~0.02.
 pub const RERANK_TAU: f32 = 0.865;
 
 /// A local reranker that scores (prompt, candidate) pairs; the best is kept if it clears `tau`,
