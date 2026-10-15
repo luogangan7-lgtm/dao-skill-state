@@ -255,23 +255,25 @@ fn skill_form(body: &str) -> (String, Vec<String>, Vec<String>) {
     }
     static F: OnceLock<Form> = OnceLock::new();
     let f = F.get_or_init(|| Form {
-        persist: Regex::new(r"(?i)\b(progress|checkpoint|ledger|handoff)\b.{0,60}\b(file|json|ya?ml|saved?|persist\w*|record(s|ed)?|stored?|writes?|written)\b|\b(save|write|persist|record|store)\w*\b.{0,60}\b(progress|checkpoint)\b|\bstate\s+file\b|\bstate\.json\b").unwrap(),
+        // named records only: "learning progress" or "save memory" in one sentence is not state
+        persist: Regex::new(r"(?i)\b(progress|checkpoint|state)\s+(file|ledger|log)\b|\bledger\s+file\b|\b(progress|state|checkpoint)\.jsonl?\b|\b(write|save|persist|store)\w*\b[^.\n]{0,30}\b(to|on)\s+disk\b|\bresume\s+protocol\b").unwrap(),
         location: Regex::new(r"(?i)[\w~./-]+\.(json|jsonl|ya?ml|md|txt|db|sqlite)\b|`[^`\s]+/[^`\s]*`").unwrap(),
         resume: Regex::new(r"(?i)\b(resum\w*|continu\w*|pick(s|ing)?\s+up|restart\w*|next\s+session|interrupt\w*)\b").unwrap(),
         reconcile: Regex::new(r"(?i)\b(pending|in[- ]progress|idempot\w*|reconcil\w*|may\s+or\s+may\s+not|(check|verify)\s+the\s+(real|actual|external))\b").unwrap(),
     });
-    let evidence: Vec<String> = body
-        .lines()
-        .map(str::trim)
-        .filter(|l| f.persist.is_match(l))
-        .take(6)
-        .map(str::to_string)
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    // code comments ("// track progress") describe code, not the skill's own run
+    let hits: Vec<usize> = (0..lines.len())
+        .filter(|&i| !lines[i].starts_with("//") && f.persist.is_match(lines[i]))
         .collect();
-    if evidence.is_empty() {
+    if hits.is_empty() {
         return ("fixed".into(), vec![], vec![]);
     }
+    let evidence: Vec<String> = hits.iter().take(6).map(|&i| lines[i].to_string()).collect();
     let mut gaps = Vec::new();
-    if !evidence.iter().any(|l| f.location.is_match(l)) {
+    // the location may follow on the next lines ("Write it to disk:" then the path)
+    let near = |i: usize| lines[i..lines.len().min(i + 3)].iter().any(|l| f.location.is_match(l));
+    if !hits.iter().any(|&i| near(i)) {
         gaps.push("location".to_string());
     }
     if !f.resume.is_match(body) {
@@ -535,8 +537,15 @@ mod tests {
         assert_eq!(gaps, ["reconcile"]);
         let full = format!("{basic}3. Set `pending` before a step; when continuing with a pending step check the real system first.\n");
         assert!(skill_form(&full).2.is_empty());
-        let vague = "Record progress as you go so nothing is lost.\n";
+        let vague = "Keep a progress file so nothing is lost.\n";
         assert_eq!(skill_form(vague).2, ["location", "resume", "reconcile"]);
+        // false positives seen on the intake benchmark (transformers-js, huggingface-llm-trainer)
+        assert_eq!(skill_form("// Track progress for each file\n").0, "fixed");
+        let trainer = "omit `eval_dataset` to save ~40% memory. You'll still see learning progress.\n";
+        assert_eq!(skill_form(trainer).0, "fixed");
+        // the path on the line after the evidence counts as its location
+        let figma = "**State persistence**: write the state ledger to disk:\n`/tmp/dsb-state.json`\nResume protocol: read it at session start.\n";
+        assert!(!skill_form(figma).2.contains(&"location".to_string()));
     }
 
     #[test]
