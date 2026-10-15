@@ -1,6 +1,8 @@
 {
   "name": "dao-skill-state",
-  "owner": {"name": "luogangan7-lgtm"},
+  "owner": {
+    "name": "humaux-dao"
+  },
   "plugins": [
     {
       "name": "dao-skill-state",
