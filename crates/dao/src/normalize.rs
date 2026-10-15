@@ -272,7 +272,11 @@ fn skill_form(body: &str) -> (String, Vec<String>, Vec<String>) {
     let evidence: Vec<String> = hits.iter().take(6).map(|&i| lines[i].to_string()).collect();
     let mut gaps = Vec::new();
     // the location may follow on the next lines ("Write it to disk:" then the path)
-    let near = |i: usize| lines[i..lines.len().min(i + 3)].iter().any(|l| f.location.is_match(l));
+    let near = |i: usize| {
+        lines[i..lines.len().min(i + 3)]
+            .iter()
+            .any(|l| f.location.is_match(l))
+    };
     if !hits.iter().any(|&i| near(i)) {
         gaps.push("location".to_string());
     }
@@ -541,7 +545,8 @@ mod tests {
         assert_eq!(skill_form(vague).2, ["location", "resume", "reconcile"]);
         // false positives seen on the intake benchmark (transformers-js, huggingface-llm-trainer)
         assert_eq!(skill_form("// Track progress for each file\n").0, "fixed");
-        let trainer = "omit `eval_dataset` to save ~40% memory. You'll still see learning progress.\n";
+        let trainer =
+            "omit `eval_dataset` to save ~40% memory. You'll still see learning progress.\n";
         assert_eq!(skill_form(trainer).0, "fixed");
         // the path on the line after the evidence counts as its location
         let figma = "**State persistence**: write the state ledger to disk:\n`/tmp/dsb-state.json`\nResume protocol: read it at session start.\n";
