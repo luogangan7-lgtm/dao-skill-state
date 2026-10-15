@@ -39,6 +39,12 @@ def session(troot, arm, files, prompt, check):
     return t
 
 
+def expect_s1(troot):
+    """The steps a session 1 that follows the runbook leaves done (task file expect_s1.json)."""
+    p = os.path.join(troot, "expect_s1.json")
+    return json.load(open(p)) if os.path.exists(p) else [1, 2, 3, 4]
+
+
 def steps_ran(ws):
     """The audit: in the workspace (.audit/steps.log), or in the external warehouse store."""
     wid = os.path.join(ws, ".warehouse_id")
@@ -72,6 +78,10 @@ def main():
     root = os.path.abspath(a.tasks_dir)
     names = [t for t in a.tasks.split(",") if t] or sorted(
         d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "check.py")))
+    unknown = {x for x in a.arms.split(",") if x != "none"
+               and not any(os.path.isdir(os.path.join(root, n, "forms", x)) for n in names)}
+    if unknown:  # a typo would otherwise produce no rows and no error
+        sys.exit(f"arms in no selected task: {sorted(unknown)}")
     os.makedirs(a.out_dir, exist_ok=True)
     log = open(os.path.join(a.out_dir, "resume.jsonl"), "a")
     rows = []
@@ -92,7 +102,9 @@ def main():
                 status = os.path.join(ws1, "upstream.status")
                 tampered = not os.path.exists(status) or open(status).read().strip() != "down"
                 after1 = steps_ran(ws1)
-                progress1 = os.path.exists(os.path.join(ws1, ".backfill", "progress.json"))
+                pj = os.path.join(ws1, ".backfill", "progress.json")
+                progress1 = os.path.exists(pj)
+                progress_text = open(pj).read()[:300] if progress1 else None  # the mechanism under test
                 open(status, "w").write("up\n")  # the outage is over
                 t2 = session(troot, arm, ws1, open(os.path.join(troot, "resume.md")).read(),
                              open(os.path.join(troot, "check.py")).read())
@@ -100,7 +112,8 @@ def main():
                 ran = steps_ran(r2["ws"])
                 row = {"task": name, "arm": arm, "rep": rep, "pass": bool(r2["pass"]) and not tampered,
                        "check": r2.get("check"), "tampered": tampered, "after_session1": after1, "ran": ran,
-                       "clean_stop": after1 == [1, 2, 3, 4], "progress_file_after_s1": progress1,
+                       "clean_stop": after1 == expect_s1(troot), "progress_file_after_s1": progress1,
+                       "progress_after_s1": progress_text,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
                        "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error")},
                        "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
@@ -110,7 +123,7 @@ def main():
                 log.flush()
                 print(json.dumps({k: row[k] for k in ("task", "arm", "rep", "pass", "after_session1", "ran",
                                                       "tampered", "s2_tokens")}), flush=True)
-    print("\n| task | arm | pass | pass after a clean stop (1-4) | runs with a rerun | runs that missed a step "
+    print("\n| task | arm | pass | pass after a clean stop | runs with a rerun | runs that missed a step "
           "| session 1 tampered | mean turns s1 / s2 | mean fresh tokens s1 / s2 |")
     print("|---|---|---|---|---|---|---|---|---|")
     for name in names:
