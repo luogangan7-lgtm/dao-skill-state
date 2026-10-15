@@ -242,49 +242,71 @@ fn patterns() -> &'static Patterns {
 }
 
 /// The form standard, applied the same way to created and third-party skills: a skill is stateful
-/// when its body keeps progress somewhere to resume from (a progress/checkpoint/ledger/handoff
-/// record, or a state file), otherwise fixed. A stateful skill should say where state lives, how a
+/// when its prose names a record kept to resume from (a progress/checkpoint/state/handoff file,
+/// ledger or log, or a resume protocol; negated sentences and code are skipped), otherwise fixed. A stateful skill should say where state lives, how a
 /// run resumes, and how an action with an unknown outcome is reconciled; missing parts are gaps.
-/// Lexical and conservative: it reports what the text states, not what the skill needs.
+/// Lexical: a review hint about what the text states, not proof of what the skill needs; an empty
+/// gap list is not a pass.
 fn skill_form(body: &str) -> (String, Vec<String>, Vec<String>) {
     struct Form {
-        persist: Regex,
+        record: Regex,
+        negated: Regex,
         location: Regex,
         resume: Regex,
         reconcile: Regex,
     }
     static F: OnceLock<Form> = OnceLock::new();
     let f = F.get_or_init(|| Form {
-        // named records only: "learning progress", "save memory" or "write snippets to disk"
-        // (figma-use) is not a run's state
-        persist: Regex::new(r"(?i)\b(progress|checkpoint|state)\s+(file|ledger|log)\b|\bledger\s+file\b|\b(progress|state|checkpoint)\.jsonl?\b|\bresume\s+protocol\b").unwrap(),
+        // a named record kept to resume from; "learning progress", "save memory" or "write
+        // snippets to disk" (figma-use) is not a run's state
+        record: Regex::new(r"(?i)\b(progress|checkpoint|state|handoff)\s+(files?|ledgers?|logs?)\b|\bledger\s+files?\b|\b(progress|state|checkpoint|handoff)\.(jsonl?|md)\b|\bresume\s+protocol\b").unwrap(),
+        negated: Regex::new(r"(?i)\b(do\s+not|don't|never|without|no)\b[^.]{0,40}\b(progress|checkpoint|state|handoff|ledger)\b").unwrap(),
         location: Regex::new(r"(?i)[\w~./-]+\.(json|jsonl|ya?ml|md|txt|db|sqlite)\b|`[^`\s]+/[^`\s]*`").unwrap(),
-        resume: Regex::new(r"(?i)\b(resum\w*|continu\w*|pick(s|ing)?\s+up|restart\w*|next\s+session|interrupt\w*)\b").unwrap(),
-        reconcile: Regex::new(r"(?i)\b(pending|in[- ]progress|idempot\w*|reconcil\w*|may\s+or\s+may\s+not|(check|verify)\s+the\s+(real|actual|external))\b").unwrap(),
+        resume: Regex::new(r"(?i)\b(resum\w*|when\s+continuing|pick(s|ing)?\s+up\s+where|next\s+session|after\s+(an?\s+)?interrupt\w*|restart\w*\s+from)\b").unwrap(),
+        reconcile: Regex::new(r"(?i)\b(pending\s+(step|action|record|marker|load|write)s?|idempot\w*|reconcil\w*|may\s+or\s+may\s+not|(check|verify)\s+the\s+(real|actual|external)|unknown\s+outcome)\b").unwrap(),
     });
-    let lines: Vec<&str> = body.lines().map(str::trim).collect();
-    // code comments ("// track progress") describe code, not the skill's own run
+    // prose only: code samples and comments describe code, not the skill's own run
+    let mut fence = false;
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .map(|l| {
+            if l.starts_with("```") {
+                fence = !fence;
+                return "";
+            }
+            if fence || l.starts_with("//") {
+                ""
+            } else {
+                l
+            }
+        })
+        .collect();
     let hits: Vec<usize> = (0..lines.len())
-        .filter(|&i| !lines[i].starts_with("//") && f.persist.is_match(lines[i]))
+        .filter(|&i| f.record.is_match(lines[i]) && !f.negated.is_match(lines[i]))
         .collect();
     if hits.is_empty() {
         return ("fixed".into(), vec![], vec![]);
     }
     let evidence: Vec<String> = hits.iter().take(6).map(|&i| lines[i].to_string()).collect();
     let mut gaps = Vec::new();
-    // the location may follow on the next lines ("Write it to disk:" then the path)
-    let near = |i: usize| {
-        lines[i..lines.len().min(i + 3)]
-            .iter()
-            .any(|l| f.location.is_match(l))
+    // the location may follow on the next lines ("Write it to disk:" then the path); naming the
+    // skill's own README.md or SKILL.md is not a place to keep state
+    let is_place = |l: &str| {
+        f.location.find_iter(l).any(|m| {
+            let p = m.as_str().to_ascii_lowercase();
+            !p.ends_with("readme.md") && !p.ends_with("skill.md")
+        })
     };
+    let near = |i: usize| lines[i..lines.len().min(i + 3)].iter().any(|l| is_place(l));
     if !hits.iter().any(|&i| near(i)) {
         gaps.push("location".to_string());
     }
-    if !f.resume.is_match(body) {
+    let prose = lines.join("\n");
+    if !f.resume.is_match(&prose) {
         gaps.push("resume".to_string());
     }
-    if !f.reconcile.is_match(body) {
+    if !f.reconcile.is_match(&prose) {
         gaps.push("reconcile".to_string());
     }
     ("stateful".into(), evidence, gaps)
@@ -554,6 +576,15 @@ mod tests {
         assert!(!skill_form(figma).2.contains(&"location".to_string()));
         let snippets = "call them out and write to disk so you can reuse in the future.\n";
         assert_eq!(skill_form(snippets).0, "fixed");
+        assert_eq!(skill_form("Do not write a progress file.\n").0, "fixed");
+        assert_eq!(skill_form("```\nsave(state_file)  # progress file\n```\n").0, "fixed");
+        assert_eq!(skill_form("Keep progress files per batch.\n").0, "stateful");
+        assert_eq!(skill_form("Write handoff.md before you stop.\n").0, "stateful");
+        // "continue to step 3" or a bare "pending" is not a resume or reconcile rule
+        let loose = "Keep a progress file in `run/progress.json`.\nContinue to step 3. Two items are pending.\n";
+        assert_eq!(skill_form(loose).2, ["resume", "reconcile"]);
+        // the skill's own README is not where state lives
+        assert_eq!(skill_form("Keep a progress file; see README.md.\n").2[0], "location");
     }
 
     #[test]
