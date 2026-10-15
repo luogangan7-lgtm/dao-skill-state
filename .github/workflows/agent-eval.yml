@@ -21,7 +21,7 @@ on:
         description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3)"
         default: ""
       suite:
-        description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks)"
+        description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks); resume = fixed steps vs stateful skill on an interrupted task (resume-tasks)"
         default: run
   pull_request:
     paths:
@@ -45,8 +45,8 @@ jobs:
           python-version: "3.12"
       - run: pip install openpyxl==3.1.5 python-docx==1.1.2 pypdf==5.1.0 python-pptx==1.0.2 reportlab==4.2.5 pytest==8.3.4 pyyaml==6.0.2
       - run: |
-          for t in evals/agent/tasks/*/ evals/agent/create-tasks/*/usage/*/ evals/agent/evolve-tasks/*/usage/*/; do
-            test -f "$t/prompt.md"
+          for t in evals/agent/tasks/*/ evals/agent/create-tasks/*/usage/*/ evals/agent/evolve-tasks/*/usage/*/ evals/agent/resume-tasks/*/; do
+            test -f "$t/prompt.md" || test -f "$t/first.md"
             test -f "$t/check.py"
             # an empty workspace must fail cleanly (exit 1), not pass and not crash
             rc=0; python3 "$t/check.py" "$(mktemp -d)" > /dev/null 2>&1 || rc=$?
@@ -117,7 +117,11 @@ jobs:
           export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}"
           unset KEY_KIMI KEY_MINIMAX
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
-          if [ "$IN_SUITE" = evolve ]; then
+          if [ "$IN_SUITE" = resume ]; then
+            pip install --quiet ./evals/agent/warehouse  # the stand-in external system of the -external task
+            python3 evals/agent/resume.py evals/agent/resume-tasks results --tasks "$IN_TASKS" \
+              --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
+          elif [ "$IN_SUITE" = evolve ]; then
             python3 evals/agent/evolve.py evals/agent/evolve-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
           elif [ "$IN_SUITE" = create ]; then
