@@ -151,10 +151,12 @@ may have run, check the system".
 - A progress file that records only finished steps is worse than none: after the crash it says
   step 5 is not done, the agent trusts it and loads step 5 again (8/8 runs).
 - The pending marker fixes that; so does a fixed runbook that says to check the system. With a
-  status query both finish; without one, `stateful-pending` stops safely at step 5 in 3/3 and
-  reports the unknown outcome. `fixed` / `fixed-check` finished in 4/6: three by reading the
-  stand-in store's files directly (probing a system the runbook never named), one by skipping
-  step 5 unverified and flagging it afterwards; the other two stopped and asked.
+  status query both finish. Without one, `fixed-check` and `stateful-pending` both say "if the
+  runbook names no way to check, do not rerun: stop and report"; `stateful-pending` did so in 3/3,
+  `fixed-check` in 2/3. Pass there means nothing was loaded twice, so stopping passes. Of the four
+  `fixed` / `fixed-check` runs that finished 6-8, three read the stand-in store's log files
+  directly (probing a system the runbook never named) and one skipped step 5 unverified and
+  flagged it afterwards (per-run rows in each run's `resume.jsonl`).
 - Cost is similar (fresh tokens per run 35–60k); `stateful-pending` spends more turns in session 1
   on bookkeeping and fewer in session 2.
 - Consequence for skills: choose `stateful` only with the full contract (pending action + settle
