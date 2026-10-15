@@ -183,9 +183,9 @@ skills are kept in each run's artifact (`created/`); the form was read from them
 | 1 (38720176111, 38720180129) | none | 3/3 | 3/3 | mostly a progress file in both tasks; never declared |
 | 1 | skill-creator | 2/3 | 2/3 | same |
 | 1 | dao | 2/3 | 3/3 | declared and as the rule says 6/6 |
-| 2-4 (38729806153, 38731985167, 38731994978, 38738110671, 38738121250) | dao, after each authoring fix | 13/15 | 9/10 | as the rule says except 2 status-task skills that chose stateful anyway (they still checked the warehouse and passed) |
+| 2-4 (38729806153, 38731985167, 38731994978, 38738110671, 38738121250) | dao, after each authoring fix | 13/15 | 9/10 | as the rule says except 3 status-task skills that chose stateful anyway (they still checked the warehouse; 2 passed, 1 refused the runbook) |
 
-- No dao-made skill loaded a batch twice (0/37 runs). Without a meta-skill one run did (round 1,
+- No dao-made skill loaded a batch twice (0/31 runs). Without a meta-skill one run did (round 1,
   no-status task: a progress file without a pending marker).
 - Runs that read the stand-in store directly instead of through `status.py` (status task, round 1):
   none 3/3, skill-creator 3/3, dao 0/3; later dao rounds 0/5, 1/5, 3/5.
