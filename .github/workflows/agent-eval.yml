@@ -2,7 +2,8 @@ name: agent-eval
 # Evaluations B/C/D (charter 2026-10-14): Claude Code headless on frozen public tasks, with and
 # without skills, checked by each task's deterministic checker. The model runs on one of the owner's
 # subscriptions through its Anthropic-compatible endpoint: Kimi For Coding (secret KIMI_API),
-# MiniMax (secret MINIMAX_API, China endpoint) or DeepSeek (secret DEEPSEEK_API). Model jobs run on manual dispatch only, so pull
+# MiniMax (secret MINIMAX_API, China endpoint), DeepSeek (secret DEEPSEEK_API), or NVIDIA's
+# free hosted endpoints (secret NVIDIA_API) through a pinned local protocol adapter. Model jobs run on manual dispatch only, so pull
 # requests never spend a subscription window.
 on:
   workflow_dispatch:
@@ -15,10 +16,13 @@ on:
       reps:
         default: "1"
       provider:
-        description: "kimi (KIMI_API, Kimi For Coding), minimax (MINIMAX_API, MiniMax coding plan) or deepseek (DEEPSEEK_API)"
+        description: "kimi / minimax / deepseek / nvidia (NVIDIA_API; explicit free model required)"
         default: kimi
       model:
-        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash)"
+        description: "empty = provider default except nvidia; NVIDIA: exact approved hosted model ID"
+        default: ""
+      evidence_cert:
+        description: "NVIDIA only: PEM public recipient certificate; private key stays with the experiment owner"
         default: ""
       suite:
         description: "run/create/evolve/resume = legacy; resume-rust = Rust boundary matrix; nvidia-probe = hosted API compatibility only"
@@ -276,6 +280,24 @@ jobs:
           cargo -V
           cargo build --manifest-path crates/dao/Cargo.toml --release --locked
           echo "$PWD/crates/dao/target/release" >> "$GITHUB_PATH"
+      - name: Prepare the isolated NVIDIA adapter and evidence recipient
+        if: inputs.provider == 'nvidia'
+        env:
+          IN_MODEL: ${{ inputs.model }}
+          EVIDENCE_CERT: ${{ inputs.evidence_cert }}
+        run: |
+          case "$IN_MODEL" in
+            nvidia/nemotron-3-super-120b-a12b|nvidia/nemotron-3.5-lightning-30b-a3b|z-ai/glm-5.3-flash) ;;
+            *) echo "NVIDIA model is outside this frozen free-endpoint cohort"; exit 1 ;;
+          esac
+          umask 077
+          printf '%s\n' "$EVIDENCE_CERT" > "$RUNNER_TEMP/nvidia-recipient.pem"
+          openssl x509 -in "$RUNNER_TEMP/nvidia-recipient.pem" -noout -checkend 86400
+          npm install --prefix "$RUNNER_TEMP/ccr" --no-audit --no-fund @musistudio/claude-code-router@3.1.3
+          # Use the reviewed embedded gateway, never the floating external fallback.
+          gateway="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
+          printf '%s  %s\n' '57c7cb2113d22ea495b2162dcd5306b1c938cde0de1c1312e79dea8bc4e261b0' "$gateway" > "$RUNNER_TEMP/ccr-gateway.sha256"
+          sha256sum --check "$RUNNER_TEMP/ccr-gateway.sha256"
       - name: Save the compiled Rust build
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -286,11 +308,13 @@ jobs:
             crates/dao/target/release
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - name: Run the Rust boundary matrix
+        id: matrix
         env:
           ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
           KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
           KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
           KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
+          NVIDIA_API: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API || '' }}
           ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
@@ -300,16 +324,95 @@ jobs:
           IN_REPS: ${{ inputs.reps }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
+          case "$IN_PROVIDER" in kimi|minimax|deepseek|nvidia) ;; *) echo "unknown provider"; exit 1 ;; esac
           [ "$IN_ARMS" = make:dao ] || { echo "resume-rust requires make:dao"; exit 1; }
+          args=(eval resume run --repo "$PWD" --out results --reps "$IN_REPS")
+          if [ -n "$IN_TASKS" ]; then args+=(--tasks "$IN_TASKS"); fi
+          if [ "$IN_PROVIDER" = nvidia ]; then
+            [ "$IN_REPS" = 2 ] && [ -z "$IN_TASKS" ] || { echo "NVIDIA cohort requires all six tasks and reps=2"; exit 1; }
+            [ -n "$NVIDIA_API" ] || { echo "missing selected NVIDIA key"; exit 1; }
+            task_nvidia_key="$NVIDIA_API"
+            umask 077
+            export CCR_INTERNAL_HOME_DIR="$RUNNER_TEMP/ccr-home"
+            export CCR_GATEWAY_ENTRY="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
+            export CCR_MODEL_CATALOG_PATH="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/models.json"
+            export CCR_RAW_TRACE_ENABLED=0
+            export CCR_WEB_AUTH_TOKEN="$(openssl rand -hex 32)"
+            # CCR 3.1.3 still permits one independent 401 auth-refresh attempt; record it below.
+            export GATEWAY_UPSTREAM_RETRY_ENABLED=false GATEWAY_UPSTREAM_RETRY_MAX_ATTEMPTS=1 UPSTREAM_TIMEOUT_MS=180000
+            export ANTHROPIC_AUTH_TOKEN="$(openssl rand -hex 32)"
+            export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
+            upstream_model="$ANTHROPIC_MODEL"
+            export ANTHROPIC_MODEL="nvidia/$upstream_model" ANTHROPIC_DEFAULT_HAIKU_MODEL="nvidia/$upstream_model"
+            export CLAUDE_CODE_MAX_RETRIES=0 CLAUDE_CODE_RETRY_WATCHDOG=0 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000
+            case "$upstream_model" in
+              nvidia/nemotron-3-super-120b-a12b) body='{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}' ;;
+              nvidia/nemotron-3.5-lightning-30b-a3b) body='{"chat_template_kwargs":{"enable_thinking":false}}' ;;
+              z-ai/glm-5.3-flash) body='{"reasoning_effort":"low","chat_template_kwargs":{"clear_thinking":true}}' ;;
+            esac
+            mkdir -p "$CCR_INTERNAL_HOME_DIR/.claude-code-router"
+            jq -n --arg model "$upstream_model" --argjson body "$body" '{APIKEY:env.ANTHROPIC_AUTH_TOKEN,HOST:"127.0.0.1",PORT:3456,API_TIMEOUT_MS:180000,gateway:{enabled:true,host:"127.0.0.1",port:3456,coreHost:"127.0.0.1",corePort:3457},preferredProvider:"nvidia",Providers:[{name:"nvidia",api_base_url:"https://integrate.api.nvidia.com/v1",api_key:env.NVIDIA_API,models:[$model],protocolDetectionMode:"manual",capabilities:[{type:"openai_chat_completions",baseUrl:"https://integrate.api.nvidia.com/v1"}],account:{enabled:false},autoFetchModels:false,autoFetchKnownModels:false,extraBody:($body+{max_tokens:32000})}],Router:{builtInRules:{"claude-code":{enabled:false},codex:{enabled:false}},fallback:{mode:"off",models:[],retryCount:0},rules:[]},plugins:[],profile:{enabled:false,profiles:[],claudeCode:{enabled:false},codex:{enabled:false}},observability:{agentAnalysis:false,requestLogs:false,requestLogBodyCapture:"none",requestLogMaxBodyBytes:0}}' > "$CCR_INTERNAL_HOME_DIR/.claude-code-router/config.json"
+            unset NVIDIA_API KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
+            adapter_pid=''
+            finish_adapter() {
+              if [ -n "$adapter_pid" ]; then kill "$adapter_pid" 2>/dev/null || true; wait "$adapter_pid" 2>/dev/null || true; fi
+              mkdir -p results
+              head -c 262144 "$RUNNER_TEMP/ccr.log" | jq -Rs --arg key "$task_nvidia_key" 'split($key)|join("[REDACTED]")' > results/adapter-diagnostics.json
+            }
+            trap finish_adapter EXIT
+            "$RUNNER_TEMP/ccr/node_modules/.bin/ccr" serve --no-open --host 127.0.0.1 --port 3458 > "$RUNNER_TEMP/ccr.log" 2>&1 &
+            adapter_pid=$!
+            ready=false
+            for attempt in {1..45}; do
+              if curl --silent --fail --connect-timeout 1 --max-time 2 http://127.0.0.1:3456/health -o "$RUNNER_TEMP/ccr-health.json" && jq -e '(.status=="ok" or .status=="running")' "$RUNNER_TEMP/ccr-health.json" >/dev/null; then ready=true; break; fi
+              kill -0 "$adapter_pid" 2>/dev/null || break
+              sleep 1
+            done
+            [ "$ready" = true ] || { echo "local NVIDIA adapter did not become ready"; exit 1; }
+            # The public repo receives only encrypted generated content, including errors/stdout.
+            rc=0
+            dao "${args[@]}" > summary.txt 2>&1 || rc=$?
+            mkdir -p results
+            cp "$RUNNER_TEMP/ccr/package-lock.json" results/adapter-package-lock.json
+            jq -n --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg model "$upstream_model" --argjson body "$body" --argjson rc "$rc" '{schema:"dao-nvidia-provider/1",sha:$sha,github_run_id:$run,github_run_attempt:$attempt,provider:"nvidia",model:$model,endpoint:"https://integrate.api.nvidia.com/v1/chat/completions",host:"claude-code@2.1.285",adapter:"@musistudio/claude-code-router@3.1.3",request_body_overrides:($body+{max_tokens:32000}),retry:{configured:{claude_max_retries:0,watchdog:false,ordinary_gateway_retry:false,fallback:false},known_401_auth_refresh_extra_attempts:1,actual_error_retry_counts:"NOT_MEASURED"},matrix_exit_code:$rc}' > results/provider.json
+            echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+            echo "NVIDIA matrix exit=$rc (raw evidence retained for encryption)"
+            exit "$rc"
+          fi
           export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
           unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "missing selected provider key"; exit 1; }
-          args=(eval resume run --repo "$PWD" --out results --reps "$IN_REPS")
-          if [ -n "$IN_TASKS" ]; then args+=(--tasks "$IN_TASKS"); fi
           dao "${args[@]}" | tee summary.txt
+      - name: Encrypt NVIDIA evidence and publish only numeric acceptance metadata
+        id: envelope
+        if: always() && inputs.provider == 'nvidia'
+        env:
+          IN_MODEL: ${{ inputs.model }}
+          MATRIX_EXIT: ${{ steps.matrix.outputs.exit_code }}
+        run: |
+          mkdir -p nvidia-public results
+          touch summary.txt
+          tar -czf "$RUNNER_TEMP/nvidia-evidence.tar.gz" results summary.txt
+          # Fail closed: encryption failure never enables a plaintext upload.
+          openssl cms -encrypt -binary -aes-256-gcm -outform DER -in "$RUNNER_TEMP/nvidia-evidence.tar.gz" -out nvidia-public/evidence.cms "$RUNNER_TEMP/nvidia-recipient.pem"
+          openssl x509 -in "$RUNNER_TEMP/nvidia-recipient.pem" -noout -fingerprint -sha256 > nvidia-public/recipient-fingerprint.txt
+          sha256sum nvidia-public/evidence.cms > nvidia-public/evidence.sha256
+          counts='{"attempted_samples":0,"passed_samples":0,"attempted_phases":0}'
+          if [ -s results/resume.jsonl ]; then counts=$(jq -s '{attempted_samples:length,passed_samples:([.[]|select(.pass==true)]|length),attempted_phases:([.[]|.make,.s1,.s2|select(type=="object" and has("rc"))]|length)}' results/resume.jsonl); fi
+          jq -n --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg model "$IN_MODEL" --arg rc "$MATRIX_EXIT" --argjson counts "$counts" '{sha:$sha,github_run_id:$run,github_run_attempt:$attempt,model:$model,matrix_exit_code:(if $rc=="" then null else ($rc|tonumber) end),expected_samples:12,expected_phases:36,counts:$counts}' > nvidia-public/acceptance.json
+          cat nvidia-public/acceptance.json
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.provider == 'nvidia' && steps.envelope.outcome == 'success'
+        with:
+          name: nvidia-resume-eval-encrypted
+          if-no-files-found: error
+          path: |
+            nvidia-public/evidence.cms
+            nvidia-public/evidence.sha256
+            nvidia-public/recipient-fingerprint.txt
+            nvidia-public/acceptance.json
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.provider != 'nvidia'
         with:
           name: resume-rust-eval
           include-hidden-files: true

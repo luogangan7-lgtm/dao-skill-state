@@ -261,6 +261,19 @@ red stops further model spending and saves its evidence; unrun rows stay NOT_RUN
 Acceptance requires the complete 6×2 matrix and independent raw trace review.
 Trace inspection is bounded observation, not a security sandbox.
 
+For NVIDIA's free hosted endpoints, use `provider=nvidia`, an explicit model
+from the workflow's frozen cohort, and `evidence_cert` containing the owner's
+PEM public recipient certificate. Keep the matching private key outside GitHub.
+The pinned local protocol adapter preserves the same Claude Code skill host and
+Rust matrix. Each model runs separately, with its documented reasoning settings
+recorded in `provider.json`; those settings differ, so results are not a controlled
+estimate of model-only gains. Ordinary gateway retries and Claude retries are
+configured off; the adapter has a known independent 401 auth-refresh attempt. Error
+retry counts are unmeasured. NVIDIA raw artifacts, stdout and diagnostics are
+CMS-encrypted for internal review. The public artifact contains the ciphertext,
+recipient fingerprint and numeric acceptance metadata; encryption failure has no
+plaintext fallback. A protocol probe alone cannot pass the behavioral matrix.
+
 The PR check freezes all `.py` files against the base, runs Rust gate calibration
 and exports formatting patches from CI when needed. No local execution is part
 of this task's acceptance.
