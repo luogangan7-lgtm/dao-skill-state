@@ -193,6 +193,9 @@ fn invocation_probe(words: &[&str], depth: usize) -> bool {
         return !describe && invocation_probe(&words[i..], depth + 1);
     }
     if matches!(exe, "sh" | "bash") {
+        if words.len() == 2 && words[1] == "--version" {
+            return false;
+        }
         let mut i = 1;
         while let Some(flag) = words.get(i) {
             if !flag.starts_with('-') || *flag == "--" {
