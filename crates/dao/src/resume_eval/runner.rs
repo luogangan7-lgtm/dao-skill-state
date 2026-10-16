@@ -36,6 +36,7 @@ fn drain(
     thread::spawn(move || {
         let mut kept = PipeCapture::default();
         let mut buf = [0u8; 8192];
+        let mut tail_s = None;
         loop {
             match pipe.read(&mut buf) {
                 Ok(0) => break,
@@ -44,13 +45,20 @@ fn drain(
                     kept.first_s.get_or_insert(at);
                     kept.last_s = Some(at);
                     let take = n.min(limit.saturating_sub(kept.bytes.len()));
+                    let offset = kept.bytes.len();
                     kept.bytes.extend_from_slice(&buf[..take]);
                     kept.truncated |= take != n;
                     if take > 0 {
-                        if kept.reads.len() < READ_LIMIT {
-                            kept.reads.push((kept.bytes.len(), at));
-                        } else {
-                            kept.timing_truncated = true;
+                        tail_s = Some(at);
+                    }
+                    // A JSONL event is received when its line end arrives, not per pipe read.
+                    for (i, byte) in buf[..take].iter().enumerate() {
+                        if *byte == b'\n' {
+                            if kept.reads.len() < READ_LIMIT {
+                                kept.reads.push((offset + i + 1, at));
+                            } else {
+                                kept.timing_truncated = true;
+                            }
                         }
                     }
                 }
@@ -58,6 +66,14 @@ fn drain(
                     kept.truncated = true;
                     break;
                 }
+            }
+        }
+        // An unterminated final event uses its last retained byte, never EOF time.
+        if kept.bytes.last().is_some_and(|byte| *byte != b'\n') {
+            if kept.reads.len() < READ_LIMIT {
+                kept.reads.push((kept.bytes.len(), tail_s.unwrap()));
+            } else {
+                kept.timing_truncated = true;
             }
         }
         let _ = tx.send(kept);
@@ -472,7 +488,10 @@ mod tests {
         assert_eq!(captured.reads.len(), 2);
         assert_eq!(captured.reads[0].0, first.len());
         assert_eq!(captured.reads[1].0, stream.len());
-        assert_eq!(row["tool_results"][0]["observed_s"], captured.last_s.unwrap());
+        assert_eq!(
+            row["tool_results"][0]["observed_s"],
+            captured.last_s.unwrap()
+        );
     }
 
     #[test]
