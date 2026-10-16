@@ -347,7 +347,7 @@ jobs:
             export CLAUDE_CODE_MAX_RETRIES=0 CLAUDE_CODE_RETRY_WATCHDOG=0 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000
             case "$upstream_model" in
               nvidia/nemotron-3-super-120b-a12b) body='{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}' ;;
-              nvidia/nemotron-3.5-super-vl-120b-a12b) body='{"reasoning_effort":"none"}' ;;
+              nvidia/nemotron-3.5-super-vl-120b-a12b) body='{"reasoning_effort":"low"}' ;;
               nvidia/nemotron-3.5-lightning-30b-a3b) body='{"chat_template_kwargs":{"enable_thinking":false}}' ;;
               z-ai/glm-5.3-flash) body='{"reasoning_effort":"low","chat_template_kwargs":{"clear_thinking":true}}' ;;
             esac

@@ -274,14 +274,16 @@ CMS-encrypted for internal review. The public artifact contains the ciphertext,
 recipient fingerprint and numeric acceptance metadata; encryption failure has no
 plaintext fallback. A protocol probe alone cannot pass the behavioral matrix.
 
-The additional `nvidia/nemotron-3.5-super-vl-120b-a12b` candidate uses
-`reasoning_effort=none` and the unchanged 32,000-token output cap. NVIDIA's
+The additional `nvidia/nemotron-3.5-super-vl-120b-a12b` candidate now uses
+`reasoning_effort=low` and the unchanged 32,000-token output cap. NVIDIA's
 [hosted API reference](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-super-vl-120b-a12b-infer)
 (checked 2026-10-17) documents that mode, tools, SSE and the supported output
 range; its [model page](https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b)
-lists the free endpoint as available. This is a separate candidate after the
-initial three-model cohort; previous failures remain evidence, and no speed or
-capability improvement is assumed.
+lists the free endpoint as available. This is a controlled configuration change
+from `none` at `e891789`: DAO contents, task prompts, helpers, fixtures, gates,
+host, adapter and phase budgets remain fixed. The earlier timeout and rule
+violations remain evidence; reasoning mode is a hypothesis, and no speed or
+capability improvement is assumed before the complete matrix passes.
 
 The PR check freezes all `.py` files against the base, runs Rust gate calibration
 and exports formatting patches from CI when needed. No local execution is part
