@@ -379,30 +379,8 @@ fn evidence(
         "cache_write":result["usage"]["cache_creation_input_tokens"]})
 }
 
-pub(super) fn run(
-    ws: &Path,
-    home: &Path,
-    prompt: &str,
-    turns: u64,
-    seconds: u64,
-    store: &Path,
-) -> Value {
-    let mut command = Command::new("claude");
-    command
-        .args([
-            "-p",
-            prompt,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--max-turns",
-            &turns.to_string(),
-            "--dangerously-skip-permissions",
-        ])
-        .current_dir(ws)
-        .env_clear()
-        .env("HOME", home)
-        .env("DAO_RESUME_STORE", store);
+fn configure_environment(command: &mut Command, home: &Path) {
+    command.env_clear().env("HOME", home);
     for (key, value) in env::vars() {
         if matches!(
             key.as_str(),
@@ -429,6 +407,31 @@ pub(super) fn run(
             }
         }
     }
+}
+
+pub(super) fn run(
+    ws: &Path,
+    home: &Path,
+    prompt: &str,
+    turns: u64,
+    seconds: u64,
+    store: &Path,
+) -> Value {
+    let mut command = Command::new("claude");
+    command
+        .args([
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--max-turns",
+            &turns.to_string(),
+            "--dangerously-skip-permissions",
+        ])
+        .current_dir(ws);
+    configure_environment(&mut command, home);
+    command.env("DAO_RESUME_STORE", store);
     let start = Instant::now();
     let (stdout, rc, observation) = capture(command, seconds);
     let mut row = evidence(
@@ -445,6 +448,72 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_home_reuses_cached_json_dependency_and_reports_manifest_errors() {
+        struct Cleanup(std::path::PathBuf);
+
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let root = super::super::temporary("cargo-probe").unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let home = root.join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let manifest = root.join("Cargo.toml");
+        // Match the dependency already pinned in this crate's Cargo.lock.
+        let valid = "[package]\nname = \"dao-env-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_json = \"=1.0.151\"\n";
+        std::fs::write(&manifest, valid).unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            r##"fn main() {
+    let value: serde_json::Value =
+        serde_json::from_str(r#"{"answer":42,"ready":true,"name":"cached"}"#).unwrap();
+    assert_eq!(value["answer"], 42);
+    assert_eq!(value["ready"], true);
+    assert_eq!(value["name"], "cached");
+    println!("DAO_RESUME_CARGO_PROBE_OK");
+}
+"##,
+        )
+        .unwrap();
+        let probe = || {
+            let mut command = Command::new("cargo");
+            command
+                .args(["run", "--offline", "--manifest-path"])
+                .arg(&manifest)
+                .current_dir(&root);
+            configure_environment(&mut command, &home);
+            capture(command, 60)
+        };
+        let (output, rc, observation) = probe();
+        std::fs::write(&manifest, format!("{valid}\n[dependencies]\n")).unwrap();
+        let (invalid_output, invalid_rc, invalid_observation) = probe();
+
+        assert_eq!(rc, 0, "valid Cargo probe: {observation}");
+        assert!(!output.truncated, "valid Cargo probe: {observation}");
+        assert_eq!(
+            redact(&String::from_utf8_lossy(&output.bytes)),
+            "DAO_RESUME_CARGO_PROBE_OK\n",
+            "valid Cargo probe: {observation}"
+        );
+        assert_eq!(invalid_rc, 101, "invalid Cargo probe: {invalid_observation}");
+        assert!(
+            invalid_output.bytes.is_empty(),
+            "invalid Cargo probe: {invalid_observation}"
+        );
+        assert!(
+            invalid_observation["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("duplicate key"),
+            "invalid Cargo probe: {invalid_observation}"
+        );
+    }
 
     fn bytewise_capture(bytes: Vec<u8>) -> PipeCapture {
         struct Bytewise(std::io::Cursor<Vec<u8>>);
