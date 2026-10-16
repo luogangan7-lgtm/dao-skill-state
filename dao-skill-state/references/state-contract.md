@@ -41,10 +41,10 @@ Choose typed fields from: task/owner, schema and policy versions, revision, phas
 
 Specify the authoritative location, initialization, allowed transitions, completion gate, and how authoritative evidence can be reread. A reference must be resolvable; a stale timestamp is not proof of freshness. Check current external state before an irreversible step.
 
-## Validate before accepting a patch
+## Validate state updates
 
 1. Parse/type-check allowed fields, versions and size. Reject unexpected keys or invalid types.
-2. Validate business meaning against evidence and invariants: totals, permissions, allowed state transitions, version freshness and action receipts. Valid JSON is not a true fact. Use deterministic code for deterministic rules.
+2. Validate business meaning against evidence and invariants: totals, permissions, allowed state transitions, version freshness and action receipts. Valid JSON is not a true fact. For an executable state writer, enforce deterministic rules in that helper or the authoritative host. An instruction-led checkpoint must perform the same field, evidence and transition checks using verified host tools; it does not require a separate validator or command runner.
 3. Preserve unspecified keys: merge current with incoming; **explicit null deletes only contract-deletable keys**. Reject deletion of required safety/identity fields. Nested merge semantics must be declared; never silently replace a whole shared document.
 4. Before shared writes use the host's ownership/lock/version mechanism. Re-read after a conflict and merge only the authorized delta. Without compare-and-swap or equivalent protection do not claim concurrent-writer safety; use a single writer or stop.
 5. Commit only validated state. On failure retain the last verified checkpoint, mark the attempt failed and re-observe; do not replace it with invented “correct” facts.
@@ -53,12 +53,12 @@ Specify the authoritative location, initialization, allowed transitions, complet
 
 Before an external action persist a pending record with stable action identity and authorization reference. After execution verify the external receipt before marking done. On restart inspect pending actions and the real system; do not resend a non-idempotent action merely because a local receipt is absent. Missing idempotency/reconciliation means human review, not an exactly-once claim.
 
-Keep the reason a session stopped separate from an action's outcome and from an operator's approval or pause. If a later authorized continuation may proceed after the stopped action is confirmed applied, the helper must support that transition from both pending and already-done records while retaining completion receipts and attempt history. Do not require the retry/reset path, erase pending evidence, or remove a real approval or pause to reach the next unfinished action. Exercise a committed failure before the final action through the entire stop → fresh request → authoritative reconciliation → next-action path with the actual helper, not only as prose or isolated helper commands.
+Keep the reason a session stopped separate from an action's outcome and from an operator's approval or pause. If a later authorized continuation may proceed after the stopped action is confirmed applied, the generated workflow and any supplied helper must support that transition from both pending and already-done records while retaining completion receipts and attempt history. Do not require the retry/reset path, erase pending evidence, or remove a real approval or pause to reach the next unfinished action. Exercise a committed failure before the final action through the entire stop → fresh request → authoritative reconciliation → next-action path with the generated workflow and any supplied helper, not only as prose or isolated helper commands.
 
 Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, reconcile any pending action first, then continue from the next unfinished action. State adds no step limit: a run goes on until completion, a gate or approval, an error, a failed recheck, or the user stops it. Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
 
 ## Acceptance before runtime adoption
 
-Exercise normal continuation, restart, malformed and semantically wrong patches, explicit-null deletion, stale policy/evidence, duplicate/pending action and concurrent conflict. Mark unsupported cases NOT_TESTED. Compare output quality and actual context/cost/latency with the previous method on the same tasks; preserve failed runs and changed protocols.
+For runtime capabilities being adopted, exercise normal continuation, restart, malformed and semantically wrong patches, explicit-null deletion, stale policy/evidence, duplicate/pending action and concurrent conflict. Mark unsupported cases NOT_TESTED. Compare output quality and actual context/cost/latency with the previous method on the same tasks; preserve failed runs and changed protocols.
 
 Do not claim universal savings, O(1) context, production reliability, or exactly-once from a state file or small experiment. Upgrade from checkpoint assistance only after the host implements and verifies bounded per-request context, sufficient state, recovery and the relevant concurrency/external-action gates.
