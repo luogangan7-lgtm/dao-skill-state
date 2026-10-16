@@ -22,15 +22,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Identify the Rust compiler
+        id: rust
+        run: |
+          dao_compiler=$(cd crates/dao && rustc -vV)
+          hub_compiler=$(cd crates/skill-hub && rustc -vV)
+          echo "hash=$(printf '%s\n%s\n' "$dao_compiler" "$hub_compiler" | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
+        id: cargo-cache
         with:
           path: |
             ~/.cargo/registry
+            ~/.cargo/git/db
             crates/dao/target
             crates/skill-hub/target
-          key: cargo-intake-${{ hashFiles('crates/*/Cargo.lock') }}
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-intake-release-${{ hashFiles('crates/*/Cargo.lock') }}-${{ hashFiles('crates/*/src/**', 'crates/*/Cargo.toml') }}
+          restore-keys: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-intake-release-${{ hashFiles('crates/*/Cargo.lock') }}-
+      - name: Record cache receipt
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+        run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build dao and skill-hub
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
         run: |
+          (cd crates/dao && cargo -V)
+          (cd crates/skill-hub && cargo -V)
           (cd crates/dao && cargo build --release --locked)
           (cd crates/skill-hub && cargo build --release --locked)
       - name: Run the supply chain

@@ -2,6 +2,7 @@
 //! (dao-skill-state/scripts/check_assessment.py) by `tools/diff_cli.py --corpus assess --freeze`,
 //! against the `dao assess` binary. Each case runs in its own directory with the frozen argv;
 //! stdout bytes (sha256), exit code and stderr class must match, except the KNOWN divergences.
+//! Uses bounded std scoped workers; every case runs once, and worker panics fail this gate.
 
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
@@ -77,60 +78,83 @@ fn matches_frozen_python_baseline() {
     assert!(cases.len() > 1500, "fixture shrank: {} cases", cases.len());
     let root = std::env::temp_dir().join(format!("dao-assess-fx-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    let (mut bad, mut panics) = (Vec::new(), Vec::new());
-    for (i, c) in cases.iter().enumerate() {
-        let name = c["name"].as_str().unwrap();
-        let dir = root.join(format!("{i:05}"));
-        fs::create_dir_all(&dir).unwrap();
-        for d in c["dirs"].as_array().unwrap() {
-            fs::create_dir_all(dir.join(d.as_str().unwrap())).unwrap();
-        }
-        for (rel, parts) in c["files"].as_object().unwrap() {
-            let mut bytes = Vec::new();
-            for p in parts.as_array().unwrap() {
-                let chunk = match p["t"].as_str() {
-                    Some(t) => t.as_bytes().to_vec(),
-                    None => b64(p["b"].as_str().unwrap()),
-                };
-                bytes.extend(chunk.repeat(p["n"].as_u64().unwrap() as usize));
-            }
-            let path = dir.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, bytes).unwrap();
-        }
-        for f in c["fifos"].as_array().unwrap() {
-            let ok = Command::new("mkfifo")
-                .arg(dir.join(f.as_str().unwrap()))
-                .status();
-            assert!(ok.unwrap().success());
-        }
-        let args: Vec<OsString> = c["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| match a.as_str() {
-                Some(s) => s.into(),
-                None => OsString::from_vec(b64(a["b"].as_str().unwrap())),
+    // Bound subprocess and fixture memory use while keeping every case isolated by index.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(4);
+    let (mut bad, panics) = std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..workers)
+            .map(|worker| {
+                let cases = &cases;
+                let root = &root;
+                scope.spawn(move || {
+                    let (mut bad, mut panics) = (Vec::new(), Vec::new());
+                    for (i, c) in cases.iter().enumerate().skip(worker).step_by(workers) {
+                        let name = c["name"].as_str().unwrap();
+                        let dir = root.join(format!("{i:05}"));
+                        fs::create_dir_all(&dir).unwrap();
+                        for d in c["dirs"].as_array().unwrap() {
+                            fs::create_dir_all(dir.join(d.as_str().unwrap())).unwrap();
+                        }
+                        for (rel, parts) in c["files"].as_object().unwrap() {
+                            let mut bytes = Vec::new();
+                            for p in parts.as_array().unwrap() {
+                                let chunk = match p["t"].as_str() {
+                                    Some(t) => t.as_bytes().to_vec(),
+                                    None => b64(p["b"].as_str().unwrap()),
+                                };
+                                bytes.extend(chunk.repeat(p["n"].as_u64().unwrap() as usize));
+                            }
+                            let path = dir.join(rel);
+                            fs::create_dir_all(path.parent().unwrap()).unwrap();
+                            fs::write(path, bytes).unwrap();
+                        }
+                        for f in c["fifos"].as_array().unwrap() {
+                            let ok = Command::new("mkfifo")
+                                .arg(dir.join(f.as_str().unwrap()))
+                                .status();
+                            assert!(ok.unwrap().success());
+                        }
+                        let args: Vec<OsString> = c["args"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|a| match a.as_str() {
+                                Some(s) => s.into(),
+                                None => OsString::from_vec(b64(a["b"].as_str().unwrap())),
+                            })
+                            .collect();
+                        let out = Command::new(env!("CARGO_BIN_EXE_dao"))
+                            .arg("assess")
+                            .args(&args)
+                            .current_dir(&dir)
+                            .output()
+                            .unwrap();
+                        let class = stderr_class(&out.stderr);
+                        if class == "panic" || out.status.code().is_none() {
+                            panics.push(name.to_string());
+                        }
+                        let same = format!("{:x}", Sha256::digest(&out.stdout))
+                            == c["python_stdout_sha256"]
+                            && out.status.code().map(i64::from) == c["python_exit"].as_i64()
+                            && class == c["python_stderr"];
+                        if !same {
+                            bad.push(name.to_string());
+                        }
+                        let _ = fs::remove_dir_all(&dir);
+                    }
+                    (bad, panics)
+                })
             })
             .collect();
-        let out = Command::new(env!("CARGO_BIN_EXE_dao"))
-            .arg("assess")
-            .args(&args)
-            .current_dir(&dir)
-            .output()
-            .unwrap();
-        let class = stderr_class(&out.stderr);
-        if class == "panic" || out.status.code().is_none() {
-            panics.push(name.to_string());
+        let (mut bad, mut panics) = (Vec::new(), Vec::new());
+        for job in jobs {
+            let (differences, crashes) = job.join().unwrap();
+            bad.extend(differences);
+            panics.extend(crashes);
         }
-        let same = format!("{:x}", Sha256::digest(&out.stdout)) == c["python_stdout_sha256"]
-            && out.status.code().map(i64::from) == c["python_exit"].as_i64()
-            && class == c["python_stderr"];
-        if !same {
-            bad.push(name.to_string());
-        }
-        let _ = fs::remove_dir_all(&dir);
-    }
+        (bad, panics)
+    });
     let _ = fs::remove_dir_all(&root);
     assert!(panics.is_empty(), "dao assess crashed on: {panics:?}");
     let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
