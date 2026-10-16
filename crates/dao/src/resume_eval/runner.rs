@@ -134,8 +134,13 @@ fn evidence(bytes: &[u8], rc: Value, mut truncated: bool, elapsed: f64) -> Value
         }
         if let Some(content) = event["message"]["content"].as_array() {
             for item in content.iter().filter(|item| item["type"] == "tool_use") {
+                if !item["name"].as_str().is_some_and(|name| !name.is_empty())
+                    || !item["input"].is_object()
+                {
+                    truncated = true;
+                }
                 let entry: Value = serde_json::from_str(&redact(&json!({
-                    "name": item["name"], "input": item.get("input").cloned().unwrap_or(json!({}))
+                    "name": item["name"], "input": item["input"]
                 }).to_string())).unwrap();
                 trace_bytes += entry.to_string().len();
                 if trace_bytes <= TRACE_LIMIT {
@@ -154,7 +159,11 @@ fn evidence(bytes: &[u8], rc: Value, mut truncated: bool, elapsed: f64) -> Value
                 } else if entry["name"] == "Read" {
                     if let Some(path) = entry["input"]["file_path"].as_str() {
                         if let Some((_, suffix)) = path.split_once("/.claude/skills/") {
-                            calls.push(format!("read:{}", suffix.split('/').next().unwrap_or("?")));
+                            if let Some((name, "SKILL.md")) = suffix.split_once('/') {
+                                if !name.is_empty() && name != "." && name != ".." {
+                                    calls.push(format!("read:{name}"));
+                                }
+                            }
                         }
                     }
                 }
