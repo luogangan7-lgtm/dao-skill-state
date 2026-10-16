@@ -39,6 +39,24 @@ jobs:
         working-directory: crates/${{ matrix.crate }}
     steps:
       - uses: actions/checkout@v4
+      - name: Identify the Rust compiler
+        id: rust
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      # Cache build inputs and outputs, never check results: every check below still runs.
+      - name: Cache Rust builds
+        id: cargo-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/${{ matrix.crate }}/target/debug
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-${{ matrix.crate }}-debug-${{ hashFiles(format('crates/{0}/Cargo.lock', matrix.crate)) }}-${{ hashFiles(format('crates/{0}/src/**', matrix.crate), format('crates/{0}/tests/**', matrix.crate), format('crates/{0}/Cargo.toml', matrix.crate)) }}
+          restore-keys: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-${{ matrix.crate }}-debug-${{ hashFiles(format('crates/{0}/Cargo.lock', matrix.crate)) }}-
+      - name: Record cache receipt
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+        run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
