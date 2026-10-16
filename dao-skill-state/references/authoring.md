@@ -11,6 +11,8 @@
 
 A skill is either **fixed steps** (the default: one decision workflow that finishes within a session) or **stateful** (long, resumable work where a restart would lose decisions, work position, approvals or receipts). Pick it with the two questions in the [state contract's form standard](state-contract.md#form-standard-created-and-third-party-skills-alike) (can a run be cut off? can the next session learn from the system what took effect?); a stateful skill needs all three parts listed there. Say which form you chose and why; do not add state to a short task.
 
+Choose the form before building helpers. When the form-standard questions select fixed-plus-check, write that workflow directly; do not add a competing progress store or state engine. Write the usable `SKILL.md` first, then add only executable support that its workflow actually needs. For necessary helpers reuse verified tools or libraries before implementing generic parsers, hashing or a framework; a language requirement does not itself require a helper or a new runtime. A stateful skill still needs its full pending/reconciliation contract, but only the state and transitions its task needs.
+
 ## Write the contract
 
 Specify trigger and non-trigger, required input, decision workflow, output, stopping conditions, tool requirements and the pass/fail check. Explain only what a capable agent would not reliably infer.
