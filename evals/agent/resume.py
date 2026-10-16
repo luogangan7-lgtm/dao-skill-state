@@ -41,6 +41,9 @@ import evolve  # noqa: E402
 import run  # noqa: E402
 
 ALWAYS = "import sys\nsys.exit(0)\n"  # session 1 is judged only by the final check
+# run.py already redacts these fields; failures and successes retain the same maker evidence.
+MAKE_EVIDENCE_FIELDS = ("turns", "duration_s", "skill_calls", "rc", "is_error", "error",
+                        "tool_trace", "trace_truncated", "final", "check")
 
 
 def form_of(arm):
@@ -197,10 +200,12 @@ def main():
                     if d is None:
                         row = {"task": name, "arm": arm, "rep": rep, "pass": False, "made": False,
                                "producer_sha256": producer_hash,
-                               "make": {k: mk.get(k) for k in ("turns", "duration_s", "error", "final")}}
+                               "make": {k: mk.get(k) for k in MAKE_EVIDENCE_FIELDS}}
                         rows.append(row)  # a creator that wrote no skill fails the rep
                         log.write(json.dumps(row) + "\n")
                         log.flush()
+                        print(json.dumps({**{k: row[k] for k in ("task", "arm", "rep", "pass", "made")},
+                                          "make": {k: row["make"][k] for k in ("turns", "rc", "is_error", "error", "final", "check", "trace_truncated")}}), flush=True)
                         continue
                     made = (d, sname)
                 t1 = session(troot, arm, os.path.join(troot, "files"), open(os.path.join(troot, "first.md")).read(),
@@ -242,7 +247,7 @@ def main():
                        "s2_loaded_runbook": (made[1] if made else "backfill-runbook") in json.dumps(r2.get("skill_calls"))}
                 if mk is not None:
                     row.update(made=True, skill_name=made[1],
-                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls", "rc", "is_error", "error", "tool_trace", "trace_truncated")},
+                               make={k: mk.get(k) for k in MAKE_EVIDENCE_FIELDS},
                                skill_hashes=file_hashes(made[0]), make_tokens=tokens(mk))
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
