@@ -1,7 +1,8 @@
 //! Claude subprocess custody for the CI-only resume evaluation.
 //! Depends on std process/threads and serde_json; called only by resume_eval.
 //! Invariants: fresh HOME, environment allowlist, bounded redacted evidence, concurrent pipe
-//! draining, a deadline and process-group cleanup. This is observation, not a security sandbox.
+//! draining, exact bounded evidence receipts, a deadline and process-group cleanup.
+//! This is observation, not a security sandbox.
 
 use serde_json::{json, Value};
 use std::env;
@@ -23,8 +24,51 @@ struct PipeCapture {
     truncated: bool,
     reads: Vec<(usize, f64)>,
     timing_truncated: bool,
+    record_counts: [usize; 8],
     first_s: Option<f64>,
     last_s: Option<f64>,
+}
+
+fn consumed_event(event: &Value) -> bool {
+    let content = event["message"]["content"].as_array();
+    matches!(event["type"].as_str(), Some("assistant" | "result"))
+        || content.is_some_and(|items| {
+            items.iter().any(|item| {
+                matches!(item["type"].as_str(), Some("tool_use" | "tool_result"))
+            })
+        })
+}
+
+// Classify only retained JSONL records (including a retained tail); never store dynamic types.
+fn record_receipt(kept: &mut PipeCapture, start: usize, end: usize, at: f64) {
+    let line = &kept.bytes[start..end];
+    if String::from_utf8_lossy(line).trim().is_empty() {
+        kept.record_counts[7] += 1;
+        return;
+    }
+    let event: Value = match serde_json::from_slice(line) {
+        Ok(event) => event,
+        Err(_) => {
+            kept.record_counts[6] += 1;
+            return;
+        }
+    };
+    let bucket = match event["type"].as_str() {
+        Some("assistant") => 0,
+        Some("user") => 1,
+        Some("result") => 2,
+        Some("system") => 3,
+        Some("stream_event") => 4,
+        _ => 5,
+    };
+    kept.record_counts[bucket] += 1;
+    if consumed_event(&event) {
+        if kept.reads.len() < READ_LIMIT {
+            kept.reads.push((end, at));
+        } else {
+            kept.timing_truncated = true;
+        }
+    }
 }
 
 fn drain(
@@ -37,6 +81,7 @@ fn drain(
         let mut kept = PipeCapture::default();
         let mut buf = [0u8; 8192];
         let mut tail_s = None;
+        let mut line_start = 0;
         loop {
             match pipe.read(&mut buf) {
                 Ok(0) => break,
@@ -54,11 +99,9 @@ fn drain(
                     // A JSONL event is received when its line end arrives, not per pipe read.
                     for (i, byte) in buf[..take].iter().enumerate() {
                         if *byte == b'\n' {
-                            if kept.reads.len() < READ_LIMIT {
-                                kept.reads.push((offset + i + 1, at));
-                            } else {
-                                kept.timing_truncated = true;
-                            }
+                            let end = offset + i + 1;
+                            record_receipt(&mut kept, line_start, end, at);
+                            line_start = end;
                         }
                     }
                 }
@@ -70,11 +113,8 @@ fn drain(
         }
         // An unterminated final event uses its last retained byte, never EOF time.
         if kept.bytes.last().is_some_and(|byte| *byte != b'\n') {
-            if kept.reads.len() < READ_LIMIT {
-                kept.reads.push((kept.bytes.len(), tail_s.unwrap()));
-            } else {
-                kept.timing_truncated = true;
-            }
+            let end = kept.bytes.len();
+            record_receipt(&mut kept, line_start, end, tail_s.unwrap());
         }
         let _ = tx.send(kept);
     });
@@ -151,6 +191,11 @@ fn capture(mut command: Command, seconds: u64) -> (PipeCapture, Value, Value) {
         "clock":"monotonic seconds since spawn; pipe receipt and exit/deadline observation, not tool execution time",
         "stdout_first_s":output.first_s,"stdout_last_s":output.last_s,
         "stdout_timing_truncated":output.timing_truncated,"process_stopped_s":stopped_s,
+        "stdout_record_counts":{"scope":"retained_prefix_including_unterminated_tail",
+            "assistant":output.record_counts[0],"user":output.record_counts[1],
+            "result":output.record_counts[2],"system":output.record_counts[3],
+            "stream_event":output.record_counts[4],"other":output.record_counts[5],
+            "malformed":output.record_counts[6],"blank":output.record_counts[7]},
         "stderr":stderr_text,"stderr_truncated":stderr_truncated
     });
     (output, rc, observation)
@@ -264,7 +309,7 @@ fn evidence(
         }
         let observed_s = reads
             .iter()
-            .find(|(end, _)| *end >= offset)
+            .find(|(end, _)| *end == offset)
             .map(|(_, at)| *at);
         let event: Value = match serde_json::from_str(line) {
             Ok(event) => event,
@@ -273,6 +318,9 @@ fn evidence(
                 continue;
             }
         };
+        if !consumed_event(&event) {
+            continue;
+        }
         if event["type"] == "result" {
             result = event.clone();
         }
@@ -617,7 +665,10 @@ mod tests {
             assert!(!captured.timing_truncated);
             assert_eq!(captured.reads.len(), 3);
             assert_eq!(captured.reads[0].0, first.len());
-            assert_eq!(captured.reads[1].0, first.len() + noise.len() + outcome.len());
+            assert_eq!(
+                captured.reads[1].0,
+                first.len() + noise.len() + outcome.len()
+            );
             assert_eq!(captured.reads[2].0, stream.len());
             assert_eq!(row["tool_trace"][0]["observed_s"], captured.reads[0].1);
             assert_eq!(row["tool_results"][0]["observed_s"], captured.reads[1].1);
@@ -647,13 +698,45 @@ mod tests {
 
     #[test]
     fn timing_event_limit_is_explicit_and_keeps_draining_bytes() {
-        let stream = "{}\n".repeat(READ_LIMIT + 1);
+        // Only records consumed by evidence spend the bounded receipt budget.
+        let event = "{\"type\":\"assistant\"}\n";
+        let stream = event.repeat(READ_LIMIT + 1);
         let captured = bytewise_capture(stream.as_bytes().to_vec());
         assert_eq!(captured.bytes, stream.as_bytes());
         assert!(!captured.truncated);
         assert!(captured.timing_truncated);
         assert_eq!(captured.reads.len(), READ_LIMIT);
-        assert_eq!(captured.reads.last().unwrap().0, READ_LIMIT * 3);
+        assert_eq!(captured.reads.last().unwrap().0, READ_LIMIT * event.len());
+    }
+
+    #[test]
+    fn record_counts_describe_only_the_retained_prefix() {
+        let stream = concat!(
+            "{\"type\":\"assistant\"}\n",
+            "{\"type\":\"user\"}\n",
+            "{\"type\":\"result\"}\n",
+            "{\"type\":\"system\"}\n",
+            "{\"type\":\"stream_event\"}\n",
+            "{\"type\":\"extension\"}\n",
+            "not-json\n",
+            " \n",
+            "{\"type\":\"system\"}"
+        );
+        let captured = bytewise_capture(stream.as_bytes().to_vec());
+        assert_eq!(captured.record_counts, [1, 1, 1, 2, 1, 1, 1, 1]);
+        assert_eq!(captured.reads.len(), 2);
+        let prefix = "{\"type\":\"assistant\"}\n";
+        let capped = drain(
+            std::io::Cursor::new(stream.as_bytes().to_vec()),
+            prefix.len(),
+            Instant::now(),
+        )
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+        assert!(capped.truncated);
+        assert_eq!(capped.bytes, prefix.as_bytes());
+        assert_eq!(capped.record_counts, [1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(capped.reads.len(), 1);
     }
 
     #[test]
