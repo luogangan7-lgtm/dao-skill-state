@@ -394,19 +394,29 @@ mod tests {
 
     #[test]
     fn interleaved_results_keep_ids_receipt_times_and_bounded_details() {
-        let first = format!("{}\n", json!({"type":"assistant","message":{"id":"m1","model":"test-model","usage":{"input_tokens":12},"content":[
+        let first = format!(
+            "{}\n",
+            json!({"type":"assistant","message":{"id":"m1","model":"test-model","usage":{"input_tokens":12},"content":[
             {"type":"tool_use","id":"a","name":"Bash","input":{"command":"one"}},
-            {"type":"tool_use","id":"b","name":"Bash","input":{"command":"two"}}]}}));
-        let second = format!("{}\n", json!({"type":"user","message":{"content":[
+            {"type":"tool_use","id":"b","name":"Bash","input":{"command":"two"}}]}})
+        );
+        let second = format!(
+            "{}\n",
+            json!({"type":"user","message":{"content":[
             {"type":"tool_result","tool_use_id":"b","content":[{"type":"text","text":"two done"}]},
-            {"type":"tool_result","tool_use_id":"a","content":"x".repeat(DETAIL_LIMIT + 1)}]}}));
+            {"type":"tool_result","tool_use_id":"a","content":"x".repeat(DETAIL_LIMIT + 1)}]}})
+        );
         let stream = first.clone() + &second;
         let row = evidence(
             stream.as_bytes(),
             json!("timeout"),
             false,
             4.0,
-            &[(first.len() / 2, 0.5), (first.len(), 1.0), (stream.len(), 3.0)],
+            &[
+                (first.len() / 2, 0.5),
+                (first.len(), 1.0),
+                (stream.len(), 3.0),
+            ],
         );
         assert_eq!(row["tool_trace"][0]["observed_s"], 1.0);
         assert_eq!(row["tool_results"][0]["tool_use_id"], "b");
@@ -426,7 +436,13 @@ mod tests {
         if env::var_os(FLAG).is_some() {
             let secret = env::var("ANTHROPIC_AUTH_TOKEN").unwrap();
             let mut command = Command::new("sh");
-            command.args(["-c", "printf '%s' '{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"'; printf '%s' \"$ANTHROPIC_AUTH_TOKEN\"; printf '%s\\n' '\"}]}}'; printf '%s' \"$ANTHROPIC_AUTH_TOKEN\" >&2; sleep 20 & wait"]);
+            let stream = json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"x","content":secret}]}});
+            command.env("DAO_TEST_STREAM", stream.to_string());
+            command.args([
+                "-c",
+                "printf '%s\\n' \"$DAO_TEST_STREAM\"; printf '%s' \"$ANTHROPIC_AUTH_TOKEN\" >&2; sleep 20 & wait",
+            ]);
             let (output, rc, observation) = capture(command, 1);
             let row = evidence(&output.bytes, rc, output.truncated, 1.0, &output.reads);
             assert_eq!(row["rc"], "timeout");
@@ -434,17 +450,28 @@ mod tests {
             assert!(!row.to_string().contains(&secret));
             assert_eq!(observation["stderr"], "[REDACTED]");
             assert!(observation["process_stopped_s"].as_f64().unwrap() >= 1.0);
-            assert!(row["tool_results"][0]["observed_s"].as_f64().unwrap()
-                < observation["process_stopped_s"].as_f64().unwrap());
+            assert!(
+                row["tool_results"][0]["observed_s"].as_f64().unwrap()
+                    < observation["process_stopped_s"].as_f64().unwrap()
+            );
             return;
         }
-        let status = Command::new(env::current_exe().unwrap())
-            .args(["--exact", "resume_eval::runner::tests::capture_preserves_partial_events_and_redacts_returned_secrets"])
-            .env(FLAG, "1")
-            .env("ANTHROPIC_AUTH_TOKEN", "synthetic-ci-secret-abcdef")
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let mut statuses = Vec::new();
+        for secret in [
+            "synthetic-ci-secret-abcdef",
+            "synthetic-quote\"-slash\\-newline\n-secret",
+            "tiny",
+        ] {
+            statuses.push(
+                Command::new(env::current_exe().unwrap())
+                    .args(["--exact", "resume_eval::runner::tests::capture_preserves_partial_events_and_redacts_returned_secrets"])
+                    .env(FLAG, "1")
+                    .env("ANTHROPIC_AUTH_TOKEN", secret)
+                    .status()
+                    .unwrap(),
+            );
+        }
+        assert!(statuses.iter().all(|status| status.success()));
     }
 
     #[test]
