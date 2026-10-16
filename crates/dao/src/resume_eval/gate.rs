@@ -123,8 +123,151 @@ fn forbidden(path: &str) -> bool {
 }
 
 fn shell_probe(command: &str) -> bool {
+    shell_probe_depth(command, 0)
+}
+
+fn assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+            && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    })
+}
+
+// Resolve only documented env/command/exec and shell -c forms. Unknown flags or excessive
+// nesting fail closed; this is still finite observation, not general shell evaluation.
+fn invocation_probe(words: &[&str], depth: usize) -> bool {
+    if depth > 8 {
+        return true;
+    }
+    let words = &words[words.iter().take_while(|word| assignment(word)).count()..];
+    let Some(first) = words.first() else {
+        return false;
+    };
+    let exe = Path::new(first)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(first);
+    if matches!(exe, "env" | "command" | "exec") {
+        let mut i = 1;
+        let mut describe = false;
+        while i < words.len() && words[i].starts_with('-') {
+            let flag = words[i];
+            i += 1;
+            if flag == "--" {
+                break;
+            }
+            let options = flag.strip_prefix('-').unwrap_or_default();
+            match exe {
+                "env" if matches!(flag, "-" | "-i" | "--ignore-environment") => {}
+                "env"
+                    if matches!(flag, "-u" | "--unset" | "-C" | "--chdir" | "-a" | "--argv0") =>
+                {
+                    if i == words.len() {
+                        return true;
+                    }
+                    i += 1;
+                }
+                "env"
+                    if ["--unset=", "--chdir=", "--argv0="]
+                        .iter()
+                        .any(|prefix| flag.starts_with(*prefix)) => {}
+                "env"
+                    if ["-u", "-C", "-a"]
+                        .iter()
+                        .any(|prefix| flag.starts_with(*prefix) && flag.len() > prefix.len()) => {}
+                "command"
+                    if !options.is_empty() && options.chars().all(|c| "pVv".contains(c)) =>
+                {
+                    describe |= flag.contains('v') || flag.contains('V');
+                }
+                "exec" if flag == "-a" => {
+                    if i == words.len() {
+                        return true;
+                    }
+                    i += 1;
+                }
+                "exec" if flag.len() > 2 && flag.starts_with("-a") => {}
+                "exec" if !options.is_empty() && options.chars().all(|c| "cl".contains(c)) => {}
+                _ => return true,
+            }
+        }
+        return !describe && invocation_probe(&words[i..], depth + 1);
+    }
+    if matches!(exe, "sh" | "bash") {
+        let mut i = 1;
+        while let Some(flag) = words.get(i) {
+            if !flag.starts_with('-') || *flag == "--" {
+                return false; // A script helper, not the supported command-string form.
+            }
+            let options = flag.strip_prefix('-').unwrap_or_default();
+            if options.is_empty() || !options.chars().all(|c| "lc".contains(c)) {
+                return true;
+            }
+            i += 1;
+            if flag.contains('c') {
+                return words
+                    .get(i)
+                    .map(|code| shell_probe_depth(code, depth + 1))
+                    .unwrap_or(true);
+            }
+        }
+        return false;
+    }
+    if exe
+        .strip_prefix("python")
+        .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        || exe.ends_with(".py")
+    {
+        return true;
+    }
+    let mut operands = words
+        .iter()
+        .skip(1)
+        .copied()
+        .filter(|p| !p.starts_with('-'));
+    if matches!(exe, "grep" | "rg" | "sed" | "awk") && !words.contains(&"--files") {
+        operands.next();
+    }
+    if matches!(
+        exe,
+        "cat"
+            | "ls"
+            | "cd"
+            | "find"
+            | "sed"
+            | "head"
+            | "tail"
+            | "cp"
+            | "mv"
+            | "rm"
+            | "mkdir"
+            | "touch"
+            | "readlink"
+            | "stat"
+            | "grep"
+            | "rg"
+            | "awk"
+            | "wc"
+            | "sort"
+    ) && operands.any(forbidden)
+    {
+        return true;
+    }
+    exe == "find"
+        && words
+            .iter()
+            .any(|p| matches!(*p, "/" | "/tmp" | "/opt" | "/usr"))
+        && words.contains(&"warehouse.py")
+}
+
+fn shell_probe_depth(command: &str, depth: usize) -> bool {
+    if depth > 8 {
+        return true;
+    }
     let words = shell_words(command);
-    let python = Regex::new(r"^python([0-9.]*)?$").unwrap();
     let mut segment: Vec<&str> = Vec::new();
     let mut redirection = false;
     for word in words.iter().map(String::as_str).chain(std::iter::once(";")) {
@@ -142,63 +285,12 @@ fn shell_probe(command: &str) -> bool {
             segment.push(word);
             continue;
         }
-        if let Some(first) = segment.first() {
-            let exe = Path::new(first)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(first);
-            // Any actual Python execution violates this task's language boundary; written code does not.
-            if python.is_match(exe) || exe.ends_with(".py") {
-                return true;
-            }
-            let mut operands = segment
-                .iter()
-                .skip(1)
-                .copied()
-                .filter(|p| !p.starts_with('-'));
-            // For the observed simple search forms the first operand is a pattern/program, not a file.
-            if matches!(exe, "grep" | "rg" | "sed" | "awk") && !segment.contains(&"--files") {
-                operands.next();
-            }
-            if matches!(
-                exe,
-                "cat"
-                    | "ls"
-                    | "cd"
-                    | "find"
-                    | "sed"
-                    | "head"
-                    | "tail"
-                    | "cp"
-                    | "mv"
-                    | "rm"
-                    | "mkdir"
-                    | "touch"
-                    | "readlink"
-                    | "stat"
-                    | "grep"
-                    | "rg"
-                    | "awk"
-                    | "wc"
-                    | "sort"
-            ) && operands.any(forbidden)
-            {
-                return true;
-            }
-            if exe == "for"
+        if invocation_probe(&segment, depth)
+            || (segment.first() == Some(&"for")
                 && words.iter().any(|w| w == "find")
-                && segment.iter().any(|p| forbidden(p))
-            {
-                return true;
-            }
-            if exe == "find"
-                && segment
-                    .iter()
-                    .any(|p| matches!(*p, "/" | "/tmp" | "/opt" | "/usr"))
-                && segment.contains(&"warehouse.py")
-            {
-                return true;
-            }
+                && segment.iter().any(|p| forbidden(p)))
+        {
+            return true;
         }
         segment.clear();
     }
@@ -213,24 +305,29 @@ pub fn probed(run: &Value) -> u64 {
     trace
         .iter()
         .filter(|event| {
+            let Some(name) = event["name"].as_str().filter(|name| !name.is_empty()) else {
+                return true;
+            };
             let Some(input) = event["input"].as_object() else {
                 return true;
             };
-            match event["name"].as_str() {
-                Some("Bash") => input
+            match name {
+                "Bash" => input
                     .get("command")
                     .and_then(Value::as_str)
                     .map(shell_probe)
                     .unwrap_or(true),
-                Some("Read" | "Write" | "Edit" | "Glob" | "Grep") => {
-                    let path = input
-                        .get("file_path")
-                        .or_else(|| input.get("path"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let pattern = match event["name"].as_str() {
-                        Some("Glob") => "pattern",
-                        Some("Grep") => "glob",
+                "Read" | "Write" | "Edit" | "Glob" | "Grep" => {
+                    let path = input.get("file_path").or_else(|| input.get("path"));
+                    if path.is_some_and(|v| v.as_str().is_none_or(str::is_empty))
+                        || (matches!(name, "Read" | "Write" | "Edit") && path.is_none())
+                    {
+                        return true;
+                    }
+                    let path = path.and_then(Value::as_str).unwrap_or("");
+                    let pattern = match name {
+                        "Glob" => "pattern",
+                        "Grep" => "glob",
                         _ => "",
                     };
                     forbidden(&format!(
@@ -266,7 +363,7 @@ fn loaded(run: &Value, name: &str) -> bool {
                         || (e["name"] == "Read"
                             && e["input"]["file_path"]
                                 .as_str()
-                                .map(|p| p.contains(&format!("/.claude/skills/{name}/")))
+                                .map(|p| p.ends_with(&format!("/.claude/skills/{name}/SKILL.md")))
                                 .unwrap_or(false))
                 })
             })
@@ -893,6 +990,28 @@ mod tests {
                 assert!(validate(r).is_ok(), "{phase}: legitimate default path");
             }
         }
+    }
+
+    #[test]
+    fn unsupported_wrapper_options_and_excessive_nesting_fail_closed() {
+        for command in [
+            "env -S 'python3 -c print(1)'",
+            "env --split-string='python3 -c print(1)'",
+            "env -u",
+            "command -z python3",
+            "exec -a",
+            "sh -c",
+            "bash -z 'printf harmless'",
+        ] {
+            assert_eq!(probed(&bash(command)), 1, "{command}");
+        }
+        let nested = format!(
+            "{} /workspace/dao eval resume system status 5",
+            "env ".repeat(10)
+        );
+        assert_eq!(probed(&bash(&nested)), 1);
+        let rust_command = "env --unset=python3 --chdir=/tmp --argv0=python3 /workspace/dao eval resume system status 5";
+        assert_eq!(probed(&bash(rust_command)), 0);
     }
 
     #[test]
