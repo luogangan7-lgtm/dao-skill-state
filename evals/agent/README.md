@@ -275,17 +275,19 @@ recipient fingerprint and numeric acceptance metadata; encryption failure has no
 plaintext fallback. A protocol probe alone cannot pass the behavioral matrix.
 
 The additional `nvidia/nemotron-3.5-super-vl-120b-a12b` candidate now uses
-`reasoning_effort=low` and the unchanged 32,000-token output cap. NVIDIA's
+`reasoning_effort=high` and the unchanged 32,000-token output cap. NVIDIA's
 [hosted API reference](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-super-vl-120b-a12b-infer)
 (checked 2026-10-17) documents that mode, tools, SSE and the supported output
 range; its [model page](https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b)
 lists the free endpoint as available. This is a controlled configuration change
-from `none` at `e891789`: DAO contents, task prompts, helpers, fixtures, gates,
+from `low` at `b008760`: DAO contents, task prompts, helpers, fixtures, gates,
 host, adapter and phase budgets remain fixed. The earlier timeout and rule
-violations remain evidence; reasoning mode is a hypothesis, and no speed or
-capability improvement is assumed before the complete matrix passes.
+violations remain evidence. The hypothesis is that full reasoning may change
+planning and instruction following within the same budgets; it may also time
+out. No speed or capability improvement is assumed before the complete matrix
+passes, and a configuration comparison cannot establish a causal DAO gain.
 
-The native protocol probe uses that same `low` setting for Super 3.5 VL,
+The native protocol probe uses that same `high` setting for Super 3.5 VL,
 without a conflicting `enable_thinking=false` override. It reports HTTP status
 and exact tool-argument matches only; native probe success does not validate
 the Claude adapter or any DAO behavior.
