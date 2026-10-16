@@ -51,15 +51,6 @@ def redact(text):
     return text
 
 
-def result_diagnostics(result):
-    """Keep official result diagnostics, redacted and bounded; never collect raw stderr."""
-    encoded = redact(json.dumps({"subtype": result.get("subtype"), "errors": result.get("errors", [])}))
-    if len(encoded.encode("utf-8")) <= 16 * 1024:
-        return {**json.loads(encoded), "diagnostics_truncated": False}
-    return {"subtype": redact(str(result.get("subtype")))[:256],
-            "errors": encoded[:2048], "diagnostics_truncated": True}
-
-
 def install(task_dir, arm, ws):
     """Skills for the skills arm (task skills/ and pinned third-party refs), then setup.py."""
     if arm in ("skills", "hook"):
@@ -142,7 +133,6 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
         out, rc = "", f"error: {e.strerror}"
     wall = time.time() - t0
     res, tools, skill_calls, bash = {}, {}, [], []
-    tool_trace, trace_bytes, trace_truncated = [], 0, False
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -155,14 +145,6 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
                 if isinstance(item, dict) and item.get("type") == "tool_use":
                     name = item.get("name", "?")
                     tools[name] = tools.get(name, 0) + 1
-                    # Keep complete, redacted tool inputs for independent resume acceptance.
-                    # A bounded artifact must declare any omission; strict gates reject it.
-                    entry = redact(json.dumps({"name": name, "input": item.get("input") or {}}))
-                    trace_bytes += len(entry.encode("utf-8"))
-                    if trace_bytes <= 256 * 1024:
-                        tool_trace.append(json.loads(entry))
-                    else:
-                        trace_truncated = True
                     if name == "Bash" and len(bash) < 40:  # what the extra turns were spent on
                         bash.append(redact(str((item.get("input") or {}).get("command", "")))[:120])
                     if name == "Skill":
@@ -182,10 +164,9 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
         lines = open(hook_log).read().splitlines() if os.path.exists(hook_log) else []
         hook = [{"via": e.get("via"), "picked": e.get("picked")} for e in map(json.loads, lines)] or "did not run"
     u = res.get("usage") or {}
-    return {**result_diagnostics(res), "pass": passed, "check": redact(note), "hook": hook, "ws": ws,
+    return {"pass": passed, "check": redact(note), "hook": hook, "ws": ws,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
             "skill_calls": skill_calls, "tools": tools, "bash": bash,
-            "tool_trace": tool_trace, "trace_truncated": trace_truncated,
             # on an API error (quota window, rate limit) keep what the host said, redacted
             # the host's last message: why a run stopped (asked a question, wrote elsewhere, gave up)
             "final": redact(str(res.get("result") or ""))[-600:],

@@ -21,22 +21,63 @@ on:
         description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash)"
         default: ""
       suite:
-        description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks); resume = fixed steps vs stateful skill on an interrupted task (resume-tasks)"
+        description: "run/create/evolve/resume = frozen legacy suites; resume-rust = Rust two-session boundary matrix (make:dao only)"
         default: run
-      require_pass:
-        description: "resume make:* only: require complete samples, clean sessions, audited boundaries and traced skill artifacts"
-        type: boolean
-        default: false
   pull_request:
     paths:
       - evals/agent/**
       - .github/workflows/agent-eval.yml
+      - crates/dao/**
+      - dao-skill-state/**
 permissions:
   contents: read
 defaults:
   run:
     shell: bash
 jobs:
+  rust-resume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Freeze the legacy Python baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${BASE_SHA:-origin/main}"
+          changed=$(git diff --name-only "$base" HEAD -- '*.py')
+          [ -z "$changed" ] || { echo "Rust resume work must preserve Python baseline:"; echo "$changed"; exit 1; }
+      - name: Rust formatting
+        id: fmt
+        continue-on-error: true
+        run: cargo fmt --manifest-path crates/dao/Cargo.toml --check
+      - name: Rust clippy
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --manifest-path crates/dao/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Rust tests and adversarial gate calibration
+        id: tests
+        continue-on-error: true
+        run: cargo test --manifest-path crates/dao/Cargo.toml --locked
+      - name: Export a CI formatting patch
+        if: always() && steps.fmt.outcome == 'failure'
+        run: |
+          cargo fmt --manifest-path crates/dao/Cargo.toml
+          git diff -- crates/dao > "$RUNNER_TEMP/resume-rust-format.patch"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.fmt.outcome == 'failure'
+        with:
+          name: resume-rust-format
+          path: ${{ runner.temp }}/resume-rust-format.patch
+      - name: Require every Rust check
+        if: always()
+        env:
+          FMT_RESULT: ${{ steps.fmt.outcome }}
+          CLIPPY_RESULT: ${{ steps.clippy.outcome }}
+          TEST_RESULT: ${{ steps.tests.outcome }}
+        run: test "$FMT_RESULT/$CLIPPY_RESULT/$TEST_RESULT" = success/success/success
   checkers:
     # every task has a prompt and a checker that fails on an empty workspace
     runs-on: ubuntu-latest
@@ -56,13 +97,11 @@ jobs:
             rc=0; python3 "$t/check.py" "$(mktemp -d)" > /dev/null 2>&1 || rc=$?
             [ "$rc" -eq 1 ] || { echo "$t: checker exit $rc on an empty workspace (want 1)"; exit 1; }
           done
-      - name: Calibrate resume boundary checkers (known good and injected failures)
-        run: python3 -m unittest discover -s evals/agent -p 'test_*.py' -v
   run:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.suite != 'resume-rust'
     needs: checkers
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.require_pass && 90 || 300 }}
+    timeout-minutes: 300
     concurrency:
       # one model job at a time per subscription (each has a usage window); providers run in parallel
       group: agent-eval-${{ inputs.provider }}
@@ -119,24 +158,15 @@ jobs:
           IN_REPS: ${{ inputs.reps }}
           IN_SUITE: ${{ inputs.suite }}
           IN_PROVIDER: ${{ inputs.provider }}
-          IN_REQUIRE_PASS: ${{ inputs.require_pass }}
         run: |
           case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
-          if [ "$IN_REQUIRE_PASS" = true ] && [ "$IN_SUITE" != resume ]; then
-            echo "require_pass is supported only by the resume suite"; exit 1
-          fi
           export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
           unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
             pip install --quiet ./evals/agent/warehouse  # the stand-in external system (backfill-external, backfill-crash*)
-            budget=()
-            if [ "$IN_REQUIRE_PASS" = true ]; then budget=(--max-turns 45 --timeout 180 --make-max-turns 40 --make-timeout 300); fi
             python3 evals/agent/resume.py evals/agent/resume-tasks results --tasks "$IN_TASKS" \
-              --arms "$IN_ARMS" --reps "$IN_REPS" "${budget[@]}" | tee summary.txt
-            if [ "$IN_REQUIRE_PASS" = true ]; then
-              python3 evals/agent/check_resume.py results --tasks "$IN_TASKS" --arms "$IN_ARMS" --reps "$IN_REPS"
-            fi
+              --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
           elif [ "$IN_SUITE" = evolve ]; then
             python3 evals/agent/evolve.py evals/agent/evolve-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
@@ -154,6 +184,54 @@ jobs:
           name: agent-eval
           path: |
             results/*.jsonl
-            results/*.json
             results/candidates/
             results/created/
+  resume-rust-model:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'resume-rust'
+    needs: rust-resume
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    concurrency:
+      group: agent-eval-${{ inputs.provider }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the pinned Claude CLI and build Rust DAO
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.285
+          cargo build --manifest-path crates/dao/Cargo.toml --release --locked
+          echo "$PWD/crates/dao/target/release" >> "$GITHUB_PATH"
+      - name: Run the Rust boundary matrix
+        env:
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
+          KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
+          KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          DISABLE_AUTOUPDATER: "1"
+          IN_TASKS: ${{ inputs.tasks }}
+          IN_ARMS: ${{ inputs.arms }}
+          IN_REPS: ${{ inputs.reps }}
+          IN_PROVIDER: ${{ inputs.provider }}
+        run: |
+          case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
+          [ "$IN_ARMS" = make:dao ] || { echo "resume-rust requires make:dao"; exit 1; }
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
+          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
+          [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "missing selected provider key"; exit 1; }
+          args=(eval resume run --repo "$PWD" --out results --reps "$IN_REPS")
+          if [ -n "$IN_TASKS" ]; then args+=(--tasks "$IN_TASKS"); fi
+          dao "${args[@]}" | tee summary.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resume-rust-eval
+          path: |
+            results/
+            summary.txt

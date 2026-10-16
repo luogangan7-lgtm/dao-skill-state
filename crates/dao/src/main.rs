@@ -14,6 +14,7 @@ mod normalize;
 mod publish;
 mod quarantine;
 mod relations;
+mod resume_eval;
 mod scan;
 mod source;
 mod upstream;
@@ -36,6 +37,7 @@ fn usage() -> ExitCode {
   dao upstream check --store DIR [--apply] [--allow-local DIR]...   sources moved since intake; --apply stages them as new candidates\n\
   dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
+  dao eval resume run|check --repo DIR --out DIR [--tasks NAME,... --reps 2]   CI-only two-session behavior evaluation\n\
   dao admit --store DIR --digest D   gates: object, scan (CLEAN or approved REVIEW), card, eval; exit 1 if refused\n\
   dao promote --store DIR --digest D | rollback --store DIR --name N [--from D] | recover --store DIR   champion pointers via the journal\n\
   dao publish --store DIR --target DIR [--apply] [--rollback]   champions -> <target>/<name>/, versioned in <target>/.dao-publication.json (dry run without --apply; exit 1 on conflicts)\n\
@@ -519,7 +521,10 @@ fn write_json(path: &Path, v: &impl serde::Serialize) -> Result<(), String> {
 }
 
 fn eval_cmd(args: &[String]) -> Result<ExitCode, String> {
-    let (sub, rest) = args.split_first().ok_or("eval needs gen or run")?;
+    let (sub, rest) = args.split_first().ok_or("eval needs gen, run or resume")?;
+    if sub == "resume" {
+        return resume_eval::main(rest);
+    }
     let allowed: &[&str] = match sub.as_str() {
         "gen" => &["--store"],
         "run" => &[
