@@ -501,7 +501,10 @@ mod tests {
             "DAO_RESUME_CARGO_PROBE_OK\n",
             "valid Cargo probe: {observation}"
         );
-        assert_eq!(invalid_rc, 101, "invalid Cargo probe: {invalid_observation}");
+        assert_eq!(
+            invalid_rc, 101,
+            "invalid Cargo probe: {invalid_observation}"
+        );
         assert!(
             invalid_output.bytes.is_empty(),
             "invalid Cargo probe: {invalid_observation}"
