@@ -21,7 +21,7 @@ on:
         description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash)"
         default: ""
       suite:
-        description: "run/create/evolve/resume = frozen legacy suites; resume-rust = Rust two-session boundary matrix (make:dao only)"
+        description: "run/create/evolve/resume = legacy; resume-rust = Rust boundary matrix; nvidia-probe = hosted API compatibility only"
         default: run
   pull_request:
     paths:
@@ -116,7 +116,7 @@ jobs:
             [ "$rc" -eq 1 ] || { echo "$t: checker exit $rc on an empty workspace (want 1)"; exit 1; }
           done
   run:
-    if: github.event_name == 'workflow_dispatch' && inputs.suite != 'resume-rust'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["run","create","evolve","resume"]'), inputs.suite)
     needs: checkers
     runs-on: ubuntu-latest
     timeout-minutes: 300
@@ -204,6 +204,41 @@ jobs:
             results/*.jsonl
             results/candidates/
             results/created/
+  nvidia-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'nvidia-probe' && inputs.provider == 'nvidia'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agent-eval-nvidia
+      cancel-in-progress: false
+    steps:
+      - name: Probe the hosted API protocols without retries
+        env:
+          NVIDIA_API: ${{ secrets.NVIDIA_API }}
+          IN_MODEL: ${{ inputs.model }}
+        run: |
+          [ -n "$NVIDIA_API" ] && [ -n "$IN_MODEL" ] || { echo "NVIDIA_API and explicit model required"; exit 1; }
+          mkdir -p results
+          jq -n --arg model "$IN_MODEL" '{model:$model,max_tokens:1024,messages:[{role:"user",content:"Call probe with value=7. This is a protocol test; do not perform any external action."}],tools:[{name:"probe",description:"Return the supplied integer",input_schema:{type:"object",properties:{value:{type:"integer"}},required:["value"]}}],tool_choice:{type:"tool",name:"probe"}}' > results/anthropic-request.json
+          jq '{model,max_tokens,messages,tools:[.tools[]|{type:"function",function:{name,description,parameters:.input_schema}}],tool_choice:{type:"function",function:{name:"probe"}},stream:false,chat_template_kwargs:{enable_thinking:false}}' results/anthropic-request.json > results/openai-request.json
+          for protocol in anthropic openai; do
+            path=messages
+            [ "$protocol" = anthropic ] || path=chat/completions
+            rc=0
+            status=$(curl --silent --show-error --connect-timeout 15 --max-time 60 --max-filesize 1048576 --retry 0 --output results/body.json --write-out '%{http_code}' --header "Authorization: Bearer $NVIDIA_API" --header "x-api-key: $NVIDIA_API" --header 'anthropic-version: 2023-06-01' --header 'Content-Type: application/json' --data-binary "@results/$protocol-request.json" "https://integrate.api.nvidia.com/v1/$path") || rc=$?
+            # Retain only the tiny protocol result, never headers, requests with credentials, or arbitrary upstream error bodies.
+            jq -n --arg protocol "$protocol" --arg model "$IN_MODEL" --arg status "$status" --argjson rc "$rc" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{protocol:$protocol,model:$model,http_status:$status,curl_rc:$rc,sha:$sha,github_run_id:$run}' > "results/$protocol-receipt.json"
+            if jq -e . results/body.json > /dev/null 2>&1; then
+              jq '{id,model,object,type,stop_reason,usage,content:(if .type == "message" then .content else null end),choices:(.choices // null)}' results/body.json > "results/$protocol-response.json"
+            fi
+            cat "results/$protocol-receipt.json"
+            rm -f results/body.json
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nvidia-protocol-probe
+          path: results/
   resume-rust-model:
     if: github.event_name == 'workflow_dispatch' && inputs.suite == 'resume-rust'
     needs: rust-resume
