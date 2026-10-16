@@ -25,11 +25,13 @@ outage, and turns / tokens / seconds of each session. Writes OUT_DIR/resume.json
 summary. CI only (.github/workflows/agent-eval.yml). Depends on: run.py (same directory).
 """
 import argparse
+import ast
 import hashlib
 import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -124,11 +126,52 @@ def file_hashes(root):
 
 
 def probed(*runs):
-    """Commands that read the stand-in warehouse's store directly instead of through the runbook's
-    status command: what a real agent would do by poking at a production system."""
-    return sum(1 for r in runs for event in (r.get("tool_trace") or [])
-               if re.search(r"\b(?:import\s+warehouse|from\s+warehouse\s+import)\b|/warehouse",
-                            json.dumps(event)))
+    """Count observed backend/oracle access in all phases; this bounded heuristic is not a sandbox.
+    Inspect execution/path fields, never descriptions, agent prompts or Write/Edit contents.
+    Trial warehouse.txt/mock modules and the task's own helpers remain ordinary task inputs.
+    """
+    forbidden = (r"/tmp/warehouse(?=/|[\s'\";$*]|$)|\$\{?WAREHOUSE_DIR\b|"
+                 r"(?:site|dist)-packages/warehouse(?:\.py|/)|"
+                 r"(?:^|/)evals/agent(?=/|[\s'\";]|$)|"
+                 r"/tmp/(?:resume|make)-[A-Za-z0-9_]{8}(?=/|[\s'\";]|$)")
+    count = 0
+    for run in runs:
+        for event in run.get("tool_trace") or []:
+            if not isinstance(event, dict) or not isinstance(event.get("input"), dict):
+                count += 1  # An unreadable observation cannot establish a clean boundary.
+                continue
+            inputs, name = event.get("input") or {}, event.get("name")
+            if name == "Bash":
+                command = str(inputs.get("command", ""))
+                # A cat heredoc creates mock code/data; its body is not executed Python.
+                command = re.sub(r"(^[^\n]*\bcat\b[^\n]*<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n).*?^\s*\2\s*$",
+                                 lambda match: match[1], command, flags=re.M | re.S)
+                try:
+                    words = shlex.split(command, comments=True)
+                except ValueError:
+                    words = []
+                codes = [words[i + 2] for i, word in enumerate(words[:-2])
+                         if re.fullmatch(r"(?:.*/)?python[\d.]*", word) and words[i + 1] == "-c"]
+                codes += [match[2] for match in re.finditer(
+                    r"\bpython[\d.]*\b[^\n]*<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)^\s*\1\s*$",
+                    command, flags=re.M | re.S)]
+                imported = False
+                for code in codes:
+                    try:
+                        imported |= any((isinstance(node, ast.Import) and any(a.name == "warehouse" for a in node.names))
+                                        or (isinstance(node, ast.ImportFrom) and node.module == "warehouse")
+                                        for node in ast.walk(ast.parse(code)))
+                    except SyntaxError:
+                        pass
+                discovery = "find" in words and any(word in ("/", "/tmp", "/opt", "/usr") for word in words) and "warehouse.py" in words
+                count += bool(imported or discovery or re.search(forbidden, command))
+            elif name in ("Read", "Grep", "Glob", "Write", "Edit"):
+                path = str(inputs.get("file_path") or inputs.get("path") or "")
+                if name in ("Glob", "Grep"):
+                    pattern = inputs.get("pattern", "") if name == "Glob" else inputs.get("glob", "")
+                    path = os.path.join(path, str(pattern))
+                count += bool(re.search(forbidden, path))
+    return count
 
 
 def tokens(r):
@@ -208,6 +251,7 @@ def main():
                     d, sname, mk = make_skill(troot, arm[5:], os.path.join(a.out_dir, "created", tag), a)
                     if d is None:
                         row = {"task": name, "arm": arm, "rep": rep, "pass": False, "made": False,
+                               "probes": probed(mk),
                                "producer_sha256": producer_hash,
                                "make": {k: mk.get(k) for k in MAKE_EVIDENCE_FIELDS}}
                         rows.append(row)  # a creator that wrote no skill fails the rep
@@ -249,7 +293,7 @@ def main():
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
                        "events_after_s1": events1, "events": events2,
                        "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated", "subtype", "errors", "diagnostics_truncated")},
-                       "probes": probed(r1, r2),
+                       "probes": probed(mk or {}, r1, r2),
                        "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated", "subtype", "errors", "diagnostics_truncated")},
                        "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
                        "hook": [r1.get("hook"), r2.get("hook")],

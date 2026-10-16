@@ -40,6 +40,33 @@ class CheckResumeTests(unittest.TestCase):
     def test_good_matrix(self):
         self.assertEqual(self.validate([self.row]), 1)
 
+    def test_observed_maker_and_worker_probes_cannot_hide_behind_zero_counter(self):
+        # Actual CI38876167175 maker/s2 command shapes, with unrelated phase failures removed.
+        accesses = [
+            {"name": "Bash", "input": {"command": "cat /tmp/warehouse/*.events.jsonl"}},
+            {"name": "Bash", "input": {"command": "cat /tmp/resume-89t6zs8r/prompt.md; cat /tmp/resume-89t6zs8r/files/runbook.md"}},
+            {"name": "Bash", "input": {"command": "cat /opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/warehouse.py"}},
+            {"name": "Bash", "input": {"command": "cd /home/runner/work/dao-skill-state/dao-skill-state/evals/agent && sed -n '1,200p' check_resume.py"}},
+            {"name": "Read", "input": {"file_path": "/repo/evals/agent/resume-tasks/backfill-crash/expect_s1.json"}},
+        ]
+        for phase in ("make", "s1", "s2"):
+            for event in accesses:
+                row = copy.deepcopy(self.row)
+                row[phase]["tool_trace"].append(event)
+                self.assertEqual(row["probes"], 0)
+                with self.subTest(phase=phase, event=event), self.assertRaisesRegex(ValueError, "oracle access"):
+                    self.validate([row])
+
+    def test_written_mock_content_and_own_trial_inputs_remain_green(self):
+        row = copy.deepcopy(self.row)
+        for phase in ("make", "s1", "s2"):
+            row[phase]["tool_trace"] += [
+                {"name": "Write", "input": {"file_path": "/tmp/trial/warehouse.py", "content": "import warehouse; /tmp/warehouse; /repo/evals/agent/check_resume.py"}},
+                {"name": "Bash", "input": {"command": "cat > /tmp/trial/mock.py <<'PY'\nimport warehouse\nSTORE = '/tmp/warehouse'\nPY"}},
+                {"name": "Bash", "input": {"command": "cat /tmp/bf-fwd-a/warehouse.txt; python3 status.py 5"}},
+            ]
+        self.assertEqual(self.validate([row]), 1)
+
     def test_missing_duplicate_extra_rows(self):
         extra = {**self.row, "rep": 1}
         for rows in ([], [self.row, self.row], [extra]):

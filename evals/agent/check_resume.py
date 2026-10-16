@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+from resume import probed
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -70,6 +72,8 @@ def validate_rows(rows, tasks, arms, reps, tasks_dir):
             elif row["arm"] != "make:none":
                 creator = "dao-skill-state" if row["arm"] == "make:dao" else "skill-creator"
                 require(any(call in (creator, "read:" + creator) for call in run["skill_calls"]), f"{key}: maker did not load {creator}")
+        require(probed(*(row[phase] for phase in ("make", "s1", "s2"))) == row["probes"],
+                f"{key}: backend or evaluation oracle access in tool trace")
         for field in ("after_session1", "ran"):
             require(type(row.get(field)) is list and all(type(n) is int and 1 <= n <= 8 for n in row[field]), f"{key}: {field}")
         troot = Path(tasks_dir) / row["task"]
