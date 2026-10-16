@@ -224,7 +224,7 @@ jobs:
           [ -n "$NVIDIA_API" ] && [ -n "$IN_MODEL" ] || { echo "NVIDIA_API and explicit model required"; exit 1; }
           mkdir -p results
           jq -n --arg model "$IN_MODEL" '{model:$model,max_tokens:1024,messages:[{role:"user",content:"Call probe with value=7. This is a protocol test; do not perform any external action."}],tools:[{name:"probe",description:"Return the supplied integer",input_schema:{type:"object",properties:{value:{type:"integer"}},required:["value"]}}],tool_choice:{type:"tool",name:"probe"}}' > results/anthropic-request.json
-          jq '{model,max_tokens,messages,tools:[.tools[]|{type:"function",function:{name,description,parameters:.input_schema}}],tool_choice:{type:"function",function:{name:"probe"}},stream:false} | if .model == "nvidia/nemotron-3.5-super-vl-120b-a12b" then .reasoning_effort="low" else .chat_template_kwargs={enable_thinking:false} end' results/anthropic-request.json > results/openai-request.json
+          jq '{model,max_tokens,messages,tools:[.tools[]|{type:"function",function:{name,description,parameters:.input_schema}}],tool_choice:{type:"function",function:{name:"probe"}},stream:false} | if .model == "nvidia/nemotron-3.5-super-vl-120b-a12b" then .reasoning_effort="low" elif .model == "nvidia/nemotron-3-ultra-550b-a55b" then .reasoning_effort="none" else .chat_template_kwargs={enable_thinking:false} end' results/anthropic-request.json > results/openai-request.json
           for protocol in anthropic openai; do
             path=messages
             [ "$protocol" = anthropic ] || path=chat/completions
@@ -287,7 +287,7 @@ jobs:
           EVIDENCE_CERT: ${{ inputs.evidence_cert }}
         run: |
           case "$IN_MODEL" in
-            nvidia/nemotron-3-super-120b-a12b|nvidia/nemotron-3.5-lightning-30b-a3b|z-ai/glm-5.3-flash|nvidia/nemotron-3.5-super-vl-120b-a12b) ;;
+            nvidia/nemotron-3-super-120b-a12b|nvidia/nemotron-3.5-lightning-30b-a3b|z-ai/glm-5.3-flash|nvidia/nemotron-3.5-super-vl-120b-a12b|nvidia/nemotron-3-ultra-550b-a55b) ;;
             *) echo "NVIDIA model is outside this frozen free-endpoint cohort"; exit 1 ;;
           esac
           umask 077
@@ -348,6 +348,7 @@ jobs:
             case "$upstream_model" in
               nvidia/nemotron-3-super-120b-a12b) body='{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}' ;;
               nvidia/nemotron-3.5-super-vl-120b-a12b) body='{"reasoning_effort":"low"}' ;;
+              nvidia/nemotron-3-ultra-550b-a55b) body='{"reasoning_effort":"none"}' ;;
               nvidia/nemotron-3.5-lightning-30b-a3b) body='{"chat_template_kwargs":{"enable_thinking":false}}' ;;
               z-ai/glm-5.3-flash) body='{"reasoning_effort":"low","chat_template_kwargs":{"clear_thinking":true}}' ;;
             esac

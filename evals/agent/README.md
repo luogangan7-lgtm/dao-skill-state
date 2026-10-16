@@ -290,6 +290,18 @@ without a conflicting `enable_thinking=false` override. It reports HTTP status
 and exact tool-argument matches only; native probe success does not validate
 the Claude adapter or any DAO behavior.
 
+The `nvidia/nemotron-3-ultra-550b-a55b` candidate uses only the documented
+`reasoning_effort=none`, with the same 32,000-token matrix output cap. Its
+[hosted API reference](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-ultra-550b-a55b-infer)
+(checked 2026-10-17) permits 1–32,768 output tokens and `none`, `medium` or
+`high` reasoning; `low` is not listed. Its
+[model page](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b) lists
+the free endpoint as available. The native probe also uses `none`, without
+additional template flags. Hosted tool compatibility must first be measured;
+the model card's self-hosted examples do not establish adapter compatibility.
+This is a model/preset capability comparison with the same tasks and budgets,
+not evidence that DAO changes caused an improvement.
+
 The PR check freezes all `.py` files against the base, runs Rust gate calibration
 and exports formatting patches from CI when needed. No local execution is part
 of this task's acceptance.
