@@ -430,6 +430,81 @@ pub(super) fn run(
 mod tests {
     use super::*;
 
+    fn bytewise_capture(bytes: Vec<u8>) -> PipeCapture {
+        struct Bytewise(std::io::Cursor<Vec<u8>>);
+
+        impl Read for Bytewise {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let take = buf.len().min(1);
+                self.0.read(&mut buf[..take])
+            }
+        }
+
+        drain(
+            Bytewise(std::io::Cursor::new(bytes)),
+            OUTPUT_LIMIT,
+            Instant::now(),
+        )
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+    }
+
+    #[test]
+    fn fragmented_stream_timing_tracks_events_instead_of_reads() {
+        let first = format!(
+            "{}\n",
+            json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"last","name":"Bash","input":{"command":"x".repeat(5000)}}]}})
+        );
+        let stream = format!(
+            "{first}{}\n",
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"last","content":"done"}]}})
+        );
+        let captured = bytewise_capture(stream.as_bytes().to_vec());
+        let row = evidence(
+            &captured.bytes,
+            json!("timeout"),
+            captured.truncated,
+            300.0,
+            &captured.reads,
+        );
+        assert!(row["tool_results"][0]["observed_s"].is_number());
+        assert!(!captured.timing_truncated);
+        assert_eq!(captured.reads.len(), 2);
+        assert_eq!(captured.reads[0].0, first.len());
+        assert_eq!(captured.reads[1].0, stream.len());
+        assert_eq!(row["tool_results"][0]["observed_s"], captured.last_s.unwrap());
+    }
+
+    #[test]
+    fn fragmented_stream_times_unterminated_final_event() {
+        let stream = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tail","content":"x".repeat(5000)}]}}).to_string();
+        let captured = bytewise_capture(stream.as_bytes().to_vec());
+        let row = evidence(
+            &captured.bytes,
+            json!("timeout"),
+            captured.truncated,
+            300.0,
+            &captured.reads,
+        );
+        assert!(row["tool_results"][0]["observed_s"].is_number());
+        assert!(!captured.timing_truncated);
+        assert_eq!(captured.reads.len(), 1);
+        assert_eq!(captured.reads[0].0, stream.len());
+        // Receipt belongs to the last byte, not EOF processing or tool execution.
+        assert_eq!(captured.reads[0].1, captured.last_s.unwrap());
+    }
+
+    #[test]
+    fn timing_event_limit_is_explicit_and_keeps_draining_bytes() {
+        let stream = "{}\n".repeat(READ_LIMIT + 1);
+        let captured = bytewise_capture(stream.as_bytes().to_vec());
+        assert_eq!(captured.bytes, stream.as_bytes());
+        assert!(!captured.truncated);
+        assert!(captured.timing_truncated);
+        assert_eq!(captured.reads.len(), READ_LIMIT);
+        assert_eq!(captured.reads.last().unwrap().0, READ_LIMIT * 3);
+    }
+
     #[test]
     fn timeout_retains_correlated_tool_outcomes() {
         let stream = format!(
