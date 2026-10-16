@@ -31,7 +31,8 @@ class CheckResumeTests(unittest.TestCase):
                     "events_after_s1": first,
                     "events": first + [{"kind": "query", "n": 5, "loaded": True}]
                               + [event for n in range(6, 9) for event in ({"kind": "attempt", "n": n}, {"kind": "load", "n": n})],
-                    "make": copy.deepcopy(phase), "s1": copy.deepcopy(phase), "s2": copy.deepcopy(phase)}
+                    "make": {**copy.deepcopy(phase), "skill_calls": ["dao-skill-state"]},
+                    "s1": copy.deepcopy(phase), "s2": copy.deepcopy(phase)}
 
     def validate(self, rows):
         return validate_rows(rows, ["task"], ["make:dao"], 1, self.root)
@@ -65,6 +66,22 @@ class CheckResumeTests(unittest.TestCase):
         row["s1"]["skill_calls"] = []
         with self.assertRaises(ValueError):
             self.validate([row])
+
+    def test_maker_must_load_selected_meta_skill(self):
+        for calls in ([], ["backfill-runbook"], ["skill-creator"]):
+            row = copy.deepcopy(self.row)
+            row["make"]["skill_calls"] = calls
+            with self.subTest(calls=calls), self.assertRaises(ValueError):
+                self.validate([row])
+        row = copy.deepcopy(self.row)
+        row["arm"] = "make:skill-creator"
+        row["make"]["skill_calls"] = ["read:skill-creator"]
+        self.assertEqual(validate_rows([row], ["task"], ["make:skill-creator"], 1, self.root), 1)
+        row["make"]["skill_calls"] = ["dao-skill-state"]
+        with self.assertRaises(ValueError):
+            validate_rows([row], ["task"], ["make:skill-creator"], 1, self.root)
+        row["arm"], row["make"]["skill_calls"] = "make:none", []
+        self.assertEqual(validate_rows([row], ["task"], ["make:none"], 1, self.root), 1)
 
     def test_query_must_be_correct_before_new_actions(self):
         for mutation in ("missing", "late", "wrong"):
@@ -134,6 +151,15 @@ class CheckResumeTests(unittest.TestCase):
         skill = artifact / "SKILL.md"
         skill.write_text('---\nname: backfill-runbook\ndescription: Run warehouse backfills from numbered runbooks.\n---\n\n# Backfill\n\nRead runbook.md, query each step, and run unfinished steps in order.\n')
         self.row["skill_hashes"] = {"SKILL.md": hashlib.sha256(skill.read_bytes()).hexdigest()}
+        repo = Path(__file__).resolve().parents[2]
+        producer = {"sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+                    "authoring_sha256": hashlib.sha256((repo / "dao-skill-state/references/authoring.md").read_bytes()).hexdigest(),
+                    "fixtures": {"task": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (self.root / "task").iterdir()}},
+                    "tasks": ["task"], "arms": ["make:dao"], "reps": 1,
+                    "github_run_id": os.environ.get("GITHUB_RUN_ID"), "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
+        producer_file = out / "resume-producer.json"
+        producer_file.write_text(json.dumps(producer, sort_keys=True, indent=2) + "\n")
+        self.row["producer_sha256"] = hashlib.sha256(producer_file.read_bytes()).hexdigest()
         results = out / "resume.jsonl"
         results.write_text(json.dumps(self.row) + "\n")
         command = [sys.executable, str(Path(__file__).with_name("check_resume.py")), str(out),
@@ -145,7 +171,33 @@ class CheckResumeTests(unittest.TestCase):
             self.assertEqual(result.returncode, code, result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             self.assertIs(json.loads((out / "resume-gate.json").read_text())["pass"], code == 0)
+            return result
         run_cli(0)
+        original_producer = producer_file.read_bytes()
+        for mutation in ("old-sha", "changed-fixture", "producer-hash"):
+            modified = copy.deepcopy(producer)
+            if mutation == "old-sha":
+                modified["sha"] = "0" * 40
+            elif mutation == "changed-fixture":
+                modified["fixtures"]["task"]["expect_s1.json"] = "0" * 64
+            producer_file.write_text(json.dumps(modified, sort_keys=True, indent=2) + "\n")
+            if mutation == "producer-hash":
+                producer_file.write_bytes(original_producer + b"\n")
+            # Old SHA / fixtures remain RED even when the row points at the changed manifest.
+            changed_row = dict(self.row)
+            if mutation != "producer-hash":
+                changed_row["producer_sha256"] = hashlib.sha256(producer_file.read_bytes()).hexdigest()
+            results.write_text(json.dumps(changed_row) + "\n")
+            result = run_cli(1)
+            if mutation == "producer-hash":
+                self.assertIn("row producer hash mismatch", result.stderr)
+        producer_file.write_bytes(original_producer)
+        results.write_text(json.dumps(self.row) + "\n")
+        fixture = self.root / "task/expect_s1.json"
+        original_fixture = fixture.read_bytes()
+        fixture.write_bytes(original_fixture + b" ")
+        run_cli(1)
+        fixture.write_bytes(original_fixture)
         results.write_text(json.dumps({**self.row, "pass": False}) + "\n")
         run_cli(1)
         results.write_text(json.dumps(self.row) + "\n")

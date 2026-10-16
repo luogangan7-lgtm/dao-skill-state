@@ -64,6 +64,9 @@ def validate_rows(rows, tasks, arms, reps, tasks_dir):
                     and run.get("trace_truncated") is False, f"{key}: incomplete {phase} tool trace")
             if phase != "make":
                 require(skill in json.dumps(run["skill_calls"]), f"{key}: {phase} did not load skill")
+            elif row["arm"] != "make:none":
+                creator = "dao-skill-state" if row["arm"] == "make:dao" else "skill-creator"
+                require(any(call in (creator, "read:" + creator) for call in run["skill_calls"]), f"{key}: maker did not load {creator}")
         for field in ("after_session1", "ran"):
             require(type(row.get(field)) is list and all(type(n) is int and 1 <= n <= 8 for n in row[field]), f"{key}: {field}")
         troot = Path(tasks_dir) / row["task"]
@@ -120,6 +123,22 @@ def main():
         source = args.out_dir / "resume.jsonl"
         rows = [json.loads(line) for line in source.read_text().splitlines()]
         count = validate_rows(rows, tasks, arms, args.reps, args.tasks_dir)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
+        require("GITHUB_SHA" not in os.environ or os.environ["GITHUB_SHA"] == head, "GITHUB_SHA differs from HEAD")
+        authoring = REPO / "dao-skill-state/references/authoring.md"
+        current = {"sha": head, "authoring_sha256": hashlib.sha256(authoring.read_bytes()).hexdigest(),
+                   "fixtures": {task: hashes(args.tasks_dir / task) for task in tasks},
+                   "tasks": tasks, "arms": arms, "reps": args.reps}
+        producer_bytes = (args.out_dir / "resume-producer.json").read_bytes()
+        producer_hash = hashlib.sha256(producer_bytes).hexdigest()
+        producer = json.loads(producer_bytes)
+        require(type(producer) is dict and set(producer) == set(current) | {"github_run_id", "github_run_attempt"}, "invalid producer manifest")
+        require(type(producer["reps"]) is int and all(producer[k] == value for k, value in current.items()), "stale or mismatched producer")
+        for field in ("github_run_id", "github_run_attempt"):
+            require(producer[field] is None or type(producer[field]) is str, "invalid producer run identity")
+            if field.upper() in os.environ:
+                require(producer[field] == os.environ[field.upper()], f"producer {field} mismatch")
+        require(all(row.get("producer_sha256") == producer_hash for row in rows), "row producer hash mismatch")
         import create
         require(not (args.out_dir / "created").is_symlink(), "created artifacts directory is a symlink")
         for row in rows:
@@ -127,14 +146,10 @@ def main():
             manifest = hashes(artifact)
             require(manifest and manifest == row.get("skill_hashes"), f"generated skill hash mismatch: {artifact.name}")
             require(create.structure_ok(str(artifact)) is True, f"invalid skill structure: {artifact.name}")
-        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
-        require(not os.environ.get("GITHUB_SHA") or os.environ["GITHUB_SHA"] == head, "GITHUB_SHA differs from HEAD")
-        authoring = REPO / "dao-skill-state/references/authoring.md"
-        result = {"pass": True, "sha": head, "github_sha": os.environ.get("GITHUB_SHA"), "rows": count,
-                  "tasks": tasks, "arms": arms, "reps": args.reps,
-                  "results_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                  "authoring_sha256": hashlib.sha256(authoring.read_bytes()).hexdigest(),
-                  "fixtures": {task: hashes(args.tasks_dir / task) for task in tasks}}
+        result = {**current, "pass": True, "github_sha": os.environ.get("GITHUB_SHA"), "rows": count,
+                  "producer_sha256": producer_hash, "github_run_id": producer["github_run_id"],
+                  "github_run_attempt": producer["github_run_attempt"],
+                  "results_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
         receipt.write_text(json.dumps(result, indent=2) + "\n")
         print(f"resume gate: {count} rows passed at {head}")
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
