@@ -31,6 +31,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -161,6 +162,19 @@ def main():
     if unknown:  # a typo would otherwise produce no rows and no error
         sys.exit(f"arms in no selected task: {sorted(unknown)}")
     os.makedirs(a.out_dir, exist_ok=True)
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    producer = {
+        "sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+        "authoring_sha256": hashlib.sha256(open(os.path.join(repo, "dao-skill-state", "references", "authoring.md"), "rb").read()).hexdigest(),
+        "fixtures": {name: file_hashes(os.path.join(root, name)) for name in names},
+        "tasks": names, "arms": a.arms.split(","), "reps": a.reps,
+        "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+        "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+    }
+    producer_bytes = (json.dumps(producer, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    with open(os.path.join(a.out_dir, "resume-producer.json"), "wb") as receipt:
+        receipt.write(producer_bytes)
+    producer_hash = hashlib.sha256(producer_bytes).hexdigest()
     log = open(os.path.join(a.out_dir, "resume.jsonl"), "a")
     rows = []
     for name in names:
@@ -182,6 +196,7 @@ def main():
                     d, sname, mk = make_skill(troot, arm[5:], os.path.join(a.out_dir, "created", tag), a)
                     if d is None:
                         row = {"task": name, "arm": arm, "rep": rep, "pass": False, "made": False,
+                               "producer_sha256": producer_hash,
                                "make": {k: mk.get(k) for k in ("turns", "duration_s", "error", "final")}}
                         rows.append(row)  # a creator that wrote no skill fails the rep
                         log.write(json.dumps(row) + "\n")
@@ -213,6 +228,7 @@ def main():
                 ran = steps_ran(r2["ws"])
                 events2 = warehouse_events(r2["ws"])
                 row = {"task": name, "arm": arm, "rep": rep, "pass": bool(r2["pass"]) and not tampered,
+                       "producer_sha256": producer_hash,
                        "check": r2.get("check"), "tampered": tampered, "after_session1": after1, "ran": ran,
                        "clean_stop": after1 == expect_s1(troot), "progress_file_after_s1": progress1,
                        "progress_after_s1": progress_text,
