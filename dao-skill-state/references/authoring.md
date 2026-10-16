@@ -38,6 +38,8 @@ For tool-coupled behavior name the available tool and actual required options. F
 
 Before a trial, choose a run directory **outside** the generated skill folder (a sibling is sufficient). At handoff enumerate the package files separately from trial inputs/outputs/logs and verify none of those run records entered the distributable payload. Explicitly requested synthetic examples may live in the package; private or actual run artifacts may not.
 
+Keep a synthetic trial within its own inputs, mock system and run records. Do not inspect unrelated runs or a surrounding evaluator's hidden fixtures, reference answers or checker implementation to steer the generated skill or decide the downstream task's outcome. A test oracle is not authoritative evidence of the real task's state; use the task's permitted interface. Explicitly authorized review of a test implementation is a separate scope.
+
 For a narrow change preserve the original successful case. For a substantial new workflow run an independent forward test in an isolated target when feasible. Give the evaluator the request and raw inputs, not the intended answer. If execution is unavailable mark E2/NOT_RUN and describe the exact remaining gate.
 
 Installation and remote publication are separate actions. Validate the source, inspect the destination, preserve existing policy and rollback, then activate only when authorized. Do not require a Git remote or a commit just to author or test local files. Maintenance versions and source hashes identify candidates even before the user chooses a repository.

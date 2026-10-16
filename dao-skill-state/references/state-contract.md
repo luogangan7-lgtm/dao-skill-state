@@ -49,6 +49,8 @@ Specify the authoritative location, initialization, allowed transitions, complet
 
 Before an external action persist a pending record with stable action identity and authorization reference. After execution verify the external receipt before marking done. On restart inspect pending actions and the real system; do not resend a non-idempotent action merely because a local receipt is absent. Missing idempotency/reconciliation means human review, not an exactly-once claim.
 
+Keep the reason a session stopped separate from an action's outcome and from an operator's approval or pause. If a later authorized continuation may proceed after the stopped action is confirmed applied, the helper must support that transition from both pending and already-done records while retaining completion receipts and attempt history. Do not require the retry/reset path, erase pending evidence, or remove a real approval or pause to reach the next unfinished action. Exercise a committed failure before the final action through the entire stop → fresh request → authoritative reconciliation → next-action path with the actual helper, not only as prose or isolated helper commands.
+
 Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, reconcile any pending action first, then continue from the next unfinished action. State adds no step limit: a run goes on until completion, a gate or approval, an error, a failed recheck, or the user stops it. Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
 
 ## Acceptance before runtime adoption
