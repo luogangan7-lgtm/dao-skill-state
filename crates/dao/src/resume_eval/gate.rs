@@ -940,6 +940,25 @@ mod tests {
     }
 
     #[test]
+    fn standalone_shell_version_queries_are_metadata() {
+        for command in [
+            "sh --version",
+            "/bin/sh --version 2>&1 | head -1",
+            "bash --version",
+            "env sh --version",
+            concat!(
+                "echo '=== checker ==='; ls -la /workspace/dao 2>&1; ",
+                "echo '=== toolchain ==='; cargo --version 2>&1; ",
+                "rustc --version 2>&1; sh --version 2>&1 | head -1; ",
+                "echo '=== registry cache ==='; ls ~/.cargo/registry 2>&1 | head; ",
+                "echo '=== vendor? ==='; ls /workspace 2>&1 | head -20"
+            ),
+        ] {
+            assert_eq!(probed(&bash(command)), 0, "{command}");
+        }
+    }
+
+    #[test]
     fn skill_loading_requires_the_exact_entrypoint() {
         for phase in ["make", "s1", "s2"] {
             let skill = if phase == "make" {
@@ -998,6 +1017,9 @@ mod tests {
             "exec -a",
             "sh -c",
             "bash -z 'printf harmless'",
+            "sh --version -c python3",
+            "sh --version; python3 -c 'print(1)'",
+            "sh --version; cat /tmp/dao-resume-store-a",
         ] {
             assert_eq!(probed(&bash(command)), 1, "{command}");
         }
