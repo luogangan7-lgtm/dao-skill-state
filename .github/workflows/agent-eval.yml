@@ -225,14 +225,12 @@ jobs:
             path=messages
             [ "$protocol" = anthropic ] || path=chat/completions
             rc=0
-            status=$(curl --silent --show-error --connect-timeout 15 --max-time 60 --max-filesize 1048576 --retry 0 --output results/body.json --write-out '%{http_code}' --header "Authorization: Bearer $NVIDIA_API" --header "x-api-key: $NVIDIA_API" --header 'anthropic-version: 2023-06-01' --header 'Content-Type: application/json' --data-binary "@results/$protocol-request.json" "https://integrate.api.nvidia.com/v1/$path") || rc=$?
-            # Retain only the tiny protocol result, never headers, requests with credentials, or arbitrary upstream error bodies.
+            status=$(curl --silent --show-error --connect-timeout 15 --max-time 60 --max-filesize 1048576 --retry 0 --output "$RUNNER_TEMP/nvidia-body.json" --write-out '%{http_code}' --header "Authorization: Bearer $NVIDIA_API" --header "x-api-key: $NVIDIA_API" --header 'anthropic-version: 2023-06-01' --header 'Content-Type: application/json' --data-binary "@results/$protocol-request.json" "https://integrate.api.nvidia.com/v1/$path") || rc=$?
+            # Public artifacts contain protocol metadata and deterministic assertions, never generated content or arbitrary upstream bodies.
             jq -n --arg protocol "$protocol" --arg model "$IN_MODEL" --arg status "$status" --argjson rc "$rc" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{protocol:$protocol,model:$model,http_status:$status,curl_rc:$rc,sha:$sha,github_run_id:$run}' > "results/$protocol-receipt.json"
-            if jq -e . results/body.json > /dev/null 2>&1; then
-              jq '{id,model,object,type,stop_reason,usage,content:(if .type == "message" then .content else null end),choices:(.choices // null)}' results/body.json > "results/$protocol-response.json"
-            fi
+            jq --arg protocol "$protocol" 'if type != "object" then error("non-object response") else {protocol:$protocol,usage,anthropic_tool_match:([.content[]? | select(.type == "tool_use" and .name == "probe" and .input.value == 7)]|length == 1),openai_tool_match:([.choices[]?.message.tool_calls[]? | select(.type == "function" and .function.name == "probe") | .function.arguments | fromjson | select(.value == 7)]|length == 1)} end' "$RUNNER_TEMP/nvidia-body.json" > "results/$protocol-response.json" 2>/dev/null || rm -f "results/$protocol-response.json"
             cat "results/$protocol-receipt.json"
-            rm -f results/body.json
+            rm -f "$RUNNER_TEMP/nvidia-body.json"
           done
       - uses: actions/upload-artifact@v4
         if: always()
