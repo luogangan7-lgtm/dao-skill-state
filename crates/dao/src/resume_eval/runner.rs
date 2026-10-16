@@ -140,14 +140,72 @@ fn capture(mut command: Command, seconds: u64) -> (PipeCapture, Value, Value) {
     (output, rc, observation)
 }
 
-pub(super) fn redact(text: &str) -> String {
-    let mut result = text.to_string();
+fn redaction_patterns() -> Vec<String> {
+    let mut patterns = Vec::new();
     for (key, value) in env::vars() {
-        if (key.starts_with("ANTHROPIC_") || key.starts_with("CLAUDE_CODE_")) && value.len() >= 8 {
-            result = result.replace(&value, "[REDACTED]");
+        let credential = ["TOKEN", "KEY", "SECRET"]
+            .iter()
+            .any(|part| key.contains(part));
+        if (key.starts_with("ANTHROPIC_") || key.starts_with("CLAUDE_CODE_"))
+            && !value.is_empty()
+            && (credential || value.len() >= 8)
+        {
+            let encoded = json!(&value).to_string();
+            patterns.push(encoded[1..encoded.len() - 1].to_string());
+            patterns.push(value);
+        }
+    }
+    patterns.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    patterns.dedup();
+    patterns
+}
+
+fn redact_text(text: &str, patterns: &[String]) -> String {
+    let mut result = String::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(pattern) = patterns
+            .iter()
+            .find(|pattern| rest.starts_with(pattern.as_str()))
+        {
+            result.push_str("[REDACTED]");
+            rest = &rest[pattern.len()..];
+        } else {
+            let ch = rest.chars().next().unwrap();
+            result.push(ch);
+            rest = &rest[ch.len_utf8()..];
         }
     }
     result
+}
+
+pub(super) fn redact(text: &str) -> String {
+    redact_text(text, &redaction_patterns())
+}
+
+/// Redact data before JSON serialization; short credentials must not rewrite JSON syntax.
+pub(super) fn redact_json(mut value: Value) -> Value {
+    fn visit(value: &mut Value, patterns: &[String]) {
+        match value {
+            Value::String(text) => *text = redact_text(text, patterns),
+            Value::Array(items) => items.iter_mut().for_each(|item| visit(item, patterns)),
+            Value::Object(items) => {
+                if items.keys().any(|key| {
+                    patterns
+                        .iter()
+                        .any(|pattern| key.contains(pattern.as_str()))
+                }) {
+                    // Omit the object rather than rename keys and risk collisions or a false schema.
+                    *value = json!("[REDACTED]");
+                } else {
+                    items.values_mut().for_each(|item| visit(item, patterns));
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(&mut value, &redaction_patterns());
+    value
 }
 
 /// Refuse credential-bearing artifact bytes before anything reaches the upload directory.
@@ -203,26 +261,26 @@ fn evidence(
             result = event.clone();
         }
         if event["type"] == "assistant" {
-            let entry = json!({"message_id":event["message"]["id"],
+            let entry = redact_json(json!({"message_id":event["message"]["id"],
                 "model":event["message"]["model"],"usage":event["message"]["usage"],
                 "stop_reason":event["message"]["stop_reason"],"error":event["error"],
-                "observed_s":observed_s});
-            let text = redact(&entry.to_string());
-            detail_bytes += text.len();
+                "observed_s":observed_s}));
+            detail_bytes += entry.to_string().len();
             if detail_bytes <= TRACE_LIMIT {
-                messages.push(serde_json::from_str::<Value>(&text).unwrap());
+                messages.push(entry);
             } else {
                 details_truncated = true;
             }
         }
         if let Some(content) = event["message"]["content"].as_array() {
             for item in content.iter().filter(|item| item["type"] == "tool_result") {
-                let text = redact(&item["content"].to_string());
+                let content = redact_json(item["content"].clone());
+                let text = content.to_string();
                 let content_truncated = text.len() > DETAIL_LIMIT;
                 let value = if content_truncated {
                     json!({"excerpt":text.chars().take(DETAIL_LIMIT / 4).collect::<String>()})
                 } else {
-                    serde_json::from_str::<Value>(&text).unwrap()
+                    content
                 };
                 let entry = json!({"tool_use_id":redact(item["tool_use_id"].as_str().unwrap_or("")),
                     "is_error":item["is_error"],"content":value,
@@ -241,14 +299,10 @@ fn evidence(
                 {
                     truncated = true;
                 }
-                let entry: Value = serde_json::from_str(&redact(
-                    &json!({
-                        "id":item["id"],"name": item["name"], "input": item["input"],
-                        "observed_s":observed_s
-                    })
-                    .to_string(),
-                ))
-                .unwrap();
+                let entry = redact_json(json!({
+                    "id":item["id"],"name": item["name"], "input": item["input"],
+                    "observed_s":observed_s
+                }));
                 trace_bytes += entry.to_string().len();
                 if trace_bytes <= TRACE_LIMIT {
                     trace.push(entry.clone());
@@ -277,12 +331,12 @@ fn evidence(
             }
         }
     }
-    let diagnostics = redact(&json!({"subtype":result["subtype"], "errors":result.get("errors").cloned().unwrap_or(json!([]))}).to_string());
-    let diagnostics_truncated = diagnostics.len() > 16 * 1024;
+    let diagnostics = redact_json(json!({"subtype":result["subtype"], "errors":result.get("errors").cloned().unwrap_or(json!([]))}));
+    let diagnostics_truncated = diagnostics.to_string().len() > 16 * 1024;
     let diagnostic: Value = if diagnostics_truncated {
         json!({"subtype":redact(result["subtype"].as_str().unwrap_or("unknown")),"errors":["diagnostics exceeded limit"]})
     } else {
-        serde_json::from_str(&diagnostics).unwrap()
+        diagnostics
     };
     let final_text: String = redact(result["result"].as_str().unwrap_or(""))
         .chars()
@@ -449,6 +503,13 @@ mod tests {
             assert_eq!(row["tool_results"][0]["content"], "[REDACTED]");
             assert!(!row.to_string().contains(&secret));
             assert_eq!(observation["stderr"], "[REDACTED]");
+            let nested = redact_json(json!({"text":json!({"token":secret}).to_string(),
+                "pass":true,"count":1}));
+            assert_eq!(nested["text"], json!({"token":"[REDACTED]"}).to_string());
+            assert_eq!(nested["pass"], true);
+            assert_eq!(nested["count"], 1);
+            let keyed = Value::Object(serde_json::Map::from_iter([(secret, json!(true))]));
+            assert_eq!(redact_json(keyed), "[REDACTED]");
             assert!(observation["process_stopped_s"].as_f64().unwrap() >= 1.0);
             assert!(
                 row["tool_results"][0]["observed_s"].as_f64().unwrap()

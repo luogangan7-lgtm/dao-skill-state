@@ -349,7 +349,7 @@ fn run(repo: &Path, out: &Path, tasks: &[String], reps: u64) -> Result<(), Strin
     'matrix: for task in tasks {
         for rep in 0..reps {
             let row = sample(repo, out, &store, &binary, task, rep, &digest);
-            writeln!(log, "{}", runner::redact(&row.to_string())).map_err(|e| e.to_string())?;
+            writeln!(log, "{}", runner::redact_json(row.clone())).map_err(|e| e.to_string())?;
             log.flush().map_err(|e| e.to_string())?;
             log.sync_all().map_err(|e| e.to_string())?;
             println!(
