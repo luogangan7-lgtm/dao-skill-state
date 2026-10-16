@@ -2,12 +2,16 @@
 
 Read this only for resumable, multi-step work. Short tasks remain stateless. This file is an authoring/review contract, **not an implementation of a SKILL.state runtime**.
 
+A stateful skill can be instructions plus the minimum checkpoint or host record needed to preserve pending actions and policy history; it does not require a new state engine. Every state write must still satisfy the invariants below. Validate any helper actually supplied, but do not add a patch API, concurrent writer or runtime merely to exercise a checklist. Runtime-adoption checks apply to the capabilities implemented and claims made.
+
 ## Form standard (created and third-party skills alike)
 
 A skill is **stateful** when it keeps progress somewhere to resume from; otherwise it is **fixed steps**. Decide with two questions, for created and evolved skills alike:
 
 1. **Can a run be cut off and continued by a fresh session** (it spans sessions or days, waits for approvals, or can crash mid-step)? No → fixed steps.
 2. **Can that session learn from the authoritative system, cheaply and without probing it, which steps took effect** (every step is idempotent, or the system answers "did step N take effect" for every step)? Yes → fixed steps plus a resume rule: before running any step, check it in the system, all of them, not only the one that failed. No → stateful.
+
+A yes also requires the policy facts needed to choose the next authorized action. Loaded/not-loaded alone cannot distinguish a never-attempted step from a failed, unloaded step when retries are forbidden; preserve that history in the authoritative host or a minimal checkpoint. Existing approval, pause and retry rules apply in either form.
 
 A stateful skill must state three things: **where** state lives (outside the skill directory, or a reference to the user's task system when it owns progress), **how a run resumes** (read the state first), and **how an action with an unknown outcome is reconciled** (mark it pending before running it; on resume check the real system before running it again; if there is no way to check, do not rerun it: stop and report). Never ship part of it: a progress file without the pending rule is worse than no state. State is for surviving a cut-off, not a reason to stop: a run continues step after step until done, blocked or failed, saving after each step.
 
