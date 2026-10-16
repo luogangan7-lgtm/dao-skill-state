@@ -44,8 +44,10 @@ jobs:
         run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build dao and skill-hub
         env:
-          CARGO_LOG: cargo::compiler::fingerprint=info
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
         run: |
+          (cd crates/dao && cargo -V)
+          (cd crates/skill-hub && cargo -V)
           (cd crates/dao && cargo build --release --locked)
           (cd crates/skill-hub && cargo build --release --locked)
       - name: Run the supply chain

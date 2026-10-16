@@ -237,9 +237,10 @@ jobs:
           node-version: "22"
       - name: Install the pinned Claude CLI and build Rust DAO
         env:
-          CARGO_LOG: cargo::compiler::fingerprint=info
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
         run: |
           npm install -g @anthropic-ai/claude-code@2.1.285
+          cargo -V
           cargo build --manifest-path crates/dao/Cargo.toml --release --locked
           echo "$PWD/crates/dao/target/release" >> "$GITHUB_PATH"
       - name: Save the compiled Rust build
