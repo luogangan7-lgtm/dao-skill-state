@@ -24,7 +24,10 @@ jobs:
           persist-credentials: false
       - name: Identify the Rust compiler
         id: rust
-        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+        run: |
+          dao_compiler=$(cd crates/dao && rustc -vV)
+          hub_compiler=$(cd crates/skill-hub && rustc -vV)
+          echo "hash=$(printf '%s\n%s\n' "$dao_compiler" "$hub_compiler" | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         id: cargo-cache
         with:
