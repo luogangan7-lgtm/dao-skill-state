@@ -256,7 +256,10 @@ The strict gate recomputes observed backend/oracle access from all three phases,
 maker, rather than trusting the reported probe count. It examines tool execution/path inputs;
 trial warehouse files, task helpers, skill references and written mock code remain allowed.
 This bounded heuristic recognizes the observed store, installed backend and evaluation-source
-paths; aliases, indirect execution or unobserved tool effects still require independent review.
+paths in identified file-command arguments, redirection targets and Python import/file-access AST
+nodes. Comments, printed literals and written mock contents are data; direct Python or cat-to-Python
+heredoc bodies are code. This is not full shell parsing: aliases, indirect execution or unobserved
+tool effects still require independent review.
 Strict runs keep a 90-minute job limit. Maker calls allow 300 seconds/40 turns; each execution
 session allows 180 seconds/45 turns. Twelve samples could consume 132 minutes at every phase's
 limit, so the job cap can still end an incomplete matrix as a failure; these budgets do not promise

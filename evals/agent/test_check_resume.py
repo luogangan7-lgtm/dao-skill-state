@@ -48,6 +48,7 @@ class CheckResumeTests(unittest.TestCase):
             {"name": "Bash", "input": {"command": "cat /opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/warehouse.py"}},
             {"name": "Bash", "input": {"command": "cd /home/runner/work/dao-skill-state/dao-skill-state/evals/agent && sed -n '1,200p' check_resume.py"}},
             {"name": "Read", "input": {"file_path": "/repo/evals/agent/resume-tasks/backfill-crash/expect_s1.json"}},
+            {"name": "Bash", "input": {"command": "cat <<'PY' | python3\nimport warehouse\nPY"}},
         ]
         for phase in ("make", "s1", "s2"):
             for event in accesses:
@@ -64,6 +65,9 @@ class CheckResumeTests(unittest.TestCase):
                 {"name": "Write", "input": {"file_path": "/tmp/trial/warehouse.py", "content": "import warehouse; /tmp/warehouse; /repo/evals/agent/check_resume.py"}},
                 {"name": "Bash", "input": {"command": "cat > /tmp/trial/mock.py <<'PY'\nimport warehouse\nSTORE = '/tmp/warehouse'\nPY"}},
                 {"name": "Bash", "input": {"command": "cat /tmp/bf-fwd-a/warehouse.txt; python3 status.py 5"}},
+                {"name": "Bash", "input": {"command": "# do not read /tmp/warehouse\npython3 status.py 5"}},
+                {"name": "Bash", "input": {"command": "printf '%s\\n' '/tmp/warehouse'"}},
+                {"name": "Bash", "input": {"command": "python3 - <<'PY'\nfrom pathlib import Path\nPath('/tmp/trial/mock.py').write_text('cat /tmp/warehouse /repo/evals/agent/check_resume.py')\nPY"}},
             ]
         self.assertEqual(self.validate([row]), 1)
 
