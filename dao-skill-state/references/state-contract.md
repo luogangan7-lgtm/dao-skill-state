@@ -13,7 +13,7 @@ A stateful skill must state three things: **where** state lives (outside the ski
 
 When evolving an existing skill:
 - fixed → stateful: an observed resume failure (a non-idempotent action repeated, an approval or position lost) and question 2 answers no. If the system can answer, add the check rule instead.
-- stateful → fixed: question 1 or 2 now answers yes for every step, or the state duplicates a task system that already owns progress (reference it instead).
+- stateful → fixed: question 1 now answers no, or question 2 answers yes for every step, or the state duplicates a task system that already owns progress (reference it instead).
 - a stateful skill with a gap: add the missing part; do not delete state unless the questions say fixed.
 
 `dao normalize` records each skill's form, the lines that make it stateful, and which of the three parts it leaves out (`form`, `state_evidence`, `state_gaps` on the routing card). It is a lexical review hint: a gap is a review note, not a rejection, and an empty gap list is not a pass.
