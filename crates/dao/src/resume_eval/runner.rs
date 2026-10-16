@@ -82,6 +82,16 @@ pub(super) fn redact(text: &str) -> String {
     result
 }
 
+/// Refuse credential-bearing artifact bytes before anything reaches the upload directory.
+pub(super) fn contains_secret(bytes: &[u8]) -> bool {
+    env::vars().any(|(key, value)| {
+        (key.starts_with("ANTHROPIC_") || key.starts_with("CLAUDE_CODE_"))
+            && ["TOKEN", "KEY", "SECRET"].iter().any(|part| key.contains(part))
+            && !value.is_empty()
+            && bytes.windows(value.len()).any(|window| window == value.as_bytes())
+    })
+}
+
 /// Parses only Claude's documented stream-json event/result fields. Missing/truncated evidence
 /// stays explicit; a written output cannot turn a failed CLI result into a clean phase.
 fn evidence(bytes: &[u8], rc: Value, mut truncated: bool, elapsed: f64) -> Value {

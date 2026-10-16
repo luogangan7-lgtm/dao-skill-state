@@ -35,12 +35,14 @@ fn copy_tree(source: &Path, target: &Path, skip_claude: bool) -> Result<(), Stri
     for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
+        if runner::contains_secret(name.to_string_lossy().as_bytes()) { return Err("credential-bearing artifact name refused".into()); }
         if name == ".git" || name == "__pycache__" || (skip_claude && name == ".claude") { continue; }
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         if kind.is_symlink() { return Err(format!("symlink refused: {}", entry.path().display())); }
         if kind.is_dir() { copy_tree(&entry.path(),&target.join(name),skip_claude)?; }
         else if kind.is_file() {
             if entry.metadata().map_err(|e| e.to_string())?.len() > 32 * 1024 * 1024 { return Err("artifact file exceeds 32 MiB".into()); }
+            if runner::contains_secret(&fs::read(entry.path()).map_err(|e| e.to_string())?) { return Err("credential-bearing artifact content refused".into()); }
             fs::copy(entry.path(),target.join(name)).map_err(|e| e.to_string())?;
         } else { return Err("non-regular artifact refused".into()); }
     }
@@ -121,22 +123,32 @@ fn producer(repo: &Path, tasks: &[String], reps: u64, binary: &Path) -> Result<V
         "github_run_id":env::var("GITHUB_RUN_ID").ok(),"github_run_attempt":env::var("GITHUB_RUN_ATTEMPT").ok()}))
 }
 
-fn sample(repo: &Path, out: &Path, store: &Path, binary: &Path, task: &str, rep: u64, producer_hash: &str) -> Result<Value,String> {
+fn sample(repo: &Path, out: &Path, store: &Path, binary: &Path, task: &str, rep: u64, producer_hash: &str) -> Value {
+    let mut row = json!({"task":task,"arm":"make:dao","rep":rep,"pass":false,"made":false,
+        "producer_sha256":producer_hash});
+    if let Err(error) = sample_phases(repo,out,store,binary,task,rep,&mut row) {
+        row["pass"] = json!(false);
+        row["harness_error"] = json!(runner::redact(&error));
+    }
+    row
+}
+
+fn sample_phases(repo: &Path, out: &Path, store: &Path, binary: &Path, task: &str, rep: u64, row: &mut Value) -> Result<(),String> {
     let tag = format!("{task}-dao-{rep}");
     let maker = temporary("make")?;
     let home = temporary("home")?;
     copy_tree(&repo.join("dao-skill-state"),&maker.join(".claude/skills/dao-skill-state"),false)?;
     let prompt = format!("Use the dao-skill-state skill for this.\n\n{}\n\nWrite the skill into ./new-skill/ (SKILL.md and its required files). Only make the skill; do not perform the real backfill. For this project implement any persistent helper in Rust; short shell wrappers may invoke Rust. Do not run Python. The installed Rust checker is {} check DIR; preserve the requested output folder. Keep synthetic trials inside your own mock inputs and records.",fixture::request(task)?,binary.display());
     let mut make = runner::run(&maker,&home,&prompt,40,300,store);
+    row["make"] = make.clone();
+    row["probes"] = json!(gate::probed(&make));
     let generated = maker.join("new-skill");
     let artifact = out.join("created").join(&tag);
     let valid = valid_skill(&generated);
     if generated.is_dir() { copy_tree(&generated,&artifact,false)?; }
-    let mut row = json!({"task":task,"arm":"make:dao","rep":rep,"pass":false,"made":false,
-        "producer_sha256":producer_hash,"make":make,"probes":gate::probed(&make)});
-    if !clean(&make) || valid.is_err() {
+    if !clean(&make) || valid.is_err() || row["probes"] != json!(0) {
         row["make"]["check"] = json!(valid.err().unwrap_or_else(|| "maker CLI failed".into()));
-        return Ok(row);
+        return Ok(());
     }
     let skill = valid.unwrap();
     row["made"] = json!(true);
@@ -147,8 +159,12 @@ fn sample(repo: &Path, out: &Path, store: &Path, binary: &Path, task: &str, rep:
     let ws1 = temporary("ws")?;
     let id = sha(format!("{tag}:{}",ws1.display()).as_bytes())[..16].to_string();
     let baseline = fixture::setup(task,&ws1,binary,store,&id)?;
+    let case_out = out.join("workspaces").join(&tag);
+    fs::create_dir_all(&case_out).map_err(|e| e.to_string())?;
+    write_json(&case_out.join("fixture-baseline.json"),&baseline)?;
     copy_tree(&artifact,&ws1.join(".claude/skills").join(&skill),false)?;
     let mut s1 = runner::run(&ws1,&temporary("home")?,&format!("Use the {skill} skill.\n\n{}",fixture::first_prompt(task)?),45,180,store);
+    row["s1"] = s1.clone();
     let first_check = fixture::verify(task,&ws1,store,&baseline,true);
     s1["check"] = json!(first_check.as_ref().err().cloned().unwrap_or_else(|| "pass".into()));
     let first = fixture::events(&ws1,store)?;
@@ -160,12 +176,13 @@ fn sample(repo: &Path, out: &Path, store: &Path, binary: &Path, task: &str, rep:
     row["tampered"] = json!(first_check.is_err());
     row["probes"] = json!(gate::probed(&row["make"])+gate::probed(&s1));
     copy_tree(&ws1,&out.join("workspaces").join(&tag).join("s1"),true)?;
-    if !clean(&s1) || first_check.is_err() || row["probes"] != json!(0) { return Ok(row); }
+    if !clean(&s1) || first_check.is_err() || row["probes"] != json!(0) { return Ok(()); }
     fixture::transition(task,&ws1)?;
     let ws2 = temporary("ws")?;
     copy_tree(&ws1,&ws2,true)?;
     copy_tree(&artifact,&ws2.join(".claude/skills").join(&skill),false)?;
     let mut s2 = runner::run(&ws2,&temporary("home")?,&format!("Use the {skill} skill.\n\n{}",fixture::resume_prompt(task)?),45,180,store);
+    row["s2"] = s2.clone();
     let final_check = fixture::verify(task,&ws2,store,&baseline,false);
     s2["check"] = json!(final_check.as_ref().err().cloned().unwrap_or_else(|| "pass".into()));
     let events = fixture::events(&ws2,store)?;
@@ -179,8 +196,7 @@ fn sample(repo: &Path, out: &Path, store: &Path, binary: &Path, task: &str, rep:
     row["probes"] = json!(gate::probed(&row["make"])+gate::probed(&s1)+gate::probed(&s2));
     row["pass"] = json!(final_check.is_ok() && clean(&s2) && row["probes"] == json!(0));
     copy_tree(&ws2,&out.join("workspaces").join(&tag).join("s2"),true)?;
-    write_json(&out.join("workspaces").join(&tag).join("fixture-baseline.json"),&baseline)?;
-    Ok(row)
+    Ok(())
 }
 
 fn run(repo: &Path, out: &Path, tasks: &[String], reps: u64) -> Result<(),String> {
@@ -195,10 +211,7 @@ fn run(repo: &Path, out: &Path, tasks: &[String], reps: u64) -> Result<(),String
     let mut log = OpenOptions::new().create_new(true).write(true).open(out.join("resume.jsonl")).map_err(|e| e.to_string())?;
     'matrix: for task in tasks {
         for rep in 0..reps {
-            let row = match sample(repo,out,&store,&binary,task,rep,&digest) {
-                Ok(row) => row,
-                Err(error) => json!({"task":task,"arm":"make:dao","rep":rep,"pass":false,"producer_sha256":digest,"harness_error":runner::redact(&error)}),
-            };
+            let row = sample(repo,out,&store,&binary,task,rep,&digest);
             writeln!(log,"{}",runner::redact(&row.to_string())).map_err(|e| e.to_string())?;
             log.flush().map_err(|e| e.to_string())?;
             log.sync_all().map_err(|e| e.to_string())?;
@@ -206,6 +219,7 @@ fn run(repo: &Path, out: &Path, tasks: &[String], reps: u64) -> Result<(),String
             if row["pass"] != true { break 'matrix; } // Preserve the RED, avoid spending on a doomed matrix.
         }
     }
+    copy_tree(&store,&out.join("external"),false)?;
     match gate::check(out,repo,tasks,reps) {
         Ok(receipt) => write_json(&out.join("resume-gate.json"),&receipt),
         Err(error) => {
@@ -249,4 +263,50 @@ pub(super) fn main(args: &[String]) -> Result<ExitCode,String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_artifacts_are_refused_and_partial_maker_evidence_survives() {
+        const FLAG: &str = "DAO_RESUME_ARTIFACT_TEST_CHILD";
+        if env::var_os(FLAG).is_some() {
+            let root = temporary("artifact-test").unwrap();
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let row = sample(&repo,&root,&root,&env::current_exe().unwrap(),fixture::TASKS[0],0,"producer");
+            assert_eq!(row["pass"],false);
+            assert!(row["harness_error"].as_str().unwrap().contains("credential-bearing"));
+            assert_eq!(row["make"]["subtype"],"success");
+            assert_eq!(row["make"]["tool_trace"][0]["name"],"Skill");
+            assert!(!root.join("created").join(format!("{}-dao-0",fixture::TASKS[0])).join("debug.txt").exists());
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let bin = temporary("fake-cli").unwrap();
+        let cli = bin.join("claude");
+        fs::write(&cli,r#"#!/bin/sh
+mkdir -p new-skill
+cat > new-skill/SKILL.md <<'DOC'
+---
+name: backfill-runbook
+description: Resume authorized backfill work with durable state.
+---
+Use the runbook.
+DOC
+printf '%s' "$ANTHROPIC_AUTH_TOKEN" > new-skill/debug.txt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"dao-skill-state"}}]}}' '{"type":"result","subtype":"success","errors":[],"is_error":false,"num_turns":1}'
+"#).unwrap();
+        fs::set_permissions(&cli,fs::Permissions::from_mode(0o755)).unwrap();
+        let status = Command::new(env::current_exe().unwrap())
+            .args(["--exact","resume_eval::tests::secret_artifacts_are_refused_and_partial_maker_evidence_survives"])
+            .env(FLAG,"1").env("ANTHROPIC_AUTH_TOKEN","synthetic-ci-credential-abcdef")
+            .env("PATH",format!("{}:{}",bin.display(),env::var("PATH").unwrap_or_default()))
+            .status().unwrap();
+        fs::remove_dir_all(bin).unwrap();
+        assert!(status.success());
+    }
 }
