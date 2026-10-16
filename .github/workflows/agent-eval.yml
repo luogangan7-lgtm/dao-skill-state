@@ -218,9 +218,9 @@ jobs:
       - name: Identify the Rust compiler
         id: rust
         run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - name: Cache Rust release builds
+      - name: Restore Rust release builds
         id: cargo-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -240,6 +240,15 @@ jobs:
           npm install -g @anthropic-ai/claude-code@2.1.285
           cargo build --manifest-path crates/dao/Cargo.toml --release --locked
           echo "$PWD/crates/dao/target/release" >> "$GITHUB_PATH"
+      - name: Save the compiled Rust build
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/dao/target/release
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - name: Run the Rust boundary matrix
         env:
           ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
