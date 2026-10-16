@@ -262,6 +262,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn timeout_retains_correlated_tool_outcomes() {
+        let stream = format!(
+            "{}\n{}\n",
+            json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"compile-1","name":"Bash","input":{"command":"rustc helper.rs"}}]}}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"compile-1","is_error":true,"content":"error[E0382]: borrow of moved value"}]}})
+        );
+        let row = evidence(stream.as_bytes(), json!("timeout"), false, 300.0);
+        assert_eq!(row["tool_trace"][0]["id"], "compile-1");
+        assert_eq!(row["tool_results"][0]["tool_use_id"], "compile-1");
+        assert_eq!(row["tool_results"][0]["is_error"], true);
+        assert_eq!(
+            row["tool_results"][0]["content"],
+            "error[E0382]: borrow of moved value"
+        );
+        assert!(row["error"].is_string());
+    }
+
+    #[test]
     fn failed_result_retains_complete_tool_input_and_diagnostics() {
         let input = format!("prefix {} suffix", "x".repeat(250));
         let stream = format!(
