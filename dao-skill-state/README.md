@@ -12,12 +12,7 @@
 使用 $dao-skill-state，做一个把商品卖点整理成主图设计简报的 Skill，只生成简报，不生成图片、不发布。
 ```
 
-创建和规则阅读不需要网络服务或私有 MCP。格式检查需要 Python 3.9+ 和 PyYAML；请使用已有可信环境，缺依赖时明确报告，不能自动安装。可在需要时审阅 `requirements.txt` 后由维护者安装。
-
-```bash
-python3 scripts/check_skill.py .
-python3 -m unittest discover -s scripts -p 'test_*.py' -v
-```
+创建和规则阅读不需要网络服务或私有 MCP。格式检查的入口与环境要求以 [SKILL.md 的 Work contract](SKILL.md#work-contract) 为准，使用项目已验证的 Rust `dao` 检查器；项目要求 CI-only 时在 CI 检查。缺少该二进制时报告 NOT_RUN，不自动安装或另选检查器。
 
 检查器只校验 frontmatter，不解析或认证完整 Markdown 链接、正文质量或业务效果。区分 errors 与 warnings：0=结构有效，1=结构错误，2=无法检查（包括依赖/读取失败或超过本工具 1 MiB 输入限制）。具体能力以当前验收记录为准。
 
@@ -29,7 +24,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py' -v
 - `references/assessment.md`：仅评分/验收时加载；任务结果、对照增益、成本与覆盖分开，八维不再加权成通用质量分。
 - `references/evolution.md`：实际反馈→候选消费→独立接纳→可恢复本地更新；可选 stdlib helper 的 PASS 仅为机械绑定。
 - `references/state-contract.md`：可选长任务续接、语义校验、来源时效与动作回执。
-- `scripts/`：只读格式检查、可选任务记录计数检查和回归测试；计数检查不验证证据内容或授权发布。
+- `scripts/`：保留的格式检查器与回归基线，以及可选任务记录计数和演进辅助工具；当前格式检查使用上述正式入口，计数检查不验证证据内容或授权发布。
 
 一个维护源，不把运行状态、用户资料或测试转录写进包内。按真实缺陷、标准变动或明确需求更新；记录版本、文件摘要、失败用例、验收结果和回滚点。新版本先在隔离目录验证，再按用户授权替换安装。不要强制 Git 远程或私有任务系统；也不自动提交、发布或推送。
 
