@@ -232,6 +232,7 @@ jobs:
         if: always()
         with:
           name: resume-rust-eval
+          include-hidden-files: true
           path: |
             results/
             summary.txt
