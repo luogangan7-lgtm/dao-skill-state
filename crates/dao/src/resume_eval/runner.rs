@@ -33,9 +33,9 @@ fn consumed_event(event: &Value) -> bool {
     let content = event["message"]["content"].as_array();
     matches!(event["type"].as_str(), Some("assistant" | "result"))
         || content.is_some_and(|items| {
-            items.iter().any(|item| {
-                matches!(item["type"].as_str(), Some("tool_use" | "tool_result"))
-            })
+            items
+                .iter()
+                .any(|item| matches!(item["type"].as_str(), Some("tool_use" | "tool_result")))
         })
 }
 
