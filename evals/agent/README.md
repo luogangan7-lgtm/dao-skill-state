@@ -13,8 +13,8 @@ with programmatic checkers. Nothing runs on a developer machine.
 
 Run: Actions → `agent-eval` → Run workflow (`suite`, `tasks`, `arms`, `reps`, `provider`). The
 workflow needs an Anthropic-compatible key as a repository secret (`KIMI_API` or `MINIMAX_API`
-for the providers wired in). On pull requests it only checks that every checker fails on an
-empty workspace.
+for the providers wired in). On pull requests it checks that every legacy checker fails on an
+empty workspace and runs the Rust formatting, lint, tests and recovery gate calibration.
 
 ## Results (2026-10-14)
 
@@ -239,7 +239,7 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
 # Rust recovery boundary evaluation
 
 The `resume-rust` suite runs through the existing Rust `dao` CLI. It does not
-change the frozen legacy Python suites below. Dispatch `agent-eval` with
+change the existing frozen legacy Python suites. Dispatch `agent-eval` with
 `suite=resume-rust`, `arms=make:dao`, `reps=2` and an empty task selection for all
 six cases: applied crash, unknown result, retry allowed, retry forbidden, real
 approval missing and user paused. The generated skill must use Rust for any
