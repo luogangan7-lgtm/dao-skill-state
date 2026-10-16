@@ -122,7 +122,9 @@ def file_hashes(root):
 def probed(*runs):
     """Commands that read the stand-in warehouse's store directly instead of through the runbook's
     status command: what a real agent would do by poking at a production system."""
-    return sum(1 for r in runs for c in (r.get("bash") or []) if "import warehouse" in c or "/warehouse" in c)
+    return sum(1 for r in runs for event in (r.get("tool_trace") or [])
+               if re.search(r"\b(?:import\s+warehouse|from\s+warehouse\s+import)\b|/warehouse",
+                            json.dumps(event)))
 
 
 def tokens(r):
@@ -216,15 +218,15 @@ def main():
                        "progress_after_s1": progress_text,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
                        "events_after_s1": events1, "events": events2,
-                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error")},
+                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated")},
                        "probes": probed(r1, r2),
-                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error")},
+                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated")},
                        "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
                        "hook": [r1.get("hook"), r2.get("hook")],
                        "s2_loaded_runbook": (made[1] if made else "backfill-runbook") in json.dumps(r2.get("skill_calls"))}
                 if mk is not None:
                     row.update(made=True, skill_name=made[1],
-                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls", "rc", "is_error", "error")},
+                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls", "rc", "is_error", "error", "tool_trace", "trace_truncated")},
                                skill_hashes=file_hashes(made[0]), make_tokens=tokens(mk))
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
