@@ -43,6 +43,23 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Identify the Rust compiler
+        id: rust
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Rust checks
+        id: cargo-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/dao/target/debug
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-debug-${{ hashFiles('crates/dao/Cargo.lock') }}-${{ hashFiles('crates/dao/src/**', 'crates/dao/tests/**', 'crates/dao/Cargo.toml') }}
+          restore-keys: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-debug-${{ hashFiles('crates/dao/Cargo.lock') }}-
+      - name: Record cache receipt
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+        run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze the legacy Python baseline
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -198,6 +215,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Identify the Rust compiler
+        id: rust
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Rust release builds
+        id: cargo-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/dao/target/release
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-release-${{ hashFiles('crates/dao/Cargo.lock') }}-${{ hashFiles('crates/dao/src/**', 'crates/dao/Cargo.toml') }}
+          restore-keys: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-release-${{ hashFiles('crates/dao/Cargo.lock') }}-
+      - name: Record cache receipt
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+        run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
