@@ -285,6 +285,11 @@ host, adapter and phase budgets remain fixed. The earlier timeout and rule
 violations remain evidence; reasoning mode is a hypothesis, and no speed or
 capability improvement is assumed before the complete matrix passes.
 
+The native protocol probe uses that same `low` setting for Super 3.5 VL,
+without a conflicting `enable_thinking=false` override. It reports HTTP status
+and exact tool-argument matches only; native probe success does not validate
+the Claude adapter or any DAO behavior.
+
 The PR check freezes all `.py` files against the base, runs Rust gate calibration
 and exports formatting patches from CI when needed. No local execution is part
 of this task's acceptance.
