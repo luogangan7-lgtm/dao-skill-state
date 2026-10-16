@@ -331,7 +331,9 @@ fn evidence(
             }
         }
     }
-    let diagnostics = redact_json(json!({"subtype":result["subtype"], "errors":result.get("errors").cloned().unwrap_or(json!([]))}));
+    let diagnostics = redact_json(
+        json!({"subtype":result["subtype"], "errors":result.get("errors").cloned().unwrap_or(json!([]))}),
+    );
     let diagnostics_truncated = diagnostics.to_string().len() > 16 * 1024;
     let diagnostic: Value = if diagnostics_truncated {
         json!({"subtype":redact(result["subtype"].as_str().unwrap_or("unknown")),"errors":["diagnostics exceeded limit"]})
