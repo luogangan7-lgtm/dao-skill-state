@@ -60,8 +60,11 @@ fn shell_words(command: &str) -> Vec<String> {
     }
     let mut words = Vec::new();
     let mut word = String::new();
+    let mut literal_word = false;
+    let mut substitution = false;
     let (mut quote, mut escape, mut comment) = (None, false, false);
-    for ch in source.chars() {
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
         if comment {
             if ch != '\n' {
                 continue;
@@ -75,7 +78,16 @@ fn shell_words(command: &str) -> Vec<String> {
         }
         if ch == '\\' && quote != Some('\'') {
             escape = true;
+            literal_word = true;
             continue;
+        }
+        if quote != Some('\'')
+            && (ch == '`' || (ch == '$' && chars.peek() == Some(&'(')))
+            && !substitution
+        {
+            // Internal metadata; keep the original word value for command inspection.
+            word.insert_str(0, "\0substitution:");
+            substitution = true;
         }
         if let Some(q) = quote {
             if ch == q {
@@ -85,13 +97,27 @@ fn shell_words(command: &str) -> Vec<String> {
             }
         } else if ch == '\'' || ch == '"' {
             quote = Some(ch);
+            literal_word = true;
         } else if ch == '#' && word.is_empty() {
             comment = true;
         } else if ch.is_whitespace() || ";&|<>".contains(ch) {
             if !word.is_empty() {
-                words.push(std::mem::take(&mut word));
+                // Only an unquoted number adjoining a redirect is a file descriptor.
+                if matches!(ch, '<' | '>')
+                    && !literal_word
+                    && word.bytes().all(|b| b.is_ascii_digit())
+                {
+                    word.clear();
+                } else {
+                    words.push(std::mem::take(&mut word));
+                }
             }
-            if ch == '\n' || ";&|<>".contains(ch) {
+            literal_word = false;
+            substitution = false;
+            if matches!(ch, '<' | '>') && chars.peek() == Some(&'(') {
+                words.push("\0process-substitution".to_string());
+                chars.next();
+            } else if ch == '\n' || ";&|<>".contains(ch) {
                 words.push(ch.to_string());
             }
         } else {
@@ -270,15 +296,27 @@ fn shell_probe_depth(command: &str, depth: usize) -> bool {
     let mut segment: Vec<&str> = Vec::new();
     let mut redirection = false;
     for word in words.iter().map(String::as_str).chain(std::iter::once(";")) {
+        let substitution = word.starts_with("\0substitution:");
+        let word = word.strip_prefix("\0substitution:").unwrap_or(word);
+        if word == "\0process-substitution" {
+            return true; // Process substitution is outside the observed supported forms.
+        }
         if word == "<" || word == ">" {
             redirection = true;
             continue;
         }
         if redirection {
-            if forbidden(word) {
+            if word == "&" {
+                continue; // Descriptor duplication, as in 2>&1, is not a command separator.
+            }
+            if matches!(word, ";" | "|" | "\n") {
+                return true; // Missing redirect target is outside the observed valid forms.
+            }
+            if forbidden(word) || substitution {
                 return true;
             }
             redirection = false;
+            continue; // Redirect targets are not command arguments.
         }
         if !matches!(word, ";" | "&" | "|" | "\n") {
             segment.push(word);
@@ -927,6 +965,8 @@ mod tests {
     fn wrapper_literals_mock_writes_and_rust_execution_remain_allowed() {
         for command in [
             "printf '%s\\n' 'env python3' 'command python3' 'exec python3'",
+            "printf '%s\\n' '<('",
+            "printf '%s\\n' '>('",
             "echo 'X=1 python3' 'sh -c python3' 'env sh -c python3'",
             "cat > /tmp/trial/mock.sh <<'MOCK'\nenv python3\ncommand python3\nexec python3\nX=1 python3\nsh -c 'python3'\nMOCK",
             "command -v python3",
@@ -949,6 +989,14 @@ mod tests {
             "/bin/sh --version 2>&1 | head -1",
             "bash --version",
             "env sh --version",
+            "sh --version > toolchain-version.txt",
+            "sh --version 2> toolchain-errors.txt",
+            "sh --version >'$(python3)'",
+            "sh --version >'`python3`'",
+            "sh --version >\\`python3\\`",
+            "sh --version >\\$\\(python3\\)",
+            "printf '%s\\n' \"$(pwd)\"",
+            "bash -c 'sh --version 2>&1 | head -1'",
             concat!(
                 "echo '=== checker ==='; ls -la /workspace/dao 2>&1; ",
                 "echo '=== toolchain ==='; cargo --version 2>&1; ",
@@ -1021,6 +1069,16 @@ mod tests {
             "sh -c",
             "bash -z 'printf harmless'",
             "sh --version -c python3",
+            "sh --version 2 > toolchain-version.txt",
+            "sh --version '2'> toolchain-version.txt",
+            "sh --version \\2> toolchain-version.txt",
+            "sh --version 2> /tmp/dao-resume-store-a",
+            "sh --version >$(python3)",
+            "sh --version >\"$(python3)\"",
+            "sh --version >`python3`",
+            "sh --version >\"`python3`\"",
+            "sh --version > >(python3)",
+            "sh --version < <(python3)",
             "sh --version; python3 -c 'print(1)'",
             "sh --version; cat /tmp/dao-resume-store-a",
         ] {
