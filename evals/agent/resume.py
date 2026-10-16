@@ -25,6 +25,7 @@ outage, and turns / tokens / seconds of each session. Writes OUT_DIR/resume.json
 summary. CI only (.github/workflows/agent-eval.yml). Depends on: run.py (same directory).
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -98,6 +99,24 @@ def steps_ran(ws):
     else:
         p = os.path.join(ws, ".audit", "steps.log")
     return [int(x) for x in open(p).read().split()] if os.path.exists(p) else []
+
+
+def warehouse_events(ws):
+    """The external audit also distinguishes a failed attempt from a committed action."""
+    wid = os.path.join(ws, ".warehouse_id")
+    if not os.path.isfile(wid):
+        return []
+    path = os.path.join(os.environ.get("WAREHOUSE_DIR", "/tmp/warehouse"),
+                        open(wid).read().strip() + ".events.jsonl")
+    return [json.loads(line) for line in open(path)] if os.path.isfile(path) else []
+
+
+def file_hashes(root):
+    """Bind fixtures and generated skills to the bytes used, without copying private run files."""
+    return {os.path.relpath(os.path.join(d, n), root): hashlib.sha256(
+            open(os.path.join(d, n), "rb").read()).hexdigest()
+            for d, _, names in os.walk(root) for n in sorted(names)
+            if not os.path.islink(os.path.join(d, n)) and "__pycache__" not in d}
 
 
 def probed(*runs):
@@ -177,28 +196,36 @@ def main():
                 status = os.path.join(ws1, "upstream.status")
                 tampered = not os.path.exists(status) or open(status).read().strip() != "down"
                 after1 = steps_ran(ws1)
+                events1 = warehouse_events(ws1)
                 pj = os.path.join(ws1, ".backfill", "progress.json")
                 progress1 = os.path.exists(pj)
                 progress_text = open(pj).read()[:300] if progress1 else None  # the mechanism under test
                 open(status, "w").write("up\n")  # the outage is over
+                # A task-system change (e.g. an operator pause), never an agent-created approval.
+                resume_files = os.path.join(troot, "resume-files")
+                if os.path.isdir(resume_files):
+                    shutil.copytree(resume_files, ws1, dirs_exist_ok=True)
                 t2 = session(troot, arm, ws1, open(os.path.join(troot, "resume.md")).read(),
                              open(os.path.join(troot, "check.py")).read(), made)
                 r2 = run.run_one(t2, use, a.max_turns, a.timeout)
                 ran = steps_ran(r2["ws"])
+                events2 = warehouse_events(r2["ws"])
                 row = {"task": name, "arm": arm, "rep": rep, "pass": bool(r2["pass"]) and not tampered,
                        "check": r2.get("check"), "tampered": tampered, "after_session1": after1, "ran": ran,
                        "clean_stop": after1 == expect_s1(troot), "progress_file_after_s1": progress1,
                        "progress_after_s1": progress_text,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
-                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
+                       "events_after_s1": events1, "events": events2,
+                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error")},
                        "probes": probed(r1, r2),
-                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
+                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error")},
                        "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
                        "hook": [r1.get("hook"), r2.get("hook")],
                        "s2_loaded_runbook": (made[1] if made else "backfill-runbook") in json.dumps(r2.get("skill_calls"))}
                 if mk is not None:
                     row.update(made=True, skill_name=made[1],
-                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls")}, make_tokens=tokens(mk))
+                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls", "rc", "is_error", "error")},
+                               skill_hashes=file_hashes(made[0]), make_tokens=tokens(mk))
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
                 log.flush()

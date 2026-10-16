@@ -23,6 +23,10 @@ on:
       suite:
         description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks); resume = fixed steps vs stateful skill on an interrupted task (resume-tasks)"
         default: run
+      require_pass:
+        description: "resume make:* only: require complete samples, clean sessions, audited boundaries and traced skill artifacts"
+        type: boolean
+        default: false
   pull_request:
     paths:
       - evals/agent/**
@@ -52,11 +56,13 @@ jobs:
             rc=0; python3 "$t/check.py" "$(mktemp -d)" > /dev/null 2>&1 || rc=$?
             [ "$rc" -eq 1 ] || { echo "$t: checker exit $rc on an empty workspace (want 1)"; exit 1; }
           done
+      - name: Calibrate resume boundary checkers (known good and injected failures)
+        run: python3 -m unittest discover -s evals/agent -p 'test_*.py' -v
   run:
     if: github.event_name == 'workflow_dispatch'
     needs: checkers
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: ${{ inputs.require_pass && 90 || 300 }}
     concurrency:
       # one model job at a time per subscription (each has a usage window); providers run in parallel
       group: agent-eval-${{ inputs.provider }}
@@ -113,15 +119,24 @@ jobs:
           IN_REPS: ${{ inputs.reps }}
           IN_SUITE: ${{ inputs.suite }}
           IN_PROVIDER: ${{ inputs.provider }}
+          IN_REQUIRE_PASS: ${{ inputs.require_pass }}
         run: |
           case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
+          if [ "$IN_REQUIRE_PASS" = true ] && [ "$IN_SUITE" != resume ]; then
+            echo "require_pass is supported only by the resume suite"; exit 1
+          fi
           export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
           unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
             pip install --quiet ./evals/agent/warehouse  # the stand-in external system (backfill-external, backfill-crash*)
+            budget=()
+            if [ "$IN_REQUIRE_PASS" = true ]; then budget=(--max-turns 30 --timeout 180); fi
             python3 evals/agent/resume.py evals/agent/resume-tasks results --tasks "$IN_TASKS" \
-              --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
+              --arms "$IN_ARMS" --reps "$IN_REPS" "${budget[@]}" | tee summary.txt
+            if [ "$IN_REQUIRE_PASS" = true ]; then
+              python3 evals/agent/check_resume.py results --tasks "$IN_TASKS" --arms "$IN_ARMS" --reps "$IN_REPS"
+            fi
           elif [ "$IN_SUITE" = evolve ]; then
             python3 evals/agent/evolve.py evals/agent/evolve-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
@@ -139,5 +154,6 @@ jobs:
           name: agent-eval
           path: |
             results/*.jsonl
+            results/*.json
             results/candidates/
             results/created/
