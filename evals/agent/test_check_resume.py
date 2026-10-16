@@ -29,7 +29,7 @@ class CheckResumeTests(unittest.TestCase):
                     "reruns": 0, "probes": 0, "skill_name": "backfill-runbook",
                     "after_session1": [1, 2, 3, 4, 5], "ran": list(range(1, 9)),
                     "events_after_s1": first,
-                    "events": first + [{"kind": "query", "n": 5, "loaded": True}]
+                    "events": copy.deepcopy(first) + [{"kind": "query", "n": 5, "loaded": True}]
                               + [event for n in range(6, 9) for event in ({"kind": "attempt", "n": n}, {"kind": "load", "n": n})],
                     "make": {**copy.deepcopy(phase), "skill_calls": ["dao-skill-state"]},
                     "s1": copy.deepcopy(phase), "s2": copy.deepcopy(phase)}
