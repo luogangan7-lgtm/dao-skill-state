@@ -802,6 +802,100 @@ mod tests {
     }
 
     #[test]
+    fn python_execution_wrappers_are_observed() {
+        // Inputs are evidence strings, never spawned commands. This initially exposes the P1 gap.
+        let missed: Vec<_> = [
+            "python3 -c 'print(1)'",
+            "/usr/bin/python3 -c 'print(1)'",
+            "env python3 -c 'print(1)'",
+            "/usr/bin/env python3 -c 'print(1)'",
+            "env -i X=1 python3 -c 'print(1)'",
+            "env -u X -C /tmp -a worker python3 -c 'print(1)'",
+            "command python3 -c 'print(1)'",
+            "command -p python3 -c 'print(1)'",
+            "exec python3 -c 'print(1)'",
+            "exec -cl -a worker /usr/bin/python3 -c 'print(1)'",
+            "X=1 python3 -c 'print(1)'",
+            "sh -c 'python3 -c \"print(1)\"'",
+            "/bin/sh -c '/usr/bin/python3 -c \"print(1)\"'",
+            "bash -lc 'python3 -c \"print(1)\"'",
+            "env X=1 sh -c 'python3 -c \"print(1)\"'",
+        ]
+        .into_iter()
+        .filter(|command| probed(&bash(command)) != 1)
+        .collect();
+        assert!(missed.is_empty(), "unobserved Python execution: {missed:?}");
+    }
+
+    #[test]
+    fn wrapper_literals_mock_writes_and_rust_execution_remain_allowed() {
+        for command in [
+            "printf '%s\\n' 'env python3' 'command python3' 'exec python3'",
+            "echo 'X=1 python3' 'sh -c python3' 'env sh -c python3'",
+            "cat > /tmp/trial/mock.sh <<'MOCK'\nenv python3\ncommand python3\nexec python3\nX=1 python3\nsh -c 'python3'\nMOCK",
+            "command -v python3",
+            "command -V python3",
+            "env -u python3 -C /tmp -a python3 /workspace/dao eval resume system status 5",
+            "env X=python3 /workspace/dao eval resume system status 5",
+            "X=python3 /workspace/dao eval resume system status 5",
+            "exec /workspace/dao eval resume system step 5",
+            "command /workspace/dao eval resume system status 5",
+            "sh -c 'exec /workspace/dao eval resume system step 5'",
+        ] {
+            assert_eq!(probed(&bash(command)), 0, "{command}");
+        }
+    }
+
+    #[test]
+    fn skill_loading_requires_the_exact_entrypoint() {
+        for phase in ["make", "s1", "s2"] {
+            let skill = if phase == "make" {
+                "dao-skill-state"
+            } else {
+                "backfill-runbook"
+            };
+            for leaf in ["helper.rs", "references/guide.md", "SKILL.md.bak"] {
+                let mut r = row(&task(), 0);
+                r[phase]["skill_calls"] = json!([format!("read:{skill}")]);
+                r[phase]["tool_trace"] = json!([{"name":"Read","input":{"file_path":format!("/work/.claude/skills/{skill}/{leaf}")}}]);
+                assert!(validate(r).is_err(), "{phase}: {leaf} is not a skill load");
+            }
+            let mut wrong = row(&task(), 0);
+            wrong[phase]["tool_trace"] = json!([{"name":"Read","input":{"file_path":format!("/work/.claude/skills/{skill}-other/SKILL.md")}}]);
+            assert!(validate(wrong).is_err(), "{phase}: wrong skill slug");
+            let mut entrypoint = row(&task(), 0);
+            entrypoint[phase]["skill_calls"] = json!([format!("read:{skill}")]);
+            entrypoint[phase]["tool_trace"] = json!([{"name":"Read","input":{"file_path":format!("/work/.claude/skills/{skill}/SKILL.md")}}]);
+            assert!(validate(entrypoint).is_ok(), "{phase}: exact SKILL.md");
+        }
+    }
+
+    #[test]
+    fn malformed_native_trace_cannot_hide_behind_a_valid_skill_call() {
+        for phase in ["make", "s1", "s2"] {
+            for event in [
+                json!({"input":{}}),
+                json!({"name":null,"input":{}}),
+                json!({"name":"Read"}),
+                json!({"name":"Read","input":{}}),
+                json!({"name":"Read","input":{"file_path":123}}),
+            ] {
+                let mut r = row(&task(), 0);
+                r[phase]["tool_trace"].as_array_mut().unwrap().push(event);
+                assert!(validate(r).is_err(), "{phase}: malformed native trace");
+            }
+            for event in [
+                json!({"name":"Glob","input":{"pattern":"*.md"}}),
+                json!({"name":"Grep","input":{"pattern":"backfill"}}),
+            ] {
+                let mut r = row(&task(), 0);
+                r[phase]["tool_trace"].as_array_mut().unwrap().push(event);
+                assert!(validate(r).is_ok(), "{phase}: legitimate default path");
+            }
+        }
+    }
+
+    #[test]
     fn producer_identity_and_hash_drift_are_red() {
         let expected = json!({"schema":"dao-resume-producer/2-rust","sha":"head","authoring_sha256":"author","state_contract_sha256":"state","binary_sha256":"binary","fixtures":{"gate.rs":"fixture"},"tasks":[task()],"arms":["make:dao"],"reps":1});
         let mut producer = expected.clone();
