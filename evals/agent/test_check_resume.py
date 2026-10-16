@@ -23,7 +23,7 @@ class CheckResumeTests(unittest.TestCase):
         (task / "resume_gate.json").write_text('{"query":{"step":5,"loaded":true}}\n')
         first = [event for n in range(1, 6) for event in ({"kind": "attempt", "n": n}, {"kind": "load", "n": n})]
         phase = {"rc": 0, "error": None, "is_error": False, "turns": 2, "skill_calls": ["backfill-runbook"],
-                 "tool_trace": [{"name": "Skill", "input": {"skill": "backfill-runbook"}}], "trace_truncated": False}
+                 "tool_trace": [{"name": "Skill", "input": {"skill": "backfill-runbook"}}], "trace_truncated": False, "diagnostics_truncated": False, "subtype": "success", "errors": []}
         self.row = {"task": "task", "arm": "make:dao", "rep": 0, "pass": True, "made": True,
                     "clean_stop": True, "s2_loaded_runbook": True, "tampered": False,
                     "reruns": 0, "probes": 0, "skill_name": "backfill-runbook",
@@ -57,7 +57,7 @@ class CheckResumeTests(unittest.TestCase):
 
     def test_model_errors_and_missing_skill_are_red(self):
         for phase in ("make", "s1", "s2"):
-            for key, value in (("rc", 1), ("rc", False), ("error", "quota"), ("is_error", True), ("turns", 0), ("turns", True), ("tool_trace", []), ("trace_truncated", True)):
+            for key, value in (("rc", 1), ("rc", False), ("error", "quota"), ("is_error", True), ("turns", 0), ("turns", True), ("tool_trace", []), ("trace_truncated", True), ("diagnostics_truncated", True), ("diagnostics_truncated", None), ("subtype", "error_max_turns"), ("subtype", None), ("errors", ["failed"]), ("errors", None)):
                 row = copy.deepcopy(self.row)
                 row[phase][key] = value
                 with self.subTest(phase=phase, key=key), self.assertRaises(ValueError):
@@ -156,6 +156,7 @@ class CheckResumeTests(unittest.TestCase):
                     "authoring_sha256": hashlib.sha256((repo / "dao-skill-state/references/authoring.md").read_bytes()).hexdigest(),
                     "fixtures": {"task": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (self.root / "task").iterdir()}},
                     "tasks": ["task"], "arms": ["make:dao"], "reps": 1,
+                    "budgets": {phase: {"max_turns": 40, "timeout_s": 1200} for phase in ("make", "s1", "s2")},
                     "github_run_id": os.environ.get("GITHUB_RUN_ID"), "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
         producer_file = out / "resume-producer.json"
         producer_file.write_text(json.dumps(producer, sort_keys=True, indent=2) + "\n")
@@ -174,12 +175,18 @@ class CheckResumeTests(unittest.TestCase):
             return result
         run_cli(0)
         original_producer = producer_file.read_bytes()
-        for mutation in ("old-sha", "changed-fixture", "producer-hash"):
+        for mutation in ("old-sha", "changed-fixture", "producer-hash", "bad-budget", "bool-budget", "missing-budget"):
             modified = copy.deepcopy(producer)
             if mutation == "old-sha":
                 modified["sha"] = "0" * 40
             elif mutation == "changed-fixture":
                 modified["fixtures"]["task"]["expect_s1.json"] = "0" * 64
+            elif mutation == "bad-budget":
+                modified["budgets"]["make"]["timeout_s"] = 0
+            elif mutation == "bool-budget":
+                modified["budgets"]["s1"]["max_turns"] = True
+            elif mutation == "missing-budget":
+                del modified["budgets"]["s2"]
             producer_file.write_text(json.dumps(modified, sort_keys=True, indent=2) + "\n")
             if mutation == "producer-hash":
                 producer_file.write_bytes(original_producer + b"\n")

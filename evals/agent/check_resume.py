@@ -59,6 +59,9 @@ def validate_rows(rows, tasks, arms, reps, tasks_dir):
             require("error" in run and run["error"] in (None, ""), f"{key}: {phase} error")
             require("is_error" in run and (run["is_error"] is None or run["is_error"] is False), f"{key}: {phase} is_error")
             require(type(run.get("turns")) is int and run["turns"] > 0, f"{key}: {phase} turns")
+            require(run.get("subtype") == "success" and type(run.get("errors")) is list
+                    and not run["errors"], f"{key}: {phase} failed result diagnostics")
+            require(run.get("diagnostics_truncated") is False, f"{key}: {phase} incomplete diagnostics")
             require(type(run.get("skill_calls")) is list, f"{key}: {phase} calls")
             require(type(run.get("tool_trace")) is list and run["tool_trace"]
                     and run.get("trace_truncated") is False, f"{key}: incomplete {phase} tool trace")
@@ -132,8 +135,13 @@ def main():
         producer_bytes = (args.out_dir / "resume-producer.json").read_bytes()
         producer_hash = hashlib.sha256(producer_bytes).hexdigest()
         producer = json.loads(producer_bytes)
-        require(type(producer) is dict and set(producer) == set(current) | {"github_run_id", "github_run_attempt"}, "invalid producer manifest")
+        require(type(producer) is dict and set(producer) == set(current) | {"github_run_id", "github_run_attempt", "budgets"}, "invalid producer manifest")
         require(type(producer["reps"]) is int and all(producer[k] == value for k, value in current.items()), "stale or mismatched producer")
+        budgets = producer["budgets"]
+        require(type(budgets) is dict and set(budgets) == {"make", "s1", "s2"}, "invalid phase budgets")
+        for budget in budgets.values():
+            require(type(budget) is dict and set(budget) == {"max_turns", "timeout_s"}
+                    and all(type(value) is int and value > 0 for value in budget.values()), "invalid phase budget")
         for field in ("github_run_id", "github_run_attempt"):
             require(producer[field] is None or type(producer[field]) is str, "invalid producer run identity")
             if field.upper() in os.environ:
@@ -148,7 +156,7 @@ def main():
             require(create.structure_ok(str(artifact)) is True, f"invalid skill structure: {artifact.name}")
         result = {**current, "pass": True, "github_sha": os.environ.get("GITHUB_SHA"), "rows": count,
                   "producer_sha256": producer_hash, "github_run_id": producer["github_run_id"],
-                  "github_run_attempt": producer["github_run_attempt"],
+                  "github_run_attempt": producer["github_run_attempt"], "budgets": budgets,
                   "results_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
         receipt.write_text(json.dumps(result, indent=2) + "\n")
         print(f"resume gate: {count} rows passed at {head}")

@@ -24,12 +24,13 @@ class RunToolTrace(unittest.TestCase):
         (self.task / "prompt.md").write_text("Fixture prompt; no model is invoked.\n")
         self.original_mkdtemp = tempfile.mkdtemp  # save before patching the shared module
 
-    def record(self, tools, extra_env=None):
+    def record(self, tools, extra_env=None, result_event=None, rc=0, write_output=False):
         stream = "\n".join(json.dumps(event) for event in (
             {"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "name": name, "input": value} for name, value in tools
             ]}},
-            {"type": "result", "result": "done", "num_turns": 1, "is_error": False},
+            {"type": "result", "result": "done", "num_turns": 1, "is_error": False,
+             "subtype": "success", "errors": [], **(result_event or {})},
         ))
         created = []
 
@@ -39,11 +40,17 @@ class RunToolTrace(unittest.TestCase):
             created.append(Path(path))
             return path
 
-        responses = [subprocess.CompletedProcess(["claude"], 0, stream, ""),
+        responses = [subprocess.CompletedProcess(["claude"], rc, stream, ""),
                      subprocess.CompletedProcess(["checker"], 0, "ok\n", "")]
+
+        def respond(*args, **kwargs):
+            if len(responses) == 2 and write_output:
+                (Path(kwargs["cwd"]) / "created.txt").write_text("Agent output exists despite failure.\n")
+            return responses.pop(0)
+
         with mock.patch.dict(os.environ, {"PATH": os.defpath, **(extra_env or {})}, clear=True), \
                 mock.patch.object(run.tempfile, "mkdtemp", side_effect=owned_mkdtemp), \
-                mock.patch.object(run.subprocess, "run", side_effect=responses) as process:
+                mock.patch.object(run.subprocess, "run", side_effect=respond) as process:
             result = run._run_one(str(self.task), "none", 3, 10)
         self.assertEqual(process.call_count, 2)
         self.assertEqual(process.call_args_list[0].args[0][0], "claude")
@@ -97,6 +104,29 @@ class RunToolTrace(unittest.TestCase):
         self.assertTrue(result["trace_truncated"])
         self.assertEqual(result["tool_trace"], [])
         self.assertEqual(result["tools"], {"Write": 1})
+
+    def test_failed_result_keeps_diagnostics_despite_checker_accepting_written_output(self):
+        token = "result-fixture-not-a-real-token-123456789"
+        result = self.record([], {"ANTHROPIC_TRACE_TEST_TOKEN": token},
+                             {"subtype": "error_max_turns", "is_error": True,
+                              "errors": ["execution stopped " + token], "result": "failed " + token},
+                             rc=1, write_output=True)
+        self.assertTrue((Path(result["ws"]) / "created.txt").is_file())
+        self.assertTrue(result["pass"])  # checker verdict remains separate from execution evidence
+        self.assertEqual(result["rc"], 1)
+        self.assertTrue(result["is_error"])
+        self.assertEqual(result["subtype"], "error_max_turns")
+        self.assertEqual(result["errors"], ["execution stopped [REDACTED]"])
+        self.assertEqual(result["error"], "failed [REDACTED]")
+        self.assertFalse(result["diagnostics_truncated"])
+        self.assertNotIn(token, json.dumps(result))
+
+    def test_result_diagnostics_are_bounded_and_declare_omission(self):
+        self.assertEqual(run.result_diagnostics({"subtype": "success"}),
+                         {"subtype": "success", "errors": [], "diagnostics_truncated": False})
+        result = self.record([], result_event={"errors": ["x" * (20 * 1024)]})
+        self.assertTrue(result["diagnostics_truncated"])
+        self.assertLess(len(json.dumps(result["errors"])), 4096)
 
 
 if __name__ == "__main__":

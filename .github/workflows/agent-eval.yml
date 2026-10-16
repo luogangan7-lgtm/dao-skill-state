@@ -131,7 +131,7 @@ jobs:
           if [ "$IN_SUITE" = resume ]; then
             pip install --quiet ./evals/agent/warehouse  # the stand-in external system (backfill-external, backfill-crash*)
             budget=()
-            if [ "$IN_REQUIRE_PASS" = true ]; then budget=(--max-turns 30 --timeout 180); fi
+            if [ "$IN_REQUIRE_PASS" = true ]; then budget=(--max-turns 45 --timeout 180 --make-max-turns 40 --make-timeout 300); fi
             python3 evals/agent/resume.py evals/agent/resume-tasks results --tasks "$IN_TASKS" \
               --arms "$IN_ARMS" --reps "$IN_REPS" "${budget[@]}" | tee summary.txt
             if [ "$IN_REQUIRE_PASS" = true ]; then

@@ -252,7 +252,13 @@ generated skills, unchanged inputs, exact execution boundaries and reconciliatio
 actions. A failed sample or missing receipt fails CI. `resume-gate.json` binds the result to the
 source SHA and fixture/skill hashes; full redacted tool inputs are retained for independent review.
 These are controlled behavior evaluations, not an adversarial security sandbox or production proof.
-Strict runs have a 90-minute job limit and 180-second/30-turn model-call limits.
+Strict runs keep a 90-minute job limit. Maker calls allow 300 seconds/40 turns; each execution
+session allows 180 seconds/45 turns. Twelve samples could consume 132 minutes at every phase's
+limit, so the job cap can still end an incomplete matrix as a failure; these budgets do not promise
+that every worst case fits. The producer receipt records the resolved budgets. Outside strict
+workflow dispatch, `--make-timeout` and `--make-max-turns` default to the session's `--timeout`
+and `--max-turns`. Result `subtype` and `errors` are redacted and bounded separately from tool
+inputs; strict acceptance rejects omitted diagnostics as well as omitted tool inputs.
 
 ### Limits
 

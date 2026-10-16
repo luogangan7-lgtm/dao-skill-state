@@ -43,7 +43,7 @@ import run  # noqa: E402
 ALWAYS = "import sys\nsys.exit(0)\n"  # session 1 is judged only by the final check
 # run.py already redacts these fields; failures and successes retain the same maker evidence.
 MAKE_EVIDENCE_FIELDS = ("turns", "duration_s", "skill_calls", "rc", "is_error", "error",
-                        "tool_trace", "trace_truncated", "final", "check")
+                        "tool_trace", "trace_truncated", "final", "check", "subtype", "errors", "diagnostics_truncated")
 
 
 def form_of(arm):
@@ -58,7 +58,7 @@ def make_skill(troot, creator, keep, a):
         creator, open(os.path.join(troot, "request.md")).read() + create.OUTPUT_RULE, "explicit"))
     open(os.path.join(t, "check.py"), "w").write(create.CHECK_CREATED)
     create.meta_skill(creator, t)
-    c = run.run_one(t, "none" if creator == "none" else "skills", a.max_turns, a.timeout)
+    c = run.run_one(t, "none" if creator == "none" else "skills", a.make_max_turns, a.make_timeout)
     d = os.path.join(c.get("ws", ""), "new-skill")
     if not c["pass"]:
         return None, None, c
@@ -145,7 +145,13 @@ def main():
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=1200)
+    ap.add_argument("--make-max-turns", type=int, help="maker only; default: --max-turns")
+    ap.add_argument("--make-timeout", type=int, help="maker only; default: --timeout")
     a = ap.parse_args()
+    a.make_max_turns = a.max_turns if a.make_max_turns is None else a.make_max_turns
+    a.make_timeout = a.timeout if a.make_timeout is None else a.make_timeout
+    if min(a.max_turns, a.timeout, a.make_max_turns, a.make_timeout) <= 0:
+        ap.error("phase budgets must be positive integers")
     if a.arms == "none,skills":  # the workflow's generic default
         a.arms = "none,fixed,stateful"
     makes = {x for x in a.arms.split(",") if x.startswith("make:")}
@@ -171,6 +177,9 @@ def main():
         "authoring_sha256": hashlib.sha256(open(os.path.join(repo, "dao-skill-state", "references", "authoring.md"), "rb").read()).hexdigest(),
         "fixtures": {name: file_hashes(os.path.join(root, name)) for name in names},
         "tasks": names, "arms": a.arms.split(","), "reps": a.reps,
+        "budgets": {"make": {"max_turns": a.make_max_turns, "timeout_s": a.make_timeout},
+                    "s1": {"max_turns": a.max_turns, "timeout_s": a.timeout},
+                    "s2": {"max_turns": a.max_turns, "timeout_s": a.timeout}},
         "github_run_id": os.environ.get("GITHUB_RUN_ID"),
         "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
@@ -205,7 +214,7 @@ def main():
                         log.write(json.dumps(row) + "\n")
                         log.flush()
                         print(json.dumps({**{k: row[k] for k in ("task", "arm", "rep", "pass", "made")},
-                                          "make": {k: row["make"][k] for k in ("turns", "rc", "is_error", "error", "final", "check", "trace_truncated")}}), flush=True)
+                                          "make": {k: row["make"][k] for k in ("turns", "rc", "is_error", "error", "final", "check", "trace_truncated", "subtype", "errors", "diagnostics_truncated")}}), flush=True)
                         continue
                     made = (d, sname)
                 t1 = session(troot, arm, os.path.join(troot, "files"), open(os.path.join(troot, "first.md")).read(),
@@ -239,9 +248,9 @@ def main():
                        "progress_after_s1": progress_text,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
                        "events_after_s1": events1, "events": events2,
-                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated")},
+                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated", "subtype", "errors", "diagnostics_truncated")},
                        "probes": probed(r1, r2),
-                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated")},
+                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "rc", "is_error", "tool_trace", "trace_truncated", "subtype", "errors", "diagnostics_truncated")},
                        "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
                        "hook": [r1.get("hook"), r2.get("hook")],
                        "s2_loaded_runbook": (made[1] if made else "backfill-runbook") in json.dumps(r2.get("skill_calls"))}
