@@ -162,9 +162,7 @@ fn invocation_probe(words: &[&str], depth: usize) -> bool {
             let options = flag.strip_prefix('-').unwrap_or_default();
             match exe {
                 "env" if matches!(flag, "-" | "-i" | "--ignore-environment") => {}
-                "env"
-                    if matches!(flag, "-u" | "--unset" | "-C" | "--chdir" | "-a" | "--argv0") =>
-                {
+                "env" if matches!(flag, "-u" | "--unset" | "-C" | "--chdir" | "-a" | "--argv0") => {
                     if i == words.len() {
                         return true;
                     }
@@ -178,9 +176,7 @@ fn invocation_probe(words: &[&str], depth: usize) -> bool {
                     if ["-u", "-C", "-a"]
                         .iter()
                         .any(|prefix| flag.starts_with(*prefix) && flag.len() > prefix.len()) => {}
-                "command"
-                    if !options.is_empty() && options.chars().all(|c| "pVv".contains(c)) =>
-                {
+                "command" if !options.is_empty() && options.chars().all(|c| "pVv".contains(c)) => {
                     describe |= flag.contains('v') || flag.contains('V');
                 }
                 "exec" if flag == "-a" => {

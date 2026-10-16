@@ -139,9 +139,13 @@ fn evidence(bytes: &[u8], rc: Value, mut truncated: bool, elapsed: f64) -> Value
                 {
                     truncated = true;
                 }
-                let entry: Value = serde_json::from_str(&redact(&json!({
-                    "name": item["name"], "input": item["input"]
-                }).to_string())).unwrap();
+                let entry: Value = serde_json::from_str(&redact(
+                    &json!({
+                        "name": item["name"], "input": item["input"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
                 trace_bytes += entry.to_string().len();
                 if trace_bytes <= TRACE_LIMIT {
                     trace.push(entry.clone());
