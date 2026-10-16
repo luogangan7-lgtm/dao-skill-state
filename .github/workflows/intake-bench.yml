@@ -43,6 +43,8 @@ jobs:
           CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
         run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build dao and skill-hub
+        env:
+          CARGO_LOG: cargo::compiler::fingerprint=info
         run: |
           (cd crates/dao && cargo build --release --locked)
           (cd crates/skill-hub && cargo build --release --locked)
