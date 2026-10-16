@@ -275,6 +275,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn malformed_tool_records_never_claim_complete() {
+        for item in [
+            json!({"type":"tool_use","input":{}}),
+            json!({"type":"tool_use","name":"","input":{}}),
+            json!({"type":"tool_use","name":"Bash"}),
+            json!({"type":"tool_use","name":"Bash","input":null}),
+            json!({"type":"tool_use","name":"Bash","input":"command"}),
+        ] {
+            let stream = format!(
+                "{}\n{}\n",
+                json!({"type":"assistant","message":{"content":[item.clone()]}}),
+                json!({"type":"result","subtype":"success","errors":[],"is_error":false,"num_turns":1})
+            );
+            assert_eq!(
+                evidence(stream.as_bytes(), json!(0), false, 0.1)["trace_truncated"],
+                true,
+                "malformed native tool record: {item}"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_read_evidence_requires_the_entry_file() {
+        for (path, expected) in [
+            ("/ws/.claude/skills/target/SKILL.md", json!(["read:target"])),
+            ("/ws/.claude/skills/target/helper.rs", json!([])),
+            ("/ws/.claude/skills/target/references/SKILL.md", json!([])),
+            ("/ws/.claude/skills/target/../SKILL.md", json!([])),
+        ] {
+            let stream = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":path}}]}}).to_string();
+            assert_eq!(
+                evidence(stream.as_bytes(), json!(0), false, 0.1)["skill_calls"],
+                expected,
+                "{path}"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn capture_drains_both_pipes_and_deadline_reaps_background_children() {
