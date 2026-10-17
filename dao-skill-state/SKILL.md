@@ -61,7 +61,7 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section tailored t
      c. If not loaded:
         (Select and write EXACTLY ONE appropriate rule below into the generated skill based on the task description; NEVER copy meta-instructions, conditions, or words like "write:" into the skill):
         - When the task prompt says "Never retry a failed command": include only:
-          "On resumption after an interruption or failure: if earlier steps are already loaded, an unloaded step is the point of previous interruption/failure. STOP execution immediately and report it; never execute this unloaded step, never retry it, and never skip it to run later steps! On a clean initial run: immediately execute the step command using the Bash tool."
+          "If any earlier batch is already loaded, an unloaded batch represents a previously failed step that MUST NOT be retried: STOP execution immediately and report it! Never execute this step command, never retry it, and never skip it to run later steps. (Execute step commands using the Bash tool ONLY on a clean initial run where no previous batches were loaded)."
         - When the task prompt says "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load": include only:
           "On resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order. On a clean initial run: immediately execute the step command using the Bash tool."
         - When the task prompt requires an approval file for step 6 ("Step 6 requires the operator's actual approval file `approvals/step-6.ok`"): include only:
