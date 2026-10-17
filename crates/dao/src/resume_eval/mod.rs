@@ -503,11 +503,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","nam
         let dst = root.join("dst");
         fs::create_dir_all(src.join("target/debug/build")).unwrap();
         fs::write(src.join("SKILL.md"), "---\nname: foo\n---").unwrap();
-        fs::write(
-            src.join("target/debug/build/secret.txt"),
-            "synthetic-token",
-        )
-        .unwrap();
+        fs::write(src.join("target/debug/build/secret.txt"), "synthetic-token").unwrap();
 
         copy_tree(&src, &dst, false).unwrap();
         assert!(dst.join("SKILL.md").exists());
