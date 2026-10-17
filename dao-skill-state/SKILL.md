@@ -43,31 +43,52 @@ Crucially:
 - Never put `---` between `name` and `description`. Never close frontmatter before `description`.
 - Never put `name` before the opening `---`, and never add unrecognized fields such as `author` or `tools`. Keep content concise and well-escaped.
 
-In the generated `SKILL.md`, you MUST include a `## Workflow` section tailored to whether the task offers a status query (choose exactly one of the two workflow branches below; do NOT mix them):
+In the generated `SKILL.md`, you MUST include a `## Workflow` section matching the exact task requirements (choose and include EXACTLY ONE workflow from the 5 workflows below based on the task prompt; do NOT combine or mix them):
 
-- **Workflow Branch A (ONLY for tasks explicitly stating "This warehouse offers no authorized status query")**:
+- **Workflow 1 (ONLY when the task states "This warehouse offers no authorized status query")**:
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Check for resumption or interruption FIRST (MANDATORY)**: Inspect the user prompt. If the user prompt asks to continue, resume, or follow an interruption or network failure (e.g. "interrupted by a network failure", "continue it"): because this warehouse offers no status query, the interrupted step's outcome is unknown. STOP immediately without running any shell commands! Never run `cat runbook.md`, never run step commands, never re-run earlier steps from step 1, never retry, and never skip. Report immediately that execution is stopped. Only on a clean initial run (starting from scratch, not continuing or resuming) proceed to step 2.
   2. **Inspect runbook via Bash and check pause**: Inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands. Check for `operator.pause` before executing anything; if it exists, stop immediately.
   3. **Clean initial execution loop**: Execute all steps sequentially in a continuous automated loop using the Bash tool without pausing for conversational confirmation or reporting intermediate progress between successful steps; after each step succeeds, immediately invoke the Bash tool for the next step. Stop immediately only if any command fails (non-zero exit code).
 
-- **Workflow Branch B (For all other tasks where a status query command is available or "The warehouse can be asked whether a batch is loaded")**:
+- **Workflow 2 (ONLY when the task states "Never retry a failed command, including when a later status query confirms it did not load")**:
+  Include ONLY this workflow in the generated `SKILL.md`:
+  1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  2. **Execution and resumption loop**:
+     Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
+     a. Check for `operator.pause`; if it exists, stop immediately!
+     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
+     c. If not loaded: if any earlier batch is already loaded, an unloaded batch represents a previously failed step that MUST NOT be retried: STOP execution immediately and report it! Never execute this step command, never retry it, and never skip it to run later steps. (Execute step commands using the Bash tool ONLY on a clean initial run where no previous batches were loaded).
+     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+
+- **Workflow 3 (ONLY when the task states "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load")**:
+  Include ONLY this workflow in the generated `SKILL.md`:
+  1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  2. **Execution and resumption loop**:
+     Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
+     a. Check for `operator.pause`; if it exists, stop immediately!
+     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
+     c. If not loaded: on resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order. On a clean initial run: immediately execute the step command using the Bash tool.
+     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+
+- **Workflow 4 (ONLY when the task states "Step 6 requires the operator's actual approval file `approvals/step-6.ok`")**:
+  Include ONLY this workflow in the generated `SKILL.md`:
+  1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  2. **Execution and resumption loop**:
+     Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
+     a. Check for `operator.pause`; if it exists, stop immediately!
+     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
+     c. If not loaded: if the step is step 6, check if `approvals/step-6.ok` exists on disk before running it; if absent, stop immediately and report the missing approval without executing step 6 or later steps! Otherwise, immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool.
+     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+
+- **Workflow 5 (For standard crash recovery or tasks with status query and no retry or approval constraints)**:
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Check for `operator.pause`; if it exists, stop immediately!
      b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
-     c. If not loaded:
-        (Select and write EXACTLY ONE appropriate rule below into the generated skill based on the task description; NEVER copy meta-instructions, conditions, or words like "write:" into the skill):
-        - When the task prompt says "Never retry a failed command": include only:
-          "If any earlier batch is already loaded, an unloaded batch represents a previously failed step that MUST NOT be retried: STOP execution immediately and report it! Never execute this step command, never retry it, and never skip it to run later steps. (Execute step commands using the Bash tool ONLY on a clean initial run where no previous batches were loaded)."
-        - When the task prompt says "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load": include only:
-          "On resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order. On a clean initial run: immediately execute the step command using the Bash tool."
-        - When the task prompt requires an approval file for step 6 ("Step 6 requires the operator's actual approval file `approvals/step-6.ok`"): include only:
-          "If the step is step 6, check if `approvals/step-6.ok` exists on disk before running it; if absent, stop immediately and report the missing approval without executing step 6 or later steps! Otherwise, immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool."
-        - Otherwise (for standard crash recovery or tasks without retry or approval constraints): include only:
-          "Immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool."
+     c. If not loaded: immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
      d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 A draft source directory need not be a Git checkout. For self-maintenance distinguish verified source from installed copy; do not rewrite a discovered installation or add a remote implicitly. Preserve unrelated edits, invocation policy, and a recoverable version before replacement.
 5. Before completing or handing off, invoke the installed checker directly in bash (`<checker-command> <target-skill-directory>`, e.g. `dao check <target-skill-directory>` or using the path given in the request). Do not write wrapper scripts for the checker; run it directly in your shell tool and verify that format lint passes cleanly (exit code 0). If any error is reported, fix `SKILL.md` and re-run until it passes. A missing binary means NOT_RUN, not permission to install tooling. Also run the target host's available validator when applicable; reconcile checker disagreements with the standard, not by adding meaningless headings. Check new scripts before executing them and use isolated test data.
