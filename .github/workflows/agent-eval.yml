@@ -16,16 +16,16 @@ on:
       reps:
         default: "1"
       provider:
-        description: "kimi / minimax / deepseek / nvidia (NVIDIA_API; explicit free model required)"
+        description: "kimi / minimax / deepseek / nvidia / aliyun (ALIYUN_API; DashScope compatible)"
         default: kimi
       model:
-        description: "empty = provider default except nvidia; NVIDIA: exact approved hosted model ID"
+        description: "empty = provider default except nvidia; NVIDIA: exact approved hosted model ID; aliyun: qwen-max / qwen3.7-plus / etc."
         default: ""
       evidence_cert:
         description: "NVIDIA only: PEM public recipient certificate; private key stays with the experiment owner"
         default: ""
       suite:
-        description: "run/create/evolve/resume = legacy; resume-rust = Rust boundary matrix; nvidia-probe = hosted API compatibility only"
+        description: "run/create/evolve/resume = legacy; resume-rust = Rust boundary matrix; nvidia-probe / aliyun-probe = hosted API compatibility only"
         default: run
   pull_request:
     paths:
@@ -164,14 +164,15 @@ jobs:
       - name: Run tasks
         env:
           # Anthropic-compatible endpoints of the owner's subscriptions; only the chosen one's key is set
-          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || inputs.provider == 'aliyun' && 'https://dashscope.aliyuncs.com/apps/anthropic' || 'https://api.kimi.com/coding/' }}
           # each key is set only for its own provider (an `a && b || c` fallback could send one
           # provider's key to the other's endpoint if a secret were missing)
           KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
           KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
           KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
-          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
+          KEY_ALIYUN: ${{ inputs.provider == 'aliyun' && secrets.ALIYUN_API || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
           # inputs reach the shell as data, never as interpolated script
@@ -181,9 +182,9 @@ jobs:
           IN_SUITE: ${{ inputs.suite }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
-          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
-          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
+          case "$IN_PROVIDER" in kimi|minimax|deepseek|aliyun) ;; *) echo "unknown provider"; exit 1 ;; esac
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}${KEY_ALIYUN}"
+          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK KEY_ALIYUN
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
             pip install --quiet ./evals/agent/warehouse  # the stand-in external system (backfill-external, backfill-crash*)
@@ -240,6 +241,41 @@ jobs:
         if: always()
         with:
           name: nvidia-protocol-probe
+          path: results/
+  aliyun-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'aliyun-probe' && inputs.provider == 'aliyun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agent-eval-aliyun
+      cancel-in-progress: false
+    steps:
+      - name: Probe DashScope Anthropic and OpenAI protocols without retries
+        env:
+          ALIYUN_API: ${{ secrets.ALIYUN_API }}
+          IN_MODEL: ${{ inputs.model || 'qwen-max' }}
+        run: |
+          [ -n "$ALIYUN_API" ] && [ -n "$IN_MODEL" ] || { echo "ALIYUN_API and explicit model required"; exit 1; }
+          mkdir -p results
+          jq -n --arg model "$IN_MODEL" '{model:$model,max_tokens:1024,messages:[{role:"user",content:"Call probe with value=7. This is a protocol test; do not perform any external action."}],tools:[{name:"probe",description:"Return the supplied integer",input_schema:{type:"object",properties:{value:{type:"integer"}},required:["value"]}}],tool_choice:{type:"tool",name:"probe"}}' > results/anthropic-request.json
+          jq '{model,max_tokens,messages,tools:[.tools[]|{type:"function",function:{name,description,parameters:.input_schema}}],tool_choice:{type:"function",function:{name:"probe"}},stream:false}' results/anthropic-request.json > results/openai-request.json
+          for protocol in anthropic openai; do
+            if [ "$protocol" = anthropic ]; then
+              url="https://dashscope.aliyuncs.com/apps/anthropic/v1/messages"
+            else
+              url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            fi
+            rc=0
+            status=$(curl --silent --show-error --connect-timeout 15 --max-time 60 --max-filesize 1048576 --retry 0 --output "$RUNNER_TEMP/aliyun-body.json" --write-out '%{http_code}' --header "Authorization: Bearer $ALIYUN_API" --header "x-api-key: $ALIYUN_API" --header 'anthropic-version: 2023-06-01' --header 'Content-Type: application/json' --data-binary "@results/$protocol-request.json" "$url") || rc=$?
+            jq -n --arg protocol "$protocol" --arg model "$IN_MODEL" --arg status "$status" --argjson rc "$rc" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{protocol:$protocol,model:$model,http_status:$status,curl_rc:$rc,sha:$sha,github_run_id:$run}' > "results/$protocol-receipt.json"
+            jq --arg protocol "$protocol" 'if type != "object" then error("non-object response") else {protocol:$protocol,usage,anthropic_tool_match:([.content[]? | select(.type == "tool_use" and .name == "probe" and .input.value == 7)]|length == 1),openai_tool_match:([.choices[]?.message.tool_calls[]? | select(.type == "function" and .function.name == "probe") | .function.arguments | fromjson | select(.value == 7)]|length == 1)} end' "$RUNNER_TEMP/aliyun-body.json" > "results/$protocol-response.json" 2>/dev/null || cp "$RUNNER_TEMP/aliyun-body.json" "results/$protocol-response.raw"
+            cat "results/$protocol-receipt.json"
+            rm -f "$RUNNER_TEMP/aliyun-body.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aliyun-protocol-probe
           path: results/
   resume-rust-model:
     if: github.event_name == 'workflow_dispatch' && inputs.suite == 'resume-rust'
@@ -310,13 +346,14 @@ jobs:
       - name: Run the Rust boundary matrix
         id: matrix
         env:
-          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || inputs.provider == 'aliyun' && 'https://dashscope.aliyuncs.com/apps/anthropic' || 'https://api.kimi.com/coding/' }}
           KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
           KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
           KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
+          KEY_ALIYUN: ${{ inputs.provider == 'aliyun' && secrets.ALIYUN_API || '' }}
           NVIDIA_API: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API || '' }}
-          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
           IN_TASKS: ${{ inputs.tasks }}
@@ -324,7 +361,7 @@ jobs:
           IN_REPS: ${{ inputs.reps }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "$IN_PROVIDER" in kimi|minimax|deepseek|nvidia) ;; *) echo "unknown provider"; exit 1 ;; esac
+          case "$IN_PROVIDER" in kimi|minimax|deepseek|nvidia|aliyun) ;; *) echo "unknown provider"; exit 1 ;; esac
           [ "$IN_ARMS" = make:dao ] || { echo "resume-rust requires make:dao"; exit 1; }
           args=(eval resume run --repo "$PWD" --out results --reps "$IN_REPS")
           if [ -n "$IN_TASKS" ]; then args+=(--tasks "$IN_TASKS"); fi
@@ -381,8 +418,8 @@ jobs:
             echo "NVIDIA matrix exit=$rc (raw evidence retained for encryption)"
             exit "$rc"
           fi
-          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
-          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}${KEY_ALIYUN}"
+          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK KEY_ALIYUN
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "missing selected provider key"; exit 1; }
           dao "${args[@]}" | tee summary.txt
       - name: Encrypt NVIDIA evidence and publish only numeric acceptance metadata
