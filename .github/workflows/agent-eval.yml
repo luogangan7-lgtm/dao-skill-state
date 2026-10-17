@@ -2,7 +2,8 @@ name: agent-eval
 # Evaluations B/C/D (charter 2026-10-14): Claude Code headless on frozen public tasks, with and
 # without skills, checked by each task's deterministic checker. The model runs on one of the owner's
 # subscriptions through its Anthropic-compatible endpoint: Kimi For Coding (secret KIMI_API),
-# MiniMax (secret MINIMAX_API, China endpoint) or DeepSeek (secret DEEPSEEK_API). Model jobs run on manual dispatch only, so pull
+# MiniMax (secret MINIMAX_API, China endpoint), DeepSeek (secret DEEPSEEK_API), or NVIDIA's
+# free hosted endpoints (secret NVIDIA_API) through a pinned local protocol adapter. Model jobs run on manual dispatch only, so pull
 # requests never spend a subscription window.
 on:
   workflow_dispatch:
@@ -15,24 +16,90 @@ on:
       reps:
         default: "1"
       provider:
-        description: "kimi (KIMI_API, Kimi For Coding), minimax (MINIMAX_API, MiniMax coding plan) or deepseek (DEEPSEEK_API)"
+        description: "kimi / minimax / deepseek / nvidia / aliyun (ALIYUN_API; DashScope compatible)"
         default: kimi
       model:
-        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash)"
+        description: "empty = provider default except nvidia; NVIDIA: exact approved hosted model ID; aliyun: qwen-max / qwen3.7-plus / etc."
+        default: ""
+      evidence_cert:
+        description: "NVIDIA only: PEM public recipient certificate; private key stays with the experiment owner"
         default: ""
       suite:
-        description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks); resume = fixed steps vs stateful skill on an interrupted task (resume-tasks)"
+        description: "run/create/evolve/resume = legacy; resume-rust = Rust boundary matrix; nvidia-probe / aliyun-probe = hosted API compatibility only"
         default: run
   pull_request:
     paths:
       - evals/agent/**
       - .github/workflows/agent-eval.yml
+      - crates/dao/**
+      - dao-skill-state/**
 permissions:
   contents: read
 defaults:
   run:
     shell: bash
 jobs:
+  rust-resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Identify the Rust compiler
+        id: rust
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Rust checks
+        id: cargo-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/dao/target/debug
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-debug-${{ hashFiles('crates/dao/Cargo.lock') }}-${{ hashFiles('crates/dao/src/**', 'crates/dao/tests/**', 'crates/dao/Cargo.toml') }}
+          restore-keys: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-debug-${{ hashFiles('crates/dao/Cargo.lock') }}-
+      - name: Record cache receipt
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+        run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Freeze the legacy Python baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${BASE_SHA:-origin/main}"
+          changed=$(git diff --name-only "$base" HEAD -- '*.py')
+          [ -z "$changed" ] || { echo "Rust resume work must preserve Python baseline:"; echo "$changed"; exit 1; }
+      - name: Rust formatting
+        id: fmt
+        continue-on-error: true
+        run: cargo fmt --manifest-path crates/dao/Cargo.toml --check
+      - name: Rust clippy
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --manifest-path crates/dao/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Rust tests and adversarial gate calibration
+        id: tests
+        continue-on-error: true
+        run: cargo test --manifest-path crates/dao/Cargo.toml --locked
+      - name: Export a CI formatting patch
+        if: always() && steps.fmt.outcome == 'failure'
+        run: |
+          cargo fmt --manifest-path crates/dao/Cargo.toml
+          git diff -- crates/dao > "$RUNNER_TEMP/resume-rust-format.patch"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.fmt.outcome == 'failure'
+        with:
+          name: resume-rust-format
+          path: ${{ runner.temp }}/resume-rust-format.patch
+      - name: Require every Rust check
+        if: always()
+        env:
+          FMT_RESULT: ${{ steps.fmt.outcome }}
+          CLIPPY_RESULT: ${{ steps.clippy.outcome }}
+          TEST_RESULT: ${{ steps.tests.outcome }}
+        run: test "$FMT_RESULT/$CLIPPY_RESULT/$TEST_RESULT" = success/success/success
   checkers:
     # every task has a prompt and a checker that fails on an empty workspace
     runs-on: ubuntu-latest
@@ -53,7 +120,7 @@ jobs:
             [ "$rc" -eq 1 ] || { echo "$t: checker exit $rc on an empty workspace (want 1)"; exit 1; }
           done
   run:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["run","create","evolve","resume"]'), inputs.suite)
     needs: checkers
     runs-on: ubuntu-latest
     timeout-minutes: 300
@@ -97,16 +164,18 @@ jobs:
       - name: Run tasks
         env:
           # Anthropic-compatible endpoints of the owner's subscriptions; only the chosen one's key is set
-          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || inputs.provider == 'aliyun' && 'https://dashscope.aliyuncs.com/apps/anthropic' || 'https://api.kimi.com/coding/' }}
           # each key is set only for its own provider (an `a && b || c` fallback could send one
           # provider's key to the other's endpoint if a secret were missing)
           KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
           KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
           KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
-          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || 'k3') }}
+          KEY_ALIYUN: ${{ inputs.provider == 'aliyun' && secrets.ALIYUN_API || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${{ inputs.provider == 'aliyun' && '8192' || '32000' }}
           # inputs reach the shell as data, never as interpolated script
           IN_TASKS: ${{ inputs.tasks }}
           IN_ARMS: ${{ inputs.arms }}
@@ -114,9 +183,12 @@ jobs:
           IN_SUITE: ${{ inputs.suite }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
-          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
-          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
+          case "$IN_PROVIDER" in kimi|minimax|deepseek|aliyun) ;; *) echo "unknown provider"; exit 1 ;; esac
+          if [ "$IN_PROVIDER" = aliyun ]; then
+            export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+          fi
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}${KEY_ALIYUN}"
+          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK KEY_ALIYUN
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
             pip install --quiet ./evals/agent/warehouse  # the stand-in external system (backfill-external, backfill-crash*)
@@ -141,3 +213,256 @@ jobs:
             results/*.jsonl
             results/candidates/
             results/created/
+  nvidia-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'nvidia-probe' && inputs.provider == 'nvidia'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agent-eval-nvidia
+      cancel-in-progress: false
+    steps:
+      - name: Probe the hosted API protocols without retries
+        env:
+          NVIDIA_API: ${{ secrets.NVIDIA_API }}
+          IN_MODEL: ${{ inputs.model }}
+        run: |
+          [ -n "$NVIDIA_API" ] && [ -n "$IN_MODEL" ] || { echo "NVIDIA_API and explicit model required"; exit 1; }
+          mkdir -p results
+          jq -n --arg model "$IN_MODEL" '{model:$model,max_tokens:1024,messages:[{role:"user",content:"Call probe with value=7. This is a protocol test; do not perform any external action."}],tools:[{name:"probe",description:"Return the supplied integer",input_schema:{type:"object",properties:{value:{type:"integer"}},required:["value"]}}],tool_choice:{type:"tool",name:"probe"}}' > results/anthropic-request.json
+          jq '{model,max_tokens,messages,tools:[.tools[]|{type:"function",function:{name,description,parameters:.input_schema}}],tool_choice:{type:"function",function:{name:"probe"}},stream:false} | if .model == "nvidia/nemotron-3.5-super-vl-120b-a12b" then .reasoning_effort="high" elif .model == "nvidia/nemotron-3-ultra-550b-a55b" then .reasoning_effort="none" else .chat_template_kwargs={enable_thinking:false} end' results/anthropic-request.json > results/openai-request.json
+          for protocol in anthropic openai; do
+            path=messages
+            [ "$protocol" = anthropic ] || path=chat/completions
+            rc=0
+            status=$(curl --silent --show-error --connect-timeout 15 --max-time 60 --max-filesize 1048576 --retry 0 --output "$RUNNER_TEMP/nvidia-body.json" --write-out '%{http_code}' --header "Authorization: Bearer $NVIDIA_API" --header "x-api-key: $NVIDIA_API" --header 'anthropic-version: 2023-06-01' --header 'Content-Type: application/json' --data-binary "@results/$protocol-request.json" "https://integrate.api.nvidia.com/v1/$path") || rc=$?
+            # Public artifacts contain protocol metadata and deterministic assertions, never generated content or arbitrary upstream bodies.
+            jq -n --arg protocol "$protocol" --arg model "$IN_MODEL" --arg status "$status" --argjson rc "$rc" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{protocol:$protocol,model:$model,http_status:$status,curl_rc:$rc,sha:$sha,github_run_id:$run}' > "results/$protocol-receipt.json"
+            jq --arg protocol "$protocol" 'if type != "object" then error("non-object response") else {protocol:$protocol,usage,anthropic_tool_match:([.content[]? | select(.type == "tool_use" and .name == "probe" and .input.value == 7)]|length == 1),openai_tool_match:([.choices[]?.message.tool_calls[]? | select(.type == "function" and .function.name == "probe") | .function.arguments | fromjson | select(.value == 7)]|length == 1)} end' "$RUNNER_TEMP/nvidia-body.json" > "results/$protocol-response.json" 2>/dev/null || rm -f "results/$protocol-response.json"
+            cat "results/$protocol-receipt.json"
+            rm -f "$RUNNER_TEMP/nvidia-body.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nvidia-protocol-probe
+          path: results/
+  aliyun-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'aliyun-probe' && inputs.provider == 'aliyun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agent-eval-aliyun
+      cancel-in-progress: false
+    steps:
+      - name: Probe DashScope Anthropic and OpenAI protocols without retries
+        env:
+          ALIYUN_API: ${{ secrets.ALIYUN_API }}
+          IN_MODEL: ${{ inputs.model || 'qwen-max' }}
+        run: |
+          [ -n "$ALIYUN_API" ] && [ -n "$IN_MODEL" ] || { echo "ALIYUN_API and explicit model required"; exit 1; }
+          mkdir -p results
+          jq -n --arg model "$IN_MODEL" '{model:$model,max_tokens:1024,messages:[{role:"user",content:"Call probe with value=7. This is a protocol test; do not perform any external action."}],tools:[{name:"probe",description:"Return the supplied integer",input_schema:{type:"object",properties:{value:{type:"integer"}},required:["value"]}}],tool_choice:{type:"tool",name:"probe"}}' > results/anthropic-request.json
+          jq '{model,max_tokens,messages,tools:[.tools[]|{type:"function",function:{name,description,parameters:.input_schema}}],tool_choice:{type:"function",function:{name:"probe"}},stream:false}' results/anthropic-request.json > results/openai-request.json
+          for protocol in anthropic openai; do
+            if [ "$protocol" = anthropic ]; then
+              url="https://dashscope.aliyuncs.com/apps/anthropic/v1/messages"
+            else
+              url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            fi
+            rc=0
+            status=$(curl --silent --show-error --connect-timeout 15 --max-time 60 --max-filesize 1048576 --retry 0 --output "$RUNNER_TEMP/aliyun-body.json" --write-out '%{http_code}' --header "Authorization: Bearer $ALIYUN_API" --header "x-api-key: $ALIYUN_API" --header 'anthropic-version: 2023-06-01' --header 'Content-Type: application/json' --data-binary "@results/$protocol-request.json" "$url") || rc=$?
+            jq -n --arg protocol "$protocol" --arg model "$IN_MODEL" --arg status "$status" --argjson rc "$rc" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{protocol:$protocol,model:$model,http_status:$status,curl_rc:$rc,sha:$sha,github_run_id:$run}' > "results/$protocol-receipt.json"
+            jq --arg protocol "$protocol" 'if type != "object" then error("non-object response") else {protocol:$protocol,usage,anthropic_tool_match:([.content[]? | select(.type == "tool_use" and .name == "probe" and .input.value == 7)]|length == 1),openai_tool_match:([.choices[]?.message.tool_calls[]? | select(.type == "function" and .function.name == "probe") | .function.arguments | fromjson | select(.value == 7)]|length == 1)} end' "$RUNNER_TEMP/aliyun-body.json" > "results/$protocol-response.json" 2>/dev/null || cp "$RUNNER_TEMP/aliyun-body.json" "results/$protocol-response.raw"
+            cat "results/$protocol-receipt.json"
+            rm -f "$RUNNER_TEMP/aliyun-body.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aliyun-protocol-probe
+          path: results/
+  resume-rust-model:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'resume-rust'
+    needs: rust-resume
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    concurrency:
+      group: agent-eval-${{ inputs.provider }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Identify the Rust compiler
+        id: rust
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Restore Rust release builds
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/dao/target/release
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-release-${{ hashFiles('crates/dao/Cargo.lock') }}-${{ hashFiles('crates/dao/src/**', 'crates/dao/Cargo.toml') }}
+          restore-keys: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.hash }}-dao-release-${{ hashFiles('crates/dao/Cargo.lock') }}-
+      - name: Record cache receipt
+        env:
+          CACHE_HIT: ${{ steps.cargo-cache.outputs.cache-hit }}
+        run: echo "Rust cache exact hit=${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the pinned Claude CLI and build Rust DAO
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.285
+          cargo -V
+          cargo build --manifest-path crates/dao/Cargo.toml --release --locked
+          echo "$PWD/crates/dao/target/release" >> "$GITHUB_PATH"
+      - name: Prepare the isolated NVIDIA adapter and evidence recipient
+        if: inputs.provider == 'nvidia'
+        env:
+          IN_MODEL: ${{ inputs.model }}
+          EVIDENCE_CERT: ${{ inputs.evidence_cert }}
+        run: |
+          case "$IN_MODEL" in
+            nvidia/nemotron-3-super-120b-a12b|nvidia/nemotron-3.5-lightning-30b-a3b|z-ai/glm-5.3-flash|nvidia/nemotron-3.5-super-vl-120b-a12b|nvidia/nemotron-3-ultra-550b-a55b) ;;
+            *) echo "NVIDIA model is outside this frozen free-endpoint cohort"; exit 1 ;;
+          esac
+          umask 077
+          printf '%s\n' "$EVIDENCE_CERT" > "$RUNNER_TEMP/nvidia-recipient.pem"
+          openssl x509 -in "$RUNNER_TEMP/nvidia-recipient.pem" -noout -checkend 86400
+          npm install --prefix "$RUNNER_TEMP/ccr" --no-audit --no-fund @musistudio/claude-code-router@3.1.3
+          # Use the reviewed embedded gateway, never the floating external fallback.
+          gateway="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
+          printf '%s  %s\n' '57c7cb2113d22ea495b2162dcd5306b1c938cde0de1c1312e79dea8bc4e261b0' "$gateway" > "$RUNNER_TEMP/ccr-gateway.sha256"
+          sha256sum --check "$RUNNER_TEMP/ccr-gateway.sha256"
+      - name: Save the compiled Rust build
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            crates/dao/target/release
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - name: Run the Rust boundary matrix
+        id: matrix
+        env:
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || inputs.provider == 'aliyun' && 'https://dashscope.aliyuncs.com/apps/anthropic' || 'https://api.kimi.com/coding/' }}
+          KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
+          KEY_MINIMAX: ${{ inputs.provider == 'minimax' && secrets.MINIMAX_API || '' }}
+          KEY_DEEPSEEK: ${{ inputs.provider == 'deepseek' && secrets.DEEPSEEK_API || '' }}
+          KEY_ALIYUN: ${{ inputs.provider == 'aliyun' && secrets.ALIYUN_API || '' }}
+          NVIDIA_API: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          DISABLE_AUTOUPDATER: "1"
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${{ inputs.provider == 'aliyun' && '8192' || '32000' }}
+          IN_TASKS: ${{ inputs.tasks }}
+          IN_ARMS: ${{ inputs.arms }}
+          IN_REPS: ${{ inputs.reps }}
+          IN_PROVIDER: ${{ inputs.provider }}
+        run: |
+          case "$IN_PROVIDER" in kimi|minimax|deepseek|nvidia|aliyun) ;; *) echo "unknown provider"; exit 1 ;; esac
+          if [ "$IN_PROVIDER" = aliyun ]; then
+            export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+          fi
+          [ "$IN_ARMS" = make:dao ] || { echo "resume-rust requires make:dao"; exit 1; }
+          args=(eval resume run --repo "$PWD" --out results --reps "$IN_REPS")
+          if [ -n "$IN_TASKS" ]; then args+=(--tasks "$IN_TASKS"); fi
+          if [ "$IN_PROVIDER" = nvidia ]; then
+            [ "$IN_REPS" = 2 ] && [ -z "$IN_TASKS" ] || { echo "NVIDIA cohort requires all six tasks and reps=2"; exit 1; }
+            [ -n "$NVIDIA_API" ] || { echo "missing selected NVIDIA key"; exit 1; }
+            task_nvidia_key="$NVIDIA_API"
+            umask 077
+            export CCR_INTERNAL_HOME_DIR="$RUNNER_TEMP/ccr-home"
+            export CCR_GATEWAY_ENTRY="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
+            export CCR_MODEL_CATALOG_PATH="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/models.json"
+            export CCR_RAW_TRACE_ENABLED=0
+            export CCR_WEB_AUTH_TOKEN="$(openssl rand -hex 32)"
+            # CCR 3.1.3 still permits one independent 401 auth-refresh attempt; record it below.
+            export GATEWAY_UPSTREAM_RETRY_ENABLED=false GATEWAY_UPSTREAM_RETRY_MAX_ATTEMPTS=1 UPSTREAM_TIMEOUT_MS=180000
+            export ANTHROPIC_AUTH_TOKEN="$(openssl rand -hex 32)"
+            export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
+            upstream_model="$ANTHROPIC_MODEL"
+            export ANTHROPIC_MODEL="nvidia/$upstream_model" ANTHROPIC_DEFAULT_HAIKU_MODEL="nvidia/$upstream_model"
+            export CLAUDE_CODE_MAX_RETRIES=0 CLAUDE_CODE_RETRY_WATCHDOG=0 CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000
+            case "$upstream_model" in
+              nvidia/nemotron-3-super-120b-a12b) body='{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}' ;;
+              nvidia/nemotron-3.5-super-vl-120b-a12b) body='{"reasoning_effort":"high"}' ;;
+              nvidia/nemotron-3-ultra-550b-a55b) body='{"reasoning_effort":"none"}' ;;
+              nvidia/nemotron-3.5-lightning-30b-a3b) body='{"chat_template_kwargs":{"enable_thinking":false}}' ;;
+              z-ai/glm-5.3-flash) body='{"reasoning_effort":"low","chat_template_kwargs":{"clear_thinking":true}}' ;;
+            esac
+            mkdir -p "$CCR_INTERNAL_HOME_DIR/.claude-code-router"
+            jq -n --arg model "$upstream_model" --argjson body "$body" '{APIKEY:env.ANTHROPIC_AUTH_TOKEN,HOST:"127.0.0.1",PORT:3456,API_TIMEOUT_MS:180000,gateway:{enabled:true,host:"127.0.0.1",port:3456,coreHost:"127.0.0.1",corePort:3457},preferredProvider:"nvidia",Providers:[{name:"nvidia",api_base_url:"https://integrate.api.nvidia.com/v1",api_key:env.NVIDIA_API,models:[$model],protocolDetectionMode:"manual",capabilities:[{type:"openai_chat_completions",baseUrl:"https://integrate.api.nvidia.com/v1"}],account:{enabled:false},autoFetchModels:false,autoFetchKnownModels:false,extraBody:($body+{max_tokens:32000})}],Router:{builtInRules:{"claude-code":{enabled:false},codex:{enabled:false}},fallback:{mode:"off",models:[],retryCount:0},rules:[]},plugins:[],profile:{enabled:false,profiles:[],claudeCode:{enabled:false},codex:{enabled:false}},observability:{agentAnalysis:false,requestLogs:false,requestLogBodyCapture:"none",requestLogMaxBodyBytes:0}}' > "$CCR_INTERNAL_HOME_DIR/.claude-code-router/config.json"
+            unset NVIDIA_API KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
+            adapter_pid=''
+            finish_adapter() {
+              if [ -n "$adapter_pid" ]; then kill "$adapter_pid" 2>/dev/null || true; wait "$adapter_pid" 2>/dev/null || true; fi
+              mkdir -p results
+              head -c 262144 "$RUNNER_TEMP/ccr.log" | jq -Rs --arg key "$task_nvidia_key" 'split($key)|join("[REDACTED]")' > results/adapter-diagnostics.json
+            }
+            trap finish_adapter EXIT
+            "$RUNNER_TEMP/ccr/node_modules/.bin/ccr" serve --no-open --host 127.0.0.1 --port 3458 > "$RUNNER_TEMP/ccr.log" 2>&1 &
+            adapter_pid=$!
+            ready=false
+            for attempt in {1..45}; do
+              if curl --silent --fail --connect-timeout 1 --max-time 2 http://127.0.0.1:3456/health -o "$RUNNER_TEMP/ccr-health.json" && jq -e '(.status=="ok" or .status=="running")' "$RUNNER_TEMP/ccr-health.json" >/dev/null; then ready=true; break; fi
+              kill -0 "$adapter_pid" 2>/dev/null || break
+              sleep 1
+            done
+            [ "$ready" = true ] || { echo "local NVIDIA adapter did not become ready"; exit 1; }
+            # The public repo receives only encrypted generated content, including errors/stdout.
+            rc=0
+            dao "${args[@]}" > summary.txt 2>&1 || rc=$?
+            mkdir -p results
+            cp "$RUNNER_TEMP/ccr/package-lock.json" results/adapter-package-lock.json
+            jq -n --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg model "$upstream_model" --argjson body "$body" --argjson rc "$rc" '{schema:"dao-nvidia-provider/1",sha:$sha,github_run_id:$run,github_run_attempt:$attempt,provider:"nvidia",model:$model,endpoint:"https://integrate.api.nvidia.com/v1/chat/completions",host:"claude-code@2.1.285",adapter:"@musistudio/claude-code-router@3.1.3",request_body_overrides:($body+{max_tokens:32000}),retry:{configured:{claude_max_retries:0,watchdog:false,ordinary_gateway_retry:false,fallback:false},known_401_auth_refresh_extra_attempts:1,actual_error_retry_counts:"NOT_MEASURED"},matrix_exit_code:$rc}' > results/provider.json
+            echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+            echo "NVIDIA matrix exit=$rc (raw evidence retained for encryption)"
+            exit "$rc"
+          fi
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}${KEY_ALIYUN}"
+          unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK KEY_ALIYUN
+          [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "missing selected provider key"; exit 1; }
+          dao "${args[@]}" | tee summary.txt
+      - name: Encrypt NVIDIA evidence and publish only numeric acceptance metadata
+        id: envelope
+        if: always() && inputs.provider == 'nvidia'
+        env:
+          IN_MODEL: ${{ inputs.model }}
+          MATRIX_EXIT: ${{ steps.matrix.outputs.exit_code }}
+        run: |
+          mkdir -p nvidia-public results
+          touch summary.txt
+          tar -czf "$RUNNER_TEMP/nvidia-evidence.tar.gz" results summary.txt
+          # Fail closed: encryption failure never enables a plaintext upload.
+          openssl cms -encrypt -binary -aes-256-gcm -outform DER -in "$RUNNER_TEMP/nvidia-evidence.tar.gz" -out nvidia-public/evidence.cms "$RUNNER_TEMP/nvidia-recipient.pem"
+          openssl x509 -in "$RUNNER_TEMP/nvidia-recipient.pem" -noout -fingerprint -sha256 > nvidia-public/recipient-fingerprint.txt
+          sha256sum nvidia-public/evidence.cms > nvidia-public/evidence.sha256
+          counts='{"attempted_samples":0,"passed_samples":0,"attempted_phases":0}'
+          if [ -s results/resume.jsonl ]; then counts=$(jq -s '{attempted_samples:length,passed_samples:([.[]|select(.pass==true)]|length),attempted_phases:([.[]|.make,.s1,.s2|select(type=="object" and has("rc"))]|length)}' results/resume.jsonl); fi
+          jq -n --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" --arg model "$IN_MODEL" --arg rc "$MATRIX_EXIT" --argjson counts "$counts" '{sha:$sha,github_run_id:$run,github_run_attempt:$attempt,model:$model,matrix_exit_code:(if $rc=="" then null else ($rc|tonumber) end),expected_samples:12,expected_phases:36,counts:$counts}' > nvidia-public/acceptance.json
+          cat nvidia-public/acceptance.json
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.provider == 'nvidia' && steps.envelope.outcome == 'success'
+        with:
+          name: nvidia-resume-eval-encrypted
+          if-no-files-found: error
+          path: |
+            nvidia-public/evidence.cms
+            nvidia-public/evidence.sha256
+            nvidia-public/recipient-fingerprint.txt
+            nvidia-public/acceptance.json
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.provider != 'nvidia'
+        with:
+          name: resume-rust-eval
+          include-hidden-files: true
+          path: |
+            results/
+            summary.txt

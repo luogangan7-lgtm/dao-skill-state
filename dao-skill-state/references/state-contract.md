@@ -2,6 +2,8 @@
 
 Read this only for resumable, multi-step work. Short tasks remain stateless. This file is an authoring/review contract, **not an implementation of a SKILL.state runtime**.
 
+A stateful skill can be instructions plus the minimum checkpoint or host record needed to preserve pending actions and policy history; it does not require a new state engine. Every state write must still satisfy the invariants below. Validate any helper actually supplied, but do not add a patch API, concurrent writer or runtime merely to exercise a checklist. Runtime-adoption checks apply to the capabilities implemented and claims made.
+
 ## Form standard (created and third-party skills alike)
 
 A skill is **stateful** when it keeps progress somewhere to resume from; otherwise it is **fixed steps**. Decide with two questions, for created and evolved skills alike:
@@ -9,11 +11,13 @@ A skill is **stateful** when it keeps progress somewhere to resume from; otherwi
 1. **Can a run be cut off and continued by a fresh session** (it spans sessions or days, waits for approvals, or can crash mid-step)? No → fixed steps.
 2. **Can that session learn from the authoritative system, cheaply and without probing it, which steps took effect** (every step is idempotent, or the system answers "did step N take effect" for every step)? Yes → fixed steps plus a resume rule: before running any step, check it in the system, all of them, not only the one that failed. No → stateful.
 
+A yes also requires the policy facts needed to choose the next authorized action. Loaded/not-loaded alone cannot distinguish a never-attempted step from a failed, unloaded step when retries are forbidden; preserve that history in the authoritative host or a minimal checkpoint. Existing approval, pause and retry rules apply in either form.
+
 A stateful skill must state three things: **where** state lives (outside the skill directory, or a reference to the user's task system when it owns progress), **how a run resumes** (read the state first), and **how an action with an unknown outcome is reconciled** (mark it pending before running it; on resume check the real system before running it again; if there is no way to check, do not rerun it: stop and report). Never ship part of it: a progress file without the pending rule is worse than no state. State is for surviving a cut-off, not a reason to stop: a run continues step after step until done, blocked or failed, saving after each step.
 
 When evolving an existing skill:
 - fixed → stateful: an observed resume failure (a non-idempotent action repeated, an approval or position lost) and question 2 answers no. If the system can answer, add the check rule instead.
-- stateful → fixed: question 1 or 2 now answers yes for every step, or the state duplicates a task system that already owns progress (reference it instead).
+- stateful → fixed: question 1 now answers no, or question 2 answers yes for every step, or the state duplicates a task system that already owns progress (reference it instead).
 - a stateful skill with a gap: add the missing part; do not delete state unless the questions say fixed.
 
 `dao normalize` records each skill's form, the lines that make it stateful, and which of the three parts it leaves out (`form`, `state_evidence`, `state_gaps` on the routing card). It is a lexical review hint: a gap is a review note, not a rejection, and an empty gap list is not a pass.
@@ -37,10 +41,10 @@ Choose typed fields from: task/owner, schema and policy versions, revision, phas
 
 Specify the authoritative location, initialization, allowed transitions, completion gate, and how authoritative evidence can be reread. A reference must be resolvable; a stale timestamp is not proof of freshness. Check current external state before an irreversible step.
 
-## Validate before accepting a patch
+## Validate state updates
 
 1. Parse/type-check allowed fields, versions and size. Reject unexpected keys or invalid types.
-2. Validate business meaning against evidence and invariants: totals, permissions, allowed state transitions, version freshness and action receipts. Valid JSON is not a true fact. Use deterministic code for deterministic rules.
+2. Validate business meaning against evidence and invariants: totals, permissions, allowed state transitions, version freshness and action receipts. Valid JSON is not a true fact. For an executable state writer, enforce deterministic rules in that helper or the authoritative host. An instruction-led checkpoint must perform the same field, evidence and transition checks using verified host tools; it does not require a separate validator or command runner.
 3. Preserve unspecified keys: merge current with incoming; **explicit null deletes only contract-deletable keys**. Reject deletion of required safety/identity fields. Nested merge semantics must be declared; never silently replace a whole shared document.
 4. Before shared writes use the host's ownership/lock/version mechanism. Re-read after a conflict and merge only the authorized delta. Without compare-and-swap or equivalent protection do not claim concurrent-writer safety; use a single writer or stop.
 5. Commit only validated state. On failure retain the last verified checkpoint, mark the attempt failed and re-observe; do not replace it with invented “correct” facts.
@@ -49,10 +53,12 @@ Specify the authoritative location, initialization, allowed transitions, complet
 
 Before an external action persist a pending record with stable action identity and authorization reference. After execution verify the external receipt before marking done. On restart inspect pending actions and the real system; do not resend a non-idempotent action merely because a local receipt is absent. Missing idempotency/reconciliation means human review, not an exactly-once claim.
 
+Keep the reason a session stopped separate from an action's outcome and from an operator's approval or pause. If a later authorized continuation may proceed after the stopped action is confirmed applied, the generated workflow and any supplied helper must support that transition from both pending and already-done records while retaining completion receipts and attempt history. Do not require the retry/reset path, erase pending evidence, or remove a real approval or pause to reach the next unfinished action. Design the generated workflow and helper to support the entire stop → fresh request → authoritative reconciliation → next-action path; multi-session stop and fresh-session continuation testing belongs to downstream evaluation (`s1`/`s2`) rather than authoring-phase trial scripts.
+
 Persist the selected checkpoint and evidence references at meaningful boundaries. Resume from the authoritative version, recheck source freshness and tool availability, reconcile any pending action first, then continue from the next unfinished action. State adds no step limit: a run goes on until completion, a gate or approval, an error, a failed recheck, or the user stops it. Keep audit evidence separately under the user's retention policy; reducing prompt history is **not authorization to delete files**.
 
 ## Acceptance before runtime adoption
 
-Exercise normal continuation, restart, malformed and semantically wrong patches, explicit-null deletion, stale policy/evidence, duplicate/pending action and concurrent conflict. Mark unsupported cases NOT_TESTED. Compare output quality and actual context/cost/latency with the previous method on the same tasks; preserve failed runs and changed protocols.
+For runtime capabilities being adopted (during independent runtime evaluation, not skill authoring), exercise normal continuation, restart, malformed and semantically wrong patches, explicit-null deletion, stale policy/evidence, duplicate/pending action and concurrent conflict. Mark unsupported cases NOT_TESTED. Compare output quality and actual context/cost/latency with the previous method on the same tasks; preserve failed runs and changed protocols.
 
 Do not claim universal savings, O(1) context, production reliability, or exactly-once from a state file or small experiment. Upgrade from checkpoint assistance only after the host implements and verifies bounded per-request context, sufficient state, recovery and the relevant concurrency/external-action gates.

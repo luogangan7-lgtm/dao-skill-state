@@ -13,8 +13,8 @@ with programmatic checkers. Nothing runs on a developer machine.
 
 Run: Actions → `agent-eval` → Run workflow (`suite`, `tasks`, `arms`, `reps`, `provider`). The
 workflow needs an Anthropic-compatible key as a repository secret (`KIMI_API` or `MINIMAX_API`
-for the providers wired in). On pull requests it only checks that every checker fails on an
-empty workspace.
+for the providers wired in). On pull requests it checks that every legacy checker fails on an
+empty workspace and runs the Rust formatting, lint, tests and recovery gate calibration.
 
 ## Results (2026-10-14)
 
@@ -236,3 +236,75 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
 - Third-party models only; results can differ with Claude models.
 - 2–3 repetitions per cell; no significance claims between arms.
 - Tasks are public and small by design so anyone can rerun them.
+# Rust recovery boundary evaluation
+
+The `resume-rust` suite runs through the existing Rust `dao` CLI. It does not
+change the existing frozen legacy Python suites. Dispatch `agent-eval` with
+`suite=resume-rust`, `arms=make:dao`, `reps=2` and an empty task selection for all
+six cases: applied crash, unknown result, retry allowed, retry forbidden, real
+approval missing and user paused. The generated skill must use Rust for any
+persistent helper; no generated Python is accepted.
+
+In GitHub CI, build the locked `crates/dao` crate, then run:
+
+```sh
+dao eval resume run --repo "$PWD" --out results --reps 2
+dao eval resume check --repo "$PWD" --out results --reps 2
+```
+
+Each case has fresh maker/session HOME directories, an external Rust mock and
+attempt/load/query records. The producer binds HEAD, binary, policy and fixture
+source hashes, task selection, budgets and GitHub run identity. Every phase must
+finish cleanly, load the required skill, preserve inputs and match the independent
+event gate. Missing, stale, truncated or failed evidence is red. The first known
+red stops further model spending and saves its evidence; unrun rows stay NOT_RUN.
+Acceptance requires the complete 6×2 matrix and independent raw trace review.
+Trace inspection is bounded observation, not a security sandbox.
+
+For NVIDIA's free hosted endpoints, use `provider=nvidia`, an explicit model
+from the workflow's frozen cohort, and `evidence_cert` containing the owner's
+PEM public recipient certificate. Keep the matching private key outside GitHub.
+The pinned local protocol adapter preserves the same Claude Code skill host and
+Rust matrix. Each model runs separately, with its documented reasoning settings
+recorded in `provider.json`; those settings differ, so results are not a controlled
+estimate of model-only gains. Ordinary gateway retries and Claude retries are
+configured off; the adapter has a known independent 401 auth-refresh attempt. Error
+retry counts are unmeasured. NVIDIA raw artifacts, stdout and diagnostics are
+CMS-encrypted for internal review. The public artifact contains the ciphertext,
+recipient fingerprint and numeric acceptance metadata; encryption failure has no
+plaintext fallback. A protocol probe alone cannot pass the behavioral matrix.
+
+The additional `nvidia/nemotron-3.5-super-vl-120b-a12b` candidate now uses
+`reasoning_effort=high` and the unchanged 32,000-token output cap. NVIDIA's
+[hosted API reference](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-super-vl-120b-a12b-infer)
+(checked 2026-10-17) documents that mode, tools, SSE and the supported output
+range; its [model page](https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b)
+lists the free endpoint as available. This is a controlled configuration change
+from `low` at `b008760`: DAO contents, task prompts, helpers, fixtures, gates,
+host, adapter and phase budgets remain fixed. The earlier timeout and rule
+violations remain evidence. The hypothesis is that full reasoning may change
+planning and instruction following within the same budgets; it may also time
+out. No speed or capability improvement is assumed before the complete matrix
+passes, and a configuration comparison cannot establish a causal DAO gain.
+
+The native protocol probe uses that same `high` setting for Super 3.5 VL,
+without a conflicting `enable_thinking=false` override. It reports HTTP status
+and exact tool-argument matches only; native probe success does not validate
+the Claude adapter or any DAO behavior.
+
+The `nvidia/nemotron-3-ultra-550b-a55b` candidate uses only the documented
+`reasoning_effort=none`, with the same 32,000-token matrix output cap. Its
+[hosted API reference](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-ultra-550b-a55b-infer)
+(checked 2026-10-17) permits 1–32,768 output tokens and `none`, `medium` or
+`high` reasoning; `low` is not listed. Its
+[model page](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b) lists
+the free endpoint as available. The native probe also uses `none`, without
+additional template flags. Hosted tool compatibility must first be measured;
+the model card's self-hosted examples do not establish adapter compatibility.
+This is a model/preset capability comparison with the same tasks and budgets,
+not evidence that DAO changes caused an improvement.
+
+The PR check freezes all `.py` files against the base, runs Rust gate calibration
+and exports formatting patches from CI when needed. No local execution is part
+of this task's acceptance.
+
