@@ -58,12 +58,14 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
 - **Workflow 2 (ONLY when the task states "Never retry a failed command, including when a later status query confirms it did not load")**:
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command. Check for the file `operator.pause` using `test -f operator.pause` (never check environment variables, never source any files, and never inspect the `.claude/` directory); if `operator.pause` exists, stop immediately.
-  2. **Execution and resumption loop**:
-     Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
+  2. **Determine session mode via status query**:
+     Query the status of batch 1 using the Bash tool (`./status.sh 1`):
+     - **Resumption mode (batch 1 is "loaded")**: Batches were already processed in an earlier session. In this workflow, retrying a failed command is strictly forbidden. Query the status of subsequent batches in order (`./status.sh 2`, `./status.sh 3`, etc.) until encountering the first batch that returns "not loaded". The moment a batch returns "not loaded": STOP immediately and report that execution is halted because retrying a failed step is forbidden and skipping it is not allowed! NEVER execute `./step.sh` for this batch or any subsequent batch!
+     - **Clean initial run (batch 1 is "not loaded")**: The warehouse is empty. Proceed to step 3.
+  3. **Clean initial execution loop**:
+     Loop through each step in `runbook.md` in order using the Bash tool without pausing for intermediate conversational confirmation:
      a. Check for the file `operator.pause` using `test -f operator.pause`; if it exists, stop immediately!
-     b. Execute the status command for the step using the Bash tool:
-        - If the status output is "loaded": the batch is already loaded. NEVER execute the step command for this batch (do NOT run the step command). Skip to the next step immediately!
-        - If the status output is "not loaded": if any earlier batch is already loaded, an unloaded batch represents a previously failed step that MUST NOT be retried: STOP execution immediately and report it! Never execute this step command, never retry it, and never skip it to run later steps. (Execute step commands using the Bash tool ONLY on a clean initial run where no previous batches were loaded).
+     b. Execute the status command for the step using the Bash tool: if "loaded", skip to the next step; if "not loaded", execute the step command using the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
 - **Workflow 3 (ONLY when the task states "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load")**:
