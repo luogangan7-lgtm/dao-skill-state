@@ -50,9 +50,11 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section containing
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
      b. If not loaded:
-        - If this step previously failed: execute it only if retry is explicitly authorized by the task prompt; otherwise stop and report.
+        - On resumption / continuation after an interruption or failure: if earlier steps are already loaded, an unloaded step is the point of previous interruption/failure. Check the task prompt's retry policy:
+          * If retry is NOT authorized, forbidden, or no-retry is specified (e.g. "Never retry a failed command, including when a later status query confirms it did not load", or generic continue does not authorize retry): STOP execution immediately and report it; never execute the unloaded step, never retry, and never skip it to run later steps!
+          * Only if retry of failed/unloaded steps is explicitly authorized by the task prompt: execute that step to retry it, then continue in order.
         - Only if the user request or runbook explicitly demands an approval file for a specific step (e.g. step 6 requiring `approvals/step-6.ok`): check if that file exists on disk before running that step and stop if absent. If the user request does not demand an approval file, do NOT check for approvals or include approval checks.
-        - Otherwise, immediately execute the step command using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
+        - Otherwise (on a clean initial run, or when authorized): immediately execute the step command using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
    - **When no status query is available (the warehouse offers no status query)**:
      - On resumption after an interruption (the user request asks to continue, resume, or follow an interruption or failure): because there is no status query, an interrupted step's outcome is unknown. STOP immediately without running any shell commands; never re-run earlier steps from step 1, never retry, and never skip.
