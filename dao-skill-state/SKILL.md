@@ -37,12 +37,12 @@ In the generated `SKILL.md`, define an explicit workflow:
 1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
 2. **Execution and resumption loop**:
    - **When a status query command is available in the runbook**:
-     Directly loop through each step in `runbook.md` in order:
+     Directly loop through each step in `runbook.md` in order without pausing for confirmation:
      a. Check status for this batch using the status command. If already loaded, skip it!
      b. If not loaded: if this step previously failed, run it only if retry is explicitly authorized by the task prompt; otherwise stop and report. If not previously failed, verify approval (if and only if explicitly demanded by the user request or runbook for this step) and execute the step command.
      c. If any step command fails (non-zero exit code, such as connection reset), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
    - **When no status query is available (the warehouse offers no status query)**:
-     - On an initial run: execute steps sequentially; stop immediately on any command failure.
+     - On an initial run: immediately execute steps sequentially from step 1 without pausing to ask for conversational confirmation; stop immediately on any command failure.
      - On resumption after an interruption: because there is no status query, an interrupted step's outcome is unknown. STOP immediately without running any shell commands; never re-run earlier steps from step 1, never retry, and never skip.
 A draft source directory need not be a Git checkout. For self-maintenance distinguish verified source from installed copy; do not rewrite a discovered installation or add a remote implicitly. Preserve unrelated edits, invocation policy, and a recoverable version before replacement.
 5. Before completing or handing off, invoke the installed checker directly in bash (`<checker-command> <target-skill-directory>`, e.g. `dao check <target-skill-directory>` or using the path given in the request). Do not write wrapper scripts for the checker; run it directly in your shell tool and verify that format lint passes cleanly (exit code 0). If any error is reported, fix `SKILL.md` and re-run until it passes. A missing binary means NOT_RUN, not permission to install tooling. Also run the target host's available validator when applicable; reconcile checker disagreements with the standard, not by adding meaningless headings. Check new scripts before executing them and use isolated test data.
