@@ -7,7 +7,7 @@ metadata:
 
 # 道 · Skill.state
 
-Build the smallest useful skill and test its behavior. Preserve verified continuity when needed; do not promise context savings.
+Build the smallest useful skill and test its behavior. When asked to create or author a skill, always materialize the actual files: invoke Write to create the requested directory and write `SKILL.md` to disk; never stop at prose descriptions or conversational summaries without creating files. Preserve verified continuity when needed; do not promise context savings.
 
 ## Route before reading more
 
