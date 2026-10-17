@@ -47,14 +47,14 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section tailored t
 
 - **Workflow Branch A (ONLY for tasks explicitly stating "This warehouse offers no authorized status query")**:
   Include ONLY this workflow in the generated `SKILL.md`:
-  1. **Read runbook and check pause**: Always read `runbook.md` using the simple relative path `runbook.md` (never construct or use absolute paths) at the start of any session to parse the numbered shell commands. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  1. **Read runbook and check pause**: Always read `runbook.md` at the start of any session to parse the numbered shell commands (use the simple relative path `runbook.md`, or read it via the Bash tool: `cat runbook.md`; never fail or ask conversational questions if the Read tool has path issues). Check for `operator.pause` before executing anything; if it exists, stop immediately.
   2. **Execution and resumption rules**:
      - **Resumption after interruption (MANDATORY)**: On resumption after an interruption or failure (the user request asks to continue, resume, or follow an interruption or failure): because there is no status query, an interrupted step's outcome is unknown. STOP immediately without running any shell commands; never re-run earlier steps from step 1, never retry, and never skip!
      - **Clean initial run**: On a clean initial run (starting from scratch, not continuing or resuming): execute all steps sequentially in a continuous automated loop using the Bash tool without pausing for conversational confirmation or reporting intermediate progress between successful steps; after each step succeeds, immediately invoke the Bash tool for the next step. Stop immediately only if any command fails (non-zero exit code).
 
 - **Workflow Branch B (For all other tasks where a status query command is available or "The warehouse can be asked whether a batch is loaded")**:
   Include ONLY this workflow in the generated `SKILL.md`:
-  1. **Read runbook and check pause**: Always read `runbook.md` using the simple relative path `runbook.md` (never construct or use absolute paths) at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  1. **Read runbook and check pause**: Always read `runbook.md` at the start of any session to parse the numbered shell commands and the status query command if specified (use the simple relative path `runbook.md`, or read it via the Bash tool: `cat runbook.md`; never fail or ask conversational questions if the Read tool has path issues). Check for `operator.pause` before executing anything; if it exists, stop immediately.
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
