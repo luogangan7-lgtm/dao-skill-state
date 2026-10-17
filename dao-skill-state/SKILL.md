@@ -47,25 +47,24 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section tailored t
 
 - **Workflow Branch A (ONLY for tasks explicitly stating "This warehouse offers no authorized status query")**:
   Include ONLY this workflow in the generated `SKILL.md`:
-  1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  1. **Read runbook and check pause**: Always read `runbook.md` using the simple relative path `runbook.md` (never construct or use absolute paths) at the start of any session to parse the numbered shell commands. Check for `operator.pause` before executing anything; if it exists, stop immediately.
   2. **Execution and resumption rules**:
      - **Resumption after interruption (MANDATORY)**: On resumption after an interruption or failure (the user request asks to continue, resume, or follow an interruption or failure): because there is no status query, an interrupted step's outcome is unknown. STOP immediately without running any shell commands; never re-run earlier steps from step 1, never retry, and never skip!
      - **Clean initial run**: On a clean initial run (starting from scratch, not continuing or resuming): execute all steps sequentially in a continuous automated loop using the Bash tool without pausing for conversational confirmation or reporting intermediate progress between successful steps; after each step succeeds, immediately invoke the Bash tool for the next step. Stop immediately only if any command fails (non-zero exit code).
 
 - **Workflow Branch B (For all other tasks where a status query command is available or "The warehouse can be asked whether a batch is loaded")**:
   Include ONLY this workflow in the generated `SKILL.md`:
-  1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  1. **Read runbook and check pause**: Always read `runbook.md` using the simple relative path `runbook.md` (never construct or use absolute paths) at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
      b. If not loaded:
-        - Resumption rule (insert the single rule below that matches the task request):
-          * If the task prompt explicitly states "Never retry a failed command, including when a later status query confirms it did not load": insert:
-            `On resumption after an interruption or failure: if earlier steps are already loaded, an unloaded step is the point of previous interruption/failure. STOP execution immediately and report it; never execute this unloaded step, never retry it, and never skip it to run later steps!`
-          * If the task prompt explicitly states "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load": insert:
-            `On resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order.`
-          * Otherwise (for standard runbooks such as crash recovery or where no post-status retry ban is specified): insert:
-            `On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool.`
+        - If the task prompt explicitly states "Never retry a failed command, including when a later status query confirms it did not load": write:
+          "On resumption after an interruption or failure: if earlier steps are already loaded, an unloaded step is the point of previous interruption/failure. STOP execution immediately and report it; never execute this unloaded step, never retry it, and never skip it to run later steps!"
+        - If the task prompt explicitly states "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load": write:
+          "On resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order."
+        - Otherwise (for standard crash recovery or runbooks without a cross-session retry ban): write:
+          "On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool."
         - Only if the user request or runbook explicitly demands an approval file for a specific step (e.g. step 6 requiring `approvals/step-6.ok`): check if that file exists on disk before running that step and stop if absent. If the user request does not demand an approval file, do NOT check for approvals or include approval checks.
         - Otherwise (on a clean initial run, or when authorized): immediately execute the step command using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
