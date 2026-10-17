@@ -46,7 +46,11 @@ fn copy_tree(source: &Path, target: &Path, skip_claude: bool) -> Result<(), Stri
         if runner::contains_secret(name.to_string_lossy().as_bytes()) {
             return Err("credential-bearing artifact name refused".into());
         }
-        if name == ".git" || name == "__pycache__" || (skip_claude && name == ".claude") {
+        if name == ".git"
+            || name == "__pycache__"
+            || name == "target"
+            || (skip_claude && name == ".claude")
+        {
             continue;
         }
         let kind = entry.file_type().map_err(|e| e.to_string())?;
@@ -81,6 +85,10 @@ pub(super) fn hashes(root: &Path) -> Result<BTreeMap<String, String>, String> {
         }
         for entry in fs::read_dir(here).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if name == ".git" || name == "__pycache__" || name == "target" || name == ".claude" {
+                continue;
+            }
             let kind = entry.file_type().map_err(|e| e.to_string())?;
             if kind.is_symlink() {
                 return Err("symlink in manifest".into());
@@ -486,5 +494,29 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","nam
             .status().unwrap();
         fs::remove_dir_all(bin).unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn target_directory_is_excluded_from_artifacts_and_hashes() {
+        let root = temporary("target-test").unwrap();
+        let src = root.join("src");
+        let dst = root.join("dst");
+        fs::create_dir_all(src.join("target/debug/build")).unwrap();
+        fs::write(src.join("SKILL.md"), "---\nname: foo\n---").unwrap();
+        fs::write(
+            src.join("target/debug/build/secret.txt"),
+            "synthetic-token",
+        )
+        .unwrap();
+
+        copy_tree(&src, &dst, false).unwrap();
+        assert!(dst.join("SKILL.md").exists());
+        assert!(!dst.join("target").exists());
+
+        let h = hashes(&src).unwrap();
+        assert!(h.contains_key("SKILL.md"));
+        assert!(!h.keys().any(|k| k.starts_with("target")));
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
