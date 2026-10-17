@@ -43,13 +43,19 @@ Crucially:
 - Never put `---` between `name` and `description`. Never close frontmatter before `description`.
 - Never put `name` before the opening `---`, and never add unrecognized fields such as `author` or `tools`. Keep content concise and well-escaped.
 
-In the generated `SKILL.md`, you MUST include a `## Workflow` section containing the concrete execution procedure. Preserve all execution and resumption rules completely; never omit the resumption stopping guards:
-1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
-2. **Execution and resumption loop**:
-   - **When no status query is available (the warehouse offers no status query)**:
-     * **Resumption after interruption (MANDATORY)**: On resumption after an interruption or failure (the user request asks to continue, resume, or follow an interruption or failure): because there is no status query, an interrupted step's outcome is unknown. STOP immediately without running any shell commands; never re-run earlier steps from step 1, never retry, and never skip!
-     * **Clean initial run**: On a clean initial run (starting from scratch, not continuing or resuming): execute all steps sequentially in a continuous automated loop using the Bash tool without pausing for conversational confirmation or reporting intermediate progress between successful steps; after each step succeeds, immediately invoke the Bash tool for the next step. Stop immediately only if any command fails (non-zero exit code).
-   - **When a status query command is available in the runbook**:
+In the generated `SKILL.md`, you MUST include a `## Workflow` section tailored to whether a status query is available in the task request (choose exactly one of the two branches below; do NOT include status query loop instructions when no status query is available):
+
+- **When the warehouse task offers NO status query** (e.g. "This warehouse offers no authorized status query"):
+  Include ONLY this workflow in the generated `SKILL.md`:
+  1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  2. **Execution and resumption rules**:
+     - **Resumption after interruption (MANDATORY)**: On resumption after an interruption or failure (the user request asks to continue, resume, or follow an interruption or failure): because there is no status query, an interrupted step's outcome is unknown. STOP immediately without running any shell commands; never re-run earlier steps from step 1, never retry, and never skip!
+     - **Clean initial run**: On a clean initial run (starting from scratch, not continuing or resuming): execute all steps sequentially in a continuous automated loop using the Bash tool without pausing for conversational confirmation or reporting intermediate progress between successful steps; after each step succeeds, immediately invoke the Bash tool for the next step. Stop immediately only if any command fails (non-zero exit code).
+
+- **When a status query command is available in the runbook**:
+  Include this workflow in the generated `SKILL.md`:
+  1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.
+  2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
      b. If not loaded:
