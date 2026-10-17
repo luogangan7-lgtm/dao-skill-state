@@ -201,12 +201,23 @@ fn capture(mut command: Command, seconds: u64) -> (PipeCapture, Value, Value) {
     (output, rc, observation)
 }
 
+fn is_credential_var(key: &str) -> bool {
+    if key == "CLAUDE_CODE_MAX_OUTPUT_TOKENS" || key.ends_with("_TOKENS") {
+        return false;
+    }
+    (key.starts_with("ANTHROPIC_") || key.starts_with("CLAUDE_CODE_"))
+        && ["TOKEN", "KEY", "SECRET"]
+            .iter()
+            .any(|part| key.contains(part))
+}
+
 fn redaction_patterns() -> Vec<String> {
     let mut patterns = Vec::new();
     for (key, value) in env::vars() {
-        let credential = ["TOKEN", "KEY", "SECRET"]
-            .iter()
-            .any(|part| key.contains(part));
+        if key == "CLAUDE_CODE_MAX_OUTPUT_TOKENS" || key.ends_with("_TOKENS") {
+            continue;
+        }
+        let credential = is_credential_var(&key);
         if (key.starts_with("ANTHROPIC_") || key.starts_with("CLAUDE_CODE_"))
             && !value.is_empty()
             && (credential || value.len() >= 8)
@@ -272,10 +283,7 @@ pub(super) fn redact_json(mut value: Value) -> Value {
 /// Refuse credential-bearing artifact bytes before anything reaches the upload directory.
 pub(super) fn contains_secret(bytes: &[u8]) -> bool {
     env::vars().any(|(key, value)| {
-        (key.starts_with("ANTHROPIC_") || key.starts_with("CLAUDE_CODE_"))
-            && ["TOKEN", "KEY", "SECRET"]
-                .iter()
-                .any(|part| key.contains(part))
+        is_credential_var(&key)
             && !value.is_empty()
             && bytes
                 .windows(value.len())
@@ -931,5 +939,35 @@ mod tests {
         let (_, rc, _) = capture(hanging, 1);
         assert_eq!(rc, json!("timeout"));
         assert!(start.elapsed() < Duration::from_secs(6));
+    }
+
+    #[test]
+    fn credential_detection_excludes_token_counts_and_retains_auth_tokens() {
+        assert!(!is_credential_var("CLAUDE_CODE_MAX_OUTPUT_TOKENS"));
+        assert!(!is_credential_var("ANTHROPIC_MAX_TOKENS"));
+        assert!(is_credential_var("ANTHROPIC_AUTH_TOKEN"));
+        assert!(is_credential_var("ANTHROPIC_API_KEY"));
+        assert!(is_credential_var("CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(is_credential_var("CLAUDE_CODE_API_KEY"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_counts_do_not_refuse_artifacts() {
+        const FLAG: &str = "DAO_RESUME_TOKEN_COUNT_TEST_CHILD";
+        if env::var_os(FLAG).is_some() {
+            assert!(!contains_secret(b"buffer size is 8192 bytes"));
+            return;
+        }
+        let status = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "resume_eval::runner::tests::token_counts_do_not_refuse_artifacts",
+            ])
+            .env(FLAG, "1")
+            .env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "8192")
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 }
