@@ -175,6 +175,7 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${{ inputs.provider == 'aliyun' && '8192' || '32000' }}
           # inputs reach the shell as data, never as interpolated script
           IN_TASKS: ${{ inputs.tasks }}
           IN_ARMS: ${{ inputs.arms }}
@@ -183,6 +184,9 @@ jobs:
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
           case "$IN_PROVIDER" in kimi|minimax|deepseek|aliyun) ;; *) echo "unknown provider"; exit 1 ;; esac
+          if [ "$IN_PROVIDER" = aliyun ]; then
+            export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+          fi
           export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}${KEY_ALIYUN}"
           unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK KEY_ALIYUN
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
@@ -356,12 +360,16 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.model || (inputs.provider == 'minimax' && 'MiniMax-M3' || inputs.provider == 'deepseek' && 'deepseek-flash' || inputs.provider == 'aliyun' && 'qwen-max' || 'k3') }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${{ inputs.provider == 'aliyun' && '8192' || '32000' }}
           IN_TASKS: ${{ inputs.tasks }}
           IN_ARMS: ${{ inputs.arms }}
           IN_REPS: ${{ inputs.reps }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
           case "$IN_PROVIDER" in kimi|minimax|deepseek|nvidia|aliyun) ;; *) echo "unknown provider"; exit 1 ;; esac
+          if [ "$IN_PROVIDER" = aliyun ]; then
+            export CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192
+          fi
           [ "$IN_ARMS" = make:dao ] || { echo "resume-rust requires make:dao"; exit 1; }
           args=(eval resume run --repo "$PWD" --out results --reps "$IN_REPS")
           if [ -n "$IN_TASKS" ]; then args+=(--tasks "$IN_TASKS"); fi
