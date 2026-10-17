@@ -61,9 +61,10 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Check for the file `operator.pause` using `test -f operator.pause`; if it exists, stop immediately!
-     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
-     c. If not loaded: if any earlier batch is already loaded, an unloaded batch represents a previously failed step that MUST NOT be retried: STOP execution immediately and report it! Never execute this step command, never retry it, and never skip it to run later steps. (Execute step commands using the Bash tool ONLY on a clean initial run where no previous batches were loaded).
-     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+     b. Execute the status command for the step using the Bash tool:
+        - If the status output is "loaded": the batch is already loaded. NEVER execute the step command for this batch (do NOT run the step command). Skip to the next step immediately!
+        - If the status output is "not loaded": if any earlier batch is already loaded, an unloaded batch represents a previously failed step that MUST NOT be retried: STOP execution immediately and report it! Never execute this step command, never retry it, and never skip it to run later steps. (Execute step commands using the Bash tool ONLY on a clean initial run where no previous batches were loaded).
+     c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
 - **Workflow 3 (ONLY when the task states "permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load")**:
   Include ONLY this workflow in the generated `SKILL.md`:
@@ -71,9 +72,10 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Check for the file `operator.pause` using `test -f operator.pause`; if it exists, stop immediately!
-     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
-     c. If not loaded: on resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order. On a clean initial run: immediately execute the step command using the Bash tool.
-     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+     b. Execute the status command for the step using the Bash tool:
+        - If the status output is "loaded": the batch is already loaded. NEVER execute the step command for this batch (do NOT run the step command). Skip to the next step immediately!
+        - If the status output is "not loaded": on resumption after an interruption or failure: if earlier steps are already loaded and the current step is confirmed not loaded, execute that step using the Bash tool to retry it, then continue subsequent steps in order. On a clean initial run: immediately execute the step command using the Bash tool.
+     c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
 - **Workflow 4 (ONLY when the task states "Step 6 requires the operator's actual approval file `approvals/step-6.ok`")**:
   Include ONLY this workflow in the generated `SKILL.md`:
@@ -81,9 +83,10 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Check for the file `operator.pause` using `test -f operator.pause`; if it exists, stop immediately!
-     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
-     c. If not loaded: if the step is step 6, check if `approvals/step-6.ok` exists using `test -f approvals/step-6.ok` before running it; if absent, stop immediately and report the missing approval without executing step 6 or later steps! Otherwise, immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool.
-     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+     b. Execute the status command for the step using the Bash tool:
+        - If the status output is "loaded": the batch is already loaded. NEVER execute the step command for this batch (do NOT run the step command). Skip to the next step immediately!
+        - If the status output is "not loaded": if the step is step 6, check if `approvals/step-6.ok` exists using `test -f approvals/step-6.ok` before running it; if absent, stop immediately and report the missing approval without executing step 6 or later steps! Otherwise, immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool.
+     c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
 - **Workflow 5 (For standard crash recovery or tasks with status query and no retry or approval constraints)**:
   Include ONLY this workflow in the generated `SKILL.md`:
@@ -91,9 +94,10 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
   2. **Execution and resumption loop**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool in a continuous loop; never output markdown command code blocks or conversational text asking for user action instead of executing them directly, and never pause to report intermediate progress between successful steps:
      a. Check for the file `operator.pause` using `test -f operator.pause`; if it exists, stop immediately!
-     b. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
-     c. If not loaded: immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
-     d. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
+     b. Execute the status command for the step using the Bash tool:
+        - If the status output is "loaded": the batch is already loaded. NEVER execute the step command for this batch (do NOT run the step command). Skip to the next step immediately!
+        - If the status output is "not loaded": execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
+     c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 A draft source directory need not be a Git checkout. For self-maintenance distinguish verified source from installed copy; do not rewrite a discovered installation or add a remote implicitly. Preserve unrelated edits, invocation policy, and a recoverable version before replacement.
 5. Before completing or handing off, invoke the installed checker directly in bash (`<checker-command> <target-skill-directory>`, e.g. `dao check <target-skill-directory>` or using the path given in the request). Do not write wrapper scripts for the checker; run it directly in your shell tool and verify that format lint passes cleanly (exit code 0). If any error is reported, fix `SKILL.md` and re-run until it passes. A missing binary means NOT_RUN, not permission to install tooling. Also run the target host's available validator when applicable; reconcile checker disagreements with the standard, not by adding meaningless headings. Check new scripts before executing them and use isolated test data.
 6. Exercise a realistic request, an out-of-scope request, and the changed failure path where relevant. For pure skill authoring where behavioral testing belongs to downstream evaluation phases, stop and hand off immediately after step 5 (`dao check` passes) with evidence label E2/NOT_RUN. Do not construct or run synthetic mock test suites during authoring. For a substantial routing or safety change in runtime adoption, use an independent forward test if available. A generated test prompt is not a test run.
