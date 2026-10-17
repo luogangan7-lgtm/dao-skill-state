@@ -39,7 +39,10 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section containing
    - **When a status query command is available in the runbook**:
      Loop through each step in `runbook.md` in order. Always execute commands directly using the Bash tool; never output markdown command code blocks or conversational text asking for user action instead of executing them directly:
      a. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
-     b. If not loaded: if this step previously failed, run it only if retry is explicitly authorized by the task prompt; otherwise stop and report. If not previously failed, verify approval (if and only if explicitly demanded by the user request or runbook for this step) and execute the step command using the Bash tool.
+     b. If not loaded:
+        - If this step previously failed: execute it only if retry is explicitly authorized by the task prompt; otherwise stop and report.
+        - If an approval file (e.g. `approvals/step-N.ok`) is explicitly required by the user request or runbook for this step and absent on disk: stop and report.
+        - Otherwise, immediately execute the step command using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
    - **When no status query is available (the warehouse offers no status query)**:
      - On an initial run: immediately execute steps sequentially from step 1 using the Bash tool without pausing for conversational confirmation; stop immediately on any command failure.
