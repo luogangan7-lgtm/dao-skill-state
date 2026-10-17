@@ -55,7 +55,8 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
      b. Execute the step command using the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session!
 
-- **Workflow 2 (ONLY when the task states "Never retry a failed command, including when a later status query confirms it did not load")**:
+- **Workflow 2 (ONLY when the task prompt explicitly contains the exact phrase: "Never retry a failed command, including when a later status query confirms it did not load")**:
+  *(Important: If the task prompt merely states "If a step fails, stop and report it; do not retry it or change anything to make it pass", that is standard crash recovery: you MUST use Workflow 5, NEVER use Workflow 2!)*
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command. Check for the file `operator.pause` using `test -f operator.pause` (never check environment variables, never source any files, and never inspect the `.claude/` directory); if `operator.pause` exists, stop immediately.
   2. **Determine session mode via status query**:
@@ -90,7 +91,7 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
         - If the status output is "not loaded": if the step is step 6, check if `approvals/step-6.ok` exists using `test -f approvals/step-6.ok` before running it; if absent, stop immediately and report the missing approval without executing step 6 or later steps! Otherwise, immediately execute the step command using the Bash tool. On resumption after an interruption, continue executing subsequent unfinished steps in order using the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
-- **Workflow 5 (For standard crash recovery or tasks with status query and no retry or approval constraints)**:
+- **Workflow 5 (For standard crash recovery; when the task states "If a step fails, stop and report it; do not retry it or change anything to make it pass" without the specific "Never retry a failed command, including when a later status query confirms it did not load" constraint, and for tasks with operator pause)**:
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Inspect runbook via Bash and check pause**: At the start of any session, always inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command if specified. Check for the file `operator.pause` using `test -f operator.pause` (never check environment variables, never source any files, and never inspect the `.claude/` directory); if `operator.pause` exists, stop immediately.
   2. **Execution and resumption loop**:
