@@ -51,7 +51,7 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section containing
      a. Execute the status command using the Bash tool. If the batch is already loaded, skip it!
      b. If not loaded:
         - If this step previously failed: execute it only if retry is explicitly authorized by the task prompt; otherwise stop and report.
-        - If an approval file (e.g. `approvals/step-N.ok`) is explicitly required by the user request or runbook for this step and absent on disk: stop and report.
+        - If this step is explicitly designated by the runbook or task request as requiring an approval file (e.g. `approvals/step-N.ok`): check if that file exists on disk; if absent, stop and report. For all other ordinary steps without an explicit approval requirement in the runbook, NEVER check for approval files, never invent approval gates, and proceed directly.
         - Otherwise, immediately execute the step command using the Bash tool. Never pause to ask the user in chat for confirmation, permission, or authorization; execute commands directly via the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
    - **When no status query is available (the warehouse offers no status query)**:
