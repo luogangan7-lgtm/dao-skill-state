@@ -31,19 +31,17 @@ Compound requests keep all requested actions: review-only does not permit edits;
 1. Identify the recurring failure the artifact must prevent, the observable pass condition, and non-goals. Keep analysis brief; renaming alone is no gain.
 2. Search host capability names/descriptions and the user's designated source of truth; read only the nearest candidates within those roots. Prefer task-named tools after checking provenance and environment fitness; when a language restriction applies (e.g. no Python), never invoke forbidden runtimes (e.g. python, python3) even for discovery or version queries. The authoring environment is self-contained and offline; do not run network probes or external connectivity commands (e.g. curling remote package registries). Expand discovery only for an identified missing capability, an actual target failure or a checker disagreement; routine authoring does not require whole-filesystem searches, inspecting existing installed skills, or synthetic checker probes against the meta-skill to rediscover documented format rules. Proceed directly to authoring the target skill. Record reuse, merge, or create and why. Route actual marketing, coding, or design work to its owner instead of expanding this meta-skill into a business encyclopedia.
 3. Inspect the target and existing changes. For a new artifact use the requested path directly relative to the current workspace root (e.g. `./new-skill/SKILL.md` directly in the current workspace; NEVER prefix with `.claude/skills/` or place inside any existing skill directory), otherwise project `.dao/skills/<name>/`. When the requested path names the new skill's own folder (such as `./new-skill/` or not a container such as `skills/`), write `SKILL.md` directly in `./new-skill/SKILL.md` in the current workspace root and set the frontmatter `name` to match that directory name exactly (e.g. `name: new-skill`); if that is not a valid name, keep the folder, choose a valid name, and announce the mismatch. An existing `SKILL.md` there falls under step 4. Announce any fallback. Never put generated children inside this skill's source, `.claude/skills/`, or installed folder. Keep logs, state, and private evidence outside distributable skill files.
-4. Write the smallest complete artifact when creation or changes are authorized. For a new skill, write `SKILL.md` directly starting on line 1 with standard 4-line YAML frontmatter (never wrap in markdown code fences):
-
----
-name: new-skill
-description: <concise summary of the skill>
----
-
-The frontmatter MUST follow this 4-line structure exactly:
+4. Write the smallest complete artifact when creation or changes are authorized. For a new skill, write `SKILL.md` directly starting on line 1 with standard YAML frontmatter bounded by triple-dash lines (`---`) (never wrap the file or frontmatter in markdown code fences). The frontmatter MUST follow this 4-line structure exactly:
 - Line 1: `---`
-- Line 2: `name: <exact-directory-name>` strictly matching the target directory (e.g. `name: new-skill` for `./new-skill/`; NEVER use topic names like `data-backfill`).
-- Line 3: `description: <concise summary>`
-- Line 4: `---` (the closing triple-dash; never close frontmatter before description).
-Never put `name` before the opening `---`, never omit opening or closing `---`, and never add unrecognized fields such as `author` or `tools`. Keep content concise and well-escaped.
+- Line 2: `name: <exact-directory-name>` strictly matching the requested target directory (e.g. `name: new-skill` for `./new-skill/`; NEVER use topic names like `data-backfill`).
+- Line 3: `description: <concise summary of the skill>` (must be a valid string of 1..1024 characters describing the skill).
+- Line 4: `---` (the closing triple-dash delimiter before any markdown body).
+
+Crucially:
+- Frontmatter contains exactly two `---` delimiter lines: one on Line 1, and one on Line 4.
+- `description` MUST be on Line 3, strictly inside the frontmatter before the closing `---` on Line 4.
+- Never put `---` between `name` and `description`. Never close frontmatter before `description`.
+- Never put `name` before the opening `---`, and never add unrecognized fields such as `author` or `tools`. Keep content concise and well-escaped.
 
 In the generated `SKILL.md`, you MUST include a `## Workflow` section containing the concrete execution procedure:
 1. **Read runbook and check pause**: Always read `runbook.md` from the workspace root at the start of any session to parse the numbered shell commands and the status query command if specified. Check for `operator.pause` before executing anything; if it exists, stop immediately.

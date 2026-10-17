@@ -29,14 +29,16 @@ Encode that decision at the action boundary in the generated workflow, including
 
 For external-state decisions, name the task's authoritative source and preserve its permitted observation interface and access boundaries in the generated workflow. If how to use that interface is unclear, first research the task inputs, authorized helpers or official interface documentation. Do not infer outcomes by reverse-engineering backend internals or accessing storage outside those boundaries in place of the designated interface. If this permitted research still cannot establish the outcome, report it as unknown and follow the task's stop or escalation policy.
 
-Use a concise `SKILL.md` starting on line 1 with standard 4-line YAML frontmatter (never wrap in markdown code fences):
+Use a concise `SKILL.md` starting on line 1 with standard 4-line YAML frontmatter (never wrap the file or frontmatter in markdown code fences). The frontmatter MUST follow this 4-line structure exactly:
+- Line 1: `---`
+- Line 2: `name: <exact-directory-name>` strictly matching the requested target directory (e.g. `name: new-skill` for `./new-skill/`; never use generic topic names such as `data-backfill`).
+- Line 3: `description: <concise summary>` (must be a valid non-empty string of 1..1024 characters).
+- Line 4: `---` (the closing triple-dash delimiter before any markdown body).
 
----
-name: <target-directory-name, e.g. new-skill>
-description: <concise summary>
----
-
-Line 1 must be `---`. Line 2 must be `name: <exact-directory-name>` (e.g. `name: new-skill` for `./new-skill/`; never use generic topic names such as `data-backfill`). Line 3 is `description: ...`. Line 4 must be the closing `---` line before any markdown body. Never put `description` after line 4, and never close `---` before `description`. Prefer portable lowercase ASCII letters, digits and single hyphens, at most 64 characters, strictly matching the target directory name. Do not add unsupported or unrecognized fields such as `author` or `tools`. Human-facing names can be localized in `agents/openai.yaml`. Descriptions are non-empty and at most 1024 characters; specificity matters, not an arbitrary minimum length.
+Crucially:
+- Frontmatter contains exactly two `---` delimiter lines: one on Line 1, and one on Line 4.
+- `description` MUST be on Line 3 (inside the frontmatter before the closing `---` on Line 4). Never close frontmatter before `description`, and never put `---` between `name` and `description`.
+- Never put `description` after Line 4. Prefer portable lowercase ASCII letters, digits and single hyphens, at most 64 characters, strictly matching the target directory name. Do not add unsupported or unrecognized fields such as `author` or `tools`. Human-facing names can be localized in `agents/openai.yaml`. Descriptions are non-empty and at most 1024 characters; specificity matters, not an arbitrary minimum length.
 
 Preserve supported optional fields (`license`, `compatibility`, `metadata`, experimental `allowed-tools`) when relevant. `metadata` is a string-to-string map; quote versions. Host-specific fields may need an adapter and a host validator. Never present a host exception as the universal format. Headings are authoring choices, not format requirements.
 
