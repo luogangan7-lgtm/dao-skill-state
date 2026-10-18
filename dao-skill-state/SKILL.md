@@ -43,6 +43,8 @@ Crucially:
 - Never put `---` between `name` and `description`. Never close frontmatter before `description`.
 - Never put `name` before the opening `---`, and never add unrecognized fields such as `author` or `tools`. Keep content concise and well-escaped.
 
+For operational runbooks or tasks whose steps are executed by host tools, the generated skill MUST consist solely of `SKILL.md` in `./<name>/`. Do NOT create auxiliary Cargo projects, `Cargo.toml`, `src/main.rs`, or binaries. Once `SKILL.md` is written, validate format strictly by running `dao check <target-skill-dir>` once, and hand off immediately without constructing mock workspaces or running synthetic tests.
+
 In the generated `SKILL.md`, you MUST include a `## Workflow` section matching the exact task requirements (choose and include EXACTLY ONE workflow from the 5 workflows below based on the task prompt; do NOT combine or mix them):
 
 ### Architecture & System Compatibility Standard:
