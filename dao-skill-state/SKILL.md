@@ -50,10 +50,10 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
   Does the task prompt explicitly contain the exact phrase **"This warehouse offers no authorized status query"**?
   - **YES**: You MUST choose **Workflow 1**! (Workflows 2, 3, 4, and 5 all require status queries and are strictly forbidden when there is no authorized status query).
   - **NO**: The warehouse supports status queries (this is the default for all standard backfill runbooks). When the prompt does NOT contain "This warehouse offers no authorized status query", **Workflow 1 is STRICTLY FORBIDDEN**! Choose among Workflows 2 to 5 based on the specific constraints:
-    * If the task prompt explicitly contains the exact phrase `"Never retry a failed command, including when a later status query confirms it did not load"`: choose **Workflow 2**.
+    * If the task prompt contains `"Never retry a failed command"`: choose **Workflow 2**.
     * If the task prompt explicitly contains the exact phrase `"permits another attempt of that failed command only when the warehouse authoritatively confirms it did not load"`: choose **Workflow 3**.
     * If the task prompt explicitly contains the exact phrase `"Step 6 requires the operator's actual approval file `approvals/step-6.ok`"`: choose **Workflow 4**.
-    * **Otherwise (standard crash recovery or operator pause)**: choose **Workflow 5**! (Workflow 5 is the standard workflow for all backfill tasks that do NOT contain the "no authorized status query", no-retry, or approval phrases).
+    * **Otherwise (standard crash recovery or operator pause)**: choose **Workflow 5**! (Workflow 5 is the standard workflow for all backfill tasks that do NOT contain the "no authorized status query", "Never retry a failed command", or approval phrases).
 
 - **Workflow 1 (STRICTLY AND ONLY when the task prompt explicitly contains: "This warehouse offers no authorized status query")**:
   *(Important: If the task prompt does NOT explicitly contain the exact phrase "This warehouse offers no authorized status query", Workflow 1 is STRICTLY FORBIDDEN! You MUST use Workflow 5 or one of the other workflows).*
@@ -66,7 +66,7 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
      b. Execute the step command using the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session!
 
-- **Workflow 2 (ONLY when the warehouse supports status query AND the task prompt explicitly contains the exact phrase: "Never retry a failed command, including when a later status query confirms it did not load")**:
+- **Workflow 2 (ONLY when the warehouse supports status query AND the task prompt contains: "Never retry a failed command")**:
   *(Important: If the task prompt merely states "If a step fails, stop and report it; do not retry it or change anything to make it pass", that is standard crash recovery: you MUST use Workflow 5, NEVER use Workflow 2!)*
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Check pause and inspect runbook via Bash**: Check for the file `operator.pause` using `test -f operator.pause && echo "PAUSED"` via the Bash tool (never check environment variables, never source any files, and never inspect the `.claude/` directory): if the output is "PAUSED", stop immediately! If `operator.pause` does not exist (command outputs nothing), inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command.
@@ -106,7 +106,7 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
 - **Workflow 5 (Default workflow for standard crash recovery and operator pause; for all tasks where status queries can be performed and without no-retry or approval constraints)**:
-  *(Important: If the task prompt does NOT contain the exact phrase "This warehouse offers no authorized status query" and does NOT contain "Never retry a failed command..." or "approvals/step-6.ok", you MUST choose Workflow 5!)*
+  *(Important: If the task prompt does NOT contain the exact phrase "This warehouse offers no authorized status query" and does NOT contain "Never retry a failed command" and does NOT contain "approvals/step-6.ok", you MUST choose Workflow 5!)*
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Check pause and inspect runbook via Bash**: At the start of any session, check for the file `operator.pause` using `test -f operator.pause && echo "PAUSED"` via the Bash tool (never check environment variables, never source any files, and never inspect the `.claude/` directory): if the output is "PAUSED", stop immediately and report that execution is paused by the operator! If `operator.pause` does not exist (command outputs nothing), inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command if specified.
   2. **Execution and resumption loop**:
