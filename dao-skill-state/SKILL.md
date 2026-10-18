@@ -45,12 +45,24 @@ Crucially:
 
 In the generated `SKILL.md`, you MUST include a `## Workflow` section matching the exact task requirements (choose and include EXACTLY ONE workflow from the 5 workflows below based on the task prompt; do NOT combine or mix them):
 
-### Routing decision (Evaluate in order 1 to 5):
-1. **No status query**: If the task prompt contains `"This warehouse offers no authorized status query"`, choose **Workflow 1**. (Workflows 2, 3, 4, and 5 are strictly forbidden).
-2. **Strict no-retry constraint**: If the task prompt contains `"Never retry a failed command"`: choose **Workflow 2**. (Workflows 1, 3, 4, and 5 are strictly forbidden).
-3. **Authorized retry on not loaded**: If the task prompt contains `"permits another attempt of that failed command"`: choose **Workflow 3**. (Workflows 1, 2, 4, and 5 are strictly forbidden).
-4. **Step 6 approval required**: If the task prompt contains `"approvals/step-6.ok"`: choose **Workflow 4**. (Workflows 1, 2, 3, and 5 are strictly forbidden).
-5. **Default standard backfill**: In all other cases (where none of the above 4 special constraint phrases appear in the prompt): choose **Workflow 5**.
+### Routing decision (Evaluate rules 1 to 5 in order):
+1. **Rule 1 (No status query)**:
+   Does the prompt explicitly contain `"This warehouse offers no authorized status query"`?
+   -> **YES**: Choose **Workflow 1**! (Workflows 2, 3, 4, and 5 are strictly forbidden).
+2. **Rule 2 (No-retry even when status confirms not loaded)**:
+   Does the prompt explicitly contain `"Never retry a failed command"` or `"Do not skip a failed, unloaded batch"`?
+   -> **YES**: Choose **Workflow 2**! (Workflows 1, 3, 4, and 5 are strictly forbidden).
+3. **Rule 3 (Retry permitted when warehouse confirms not loaded)**:
+   Does the prompt explicitly contain `"permits another attempt of that failed command"`?
+   -> **YES**: Choose **Workflow 3**! (Workflows 1, 2, 4, and 5 are strictly forbidden).
+4. **Rule 4 (Step 6 approval required)**:
+   Does the prompt explicitly contain `"approvals/step-6.ok"`?
+   -> **YES**: Choose **Workflow 4**! (Workflows 1, 2, 3, and 5 are strictly forbidden).
+5. **Rule 5 (Standard crash recovery / operator pause)**:
+   In all other cases (e.g. tasks with standard prompt `"If a step fails, stop and report it; do not retry it or change anything to make it pass"` and containing NONE of the phrases in Rules 1 to 4):
+   -> **YES**: Choose **Workflow 5**!
+
+*(Note: All data backfill runbook skills in this benchmark are fully self-contained in `SKILL.md` using direct shell commands. Do NOT create or compile separate executable helper binaries or Cargo projects).*
 
 - **Workflow 1 (STRICTLY AND ONLY when the task prompt explicitly contains: "This warehouse offers no authorized status query")**:
   *(Important: If the task prompt does NOT explicitly contain the exact phrase "This warehouse offers no authorized status query", Workflow 1 is STRICTLY FORBIDDEN! You MUST use Workflow 5 or one of the other workflows).*
