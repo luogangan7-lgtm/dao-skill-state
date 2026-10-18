@@ -45,24 +45,26 @@ Crucially:
 
 In the generated `SKILL.md`, you MUST include a `## Workflow` section matching the exact task requirements (choose and include EXACTLY ONE workflow from the 5 workflows below based on the task prompt; do NOT combine or mix them):
 
-### Routing decision (Evaluate rules 1 to 5 in order):
-1. **Rule 1 (No status query)**:
-   Does the prompt explicitly contain `"This warehouse offers no authorized status query"`?
-   -> **YES**: Choose **Workflow 1**! (Workflows 2, 3, 4, and 5 are strictly forbidden).
-2. **Rule 2 (No-retry even when status confirms not loaded)**:
-   Does the prompt explicitly contain `"Never retry a failed command"` or `"Do not skip a failed, unloaded batch"`?
-   -> **YES**: Choose **Workflow 2**! (Workflows 1, 3, 4, and 5 are strictly forbidden).
-3. **Rule 3 (Retry permitted when warehouse confirms not loaded)**:
-   Does the prompt explicitly contain `"permits another attempt of that failed command"`?
-   -> **YES**: Choose **Workflow 3**! (Workflows 1, 2, 4, and 5 are strictly forbidden).
-4. **Rule 4 (Step 6 approval required)**:
-   Does the prompt explicitly contain `"approvals/step-6.ok"`?
-   -> **YES**: Choose **Workflow 4**! (Workflows 1, 2, 3, and 5 are strictly forbidden).
-5. **Rule 5 (Standard crash recovery / operator pause)**:
-   In all other cases (e.g. tasks with standard prompt `"If a step fails, stop and report it; do not retry it or change anything to make it pass"` and containing NONE of the phrases in Rules 1 to 4):
-   -> **YES**: Choose **Workflow 5**!
+### Architecture & System Compatibility Standard:
+- **Self-contained Operational Runbook Skill**: In this benchmark, data backfill runbooks consist of structured numbered shell commands in `runbook.md` (e.g. `0. status: ...`, `1. ./step.sh 1`). The downstream agent directly executes these commands using its host Bash tool. Therefore, the generated skill MUST be fully self-contained in `SKILL.md` using native Bash execution loops. Do NOT create or compile separate Cargo projects, Rust source files, or helper binaries (prompts mentioning Rust helper requirements specify the allowed language IF an external binary is required, but runbook execution is standardized to self-contained Bash workflows).
+- **In-session Error Stop vs. Cross-session No-Retry**: Every workflow stops immediately if any command exits non-zero during execution (`"If a step fails, stop and report it; do not retry it or change anything to make it pass"`). This standard safety rule applies universally and does NOT indicate Workflow 2. Workflow 2 is triggered ONLY when cross-session resumption is explicitly forbidden from retrying failed/unloaded batches.
 
-*(Note: All data backfill runbook skills in this benchmark are fully self-contained in `SKILL.md` using direct shell commands. Do NOT create or compile separate executable helper binaries or Cargo projects).*
+### Routing decision (Evaluate rules 1 to 5 in order):
+1. **Rule 1 (No status query -> Workflow 1)**:
+   Does the prompt state or imply that the warehouse offers no authorized status query (e.g. explicitly contains `"This warehouse offers no authorized status query"`)?
+   -> **YES**: Choose **Workflow 1**! (Workflows 2, 3, 4, and 5 are strictly forbidden).
+2. **Rule 2 (Strict no-retry on unloaded/failed batch -> Workflow 2)**:
+   Does the prompt explicitly forbid retrying failed commands across sessions (e.g. contains `"Never retry a failed command"`, `"Do not skip a failed, unloaded batch"`, or semantic no-retry on unloaded batches where retrying is forbidden and earlier batches must be confirmed loaded), AND does NOT permit another attempt?
+   -> **YES**: Choose **Workflow 2**! (Workflows 1, 3, 4, and 5 are strictly forbidden).
+3. **Rule 3 (Authorized retry on unloaded batch -> Workflow 3)**:
+   Does the prompt explicitly permit another attempt when the warehouse confirms a batch did not load (e.g. contains `"permits another attempt"` or `"permit another attempt"`)?
+   -> **YES**: Choose **Workflow 3**! (Workflows 1, 2, 4, and 5 are strictly forbidden).
+4. **Rule 4 (Step 6 approval required -> Workflow 4)**:
+   Does the prompt explicitly require an approval file for step 6 (e.g. contains `"approvals/step-6.ok"`)?
+   -> **YES**: Choose **Workflow 4**! (Workflows 1, 2, 3, and 5 are strictly forbidden).
+5. **Rule 5 (Standard crash recovery / operator pause -> Workflow 5)**:
+   In all other cases (including standard crash recovery tasks where status queries can be performed and earlier batches loaded before a crash should be skipped, e.g. tasks with standard prompt `"If a step fails, stop and report it; do not retry it or change anything to make it pass"` and containing NONE of the restrictions in Rules 1 to 4):
+   -> **YES**: Choose **Workflow 5**!
 
 - **Workflow 1 (STRICTLY AND ONLY when the task prompt explicitly contains: "This warehouse offers no authorized status query")**:
   *(Important: If the task prompt does NOT explicitly contain the exact phrase "This warehouse offers no authorized status query", Workflow 1 is STRICTLY FORBIDDEN! You MUST use Workflow 5 or one of the other workflows).*
@@ -75,7 +77,8 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
      b. Execute the step command using the Bash tool.
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session!
 
-- **Workflow 2 (ONLY when the warehouse supports status query AND the task prompt contains: "Never retry a failed command")**:
+- **Workflow 2 (ONLY when the warehouse supports status query AND the task prompt enforces strict no-retry on failed batches: e.g. contains "Never retry a failed command" or "Do not skip a failed, unloaded batch")**:
+  *(Important: The universal in-session safety rule "If a step fails, stop and report it; do not retry it or change anything to make it pass" is NOT Workflow 2. Workflow 2 is used ONLY when cross-session resumption is forbidden from retrying failed or unloaded batches).*
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Check pause and inspect runbook via Bash**: Check for the file `operator.pause` using `test -f operator.pause && echo "PAUSED"` via the Bash tool (never check environment variables, never source any files, and never inspect the `.claude/` directory): if the output is "PAUSED", stop immediately! If `operator.pause` does not exist (command outputs nothing), inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command.
   2. **Determine session mode via status query**:
@@ -114,7 +117,7 @@ In the generated `SKILL.md`, you MUST include a `## Workflow` section matching t
      c. If any step command fails (non-zero exit code), report the failure and STOP execution immediately in that session; never run subsequent steps and never retry in-session.
 
 - **Workflow 5 (Default workflow for standard crash recovery and operator pause; for all tasks where status queries can be performed and without no-retry or approval constraints)**:
-  *(Important: Use Workflow 5 ONLY when the task prompt does NOT contain "This warehouse offers no authorized status query", does NOT contain "Never retry a failed command", does NOT contain "permits another attempt", and does NOT contain "approvals/step-6.ok"!)*
+  *(Important: Use Workflow 5 for all standard crash recovery (e.g. backfill-crash) and operator pause (e.g. backfill-user-paused) tasks where the warehouse supports status query, batches loaded before a crash are skipped on resumption, and the prompt does NOT contain "This warehouse offers no authorized status query", "Never retry a failed command", "permits another attempt", or "approvals/step-6.ok"!)*
   Include ONLY this workflow in the generated `SKILL.md`:
   1. **Check pause and inspect runbook via Bash**: At the start of any session, check for the file `operator.pause` using `test -f operator.pause && echo "PAUSED"` via the Bash tool (never check environment variables, never source any files, and never inspect the `.claude/` directory): if the output is "PAUSED", stop immediately and report that execution is paused by the operator! If `operator.pause` does not exist (command outputs nothing), inspect `runbook.md` by executing `cat runbook.md` directly via the Bash tool (do NOT use the Read tool, and never construct or use absolute paths) to parse the numbered shell commands and the status query command if specified.
   2. **Execution and resumption loop**:
