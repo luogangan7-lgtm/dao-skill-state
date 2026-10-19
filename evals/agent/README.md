@@ -230,6 +230,12 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   which could have been asked; a gate the skill invented for itself (n=1, not yet a rule).
 - Probing the store depends on the model, not on dao: on MiniMax only dao did not probe, on Kimi no
   arm probed, on DeepSeek every arm did (dao 2/3).
+- A second case on main (run 38795566333, DeepSeek, dao, status task, 4/5): rep 3 made `failed`
+  terminal and required `reopen --authorized-by "<name>"`. Two cases in 8 runs made it a rule
+  (authoring: "Do not invent gates either"). Replay on that rule (run 38799698815, DeepSeek, dao, n=5
+  per task): status task 5/5, 0 refusals of "continue" (3 resumed after a clean stop, 2 finished in
+  session 1); no-status task: 5/5 stopped safely at the unknown batch, 0 double loads. There the
+  human-resolve stop is what the rule keeps, since the batch cannot be checked. A replay, n=5, no control, not causal.
 
 ### Limits
 
