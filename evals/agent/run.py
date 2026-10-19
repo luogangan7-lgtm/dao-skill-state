@@ -150,7 +150,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
                     if name == "Skill":
                         skill_calls.append(str((item.get("input") or {}).get("skill") or (item.get("input") or {}).get("command") or "?"))
                     elif name == "Read" and "/.claude/skills/" in str((item.get("input") or {}).get("file_path", "")):
-                        skill_calls.append("read:" + str(item["input"]["file_path"]).split("/.claude/skills/")[1].split("/")[0])
+                        skill_calls.append("read:" + str(item["input"]["file_path"]).split("/.claude/skills/")[1])  # which file
     try:  # the checker reads agent-written files: no model token in its environment
         chk = subprocess.run([sys.executable, os.path.join(task_dir, "check.py"), ws],
                              capture_output=True, text=True, timeout=120,
