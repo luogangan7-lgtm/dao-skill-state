@@ -15,6 +15,19 @@ the workspace (a load, a send, a payment, a deploy):
 On exit 4 ask the authoritative system whether STEP took effect and resolve it; if the system cannot
 tell, stop and report STEP to the user instead of running it. A step that failed stays pending.
 STATE is a JSON file outside the skill directory. Used by: skills created with dao-skill-state.
+
+Paste this block into the created SKILL.md's workflow as is (fill in the two paths):
+
+  For every step that changes an external system, in order:
+  1. Run `python3 <skill-dir>/scripts/ledger.py <state-file> begin <step>`.
+     - exit 3: the step is done; go to the next step.
+     - exit 4: the step was cut off earlier. Ask the system whether it took effect and run
+       `... resolve <step> done` or `... resolve <step> not-done`; if the system cannot tell,
+       stop and report the step to the user. Never run it again unchecked.
+     - exit 0: run the step.
+  2. If the step succeeded, run `python3 <skill-dir>/scripts/ledger.py <state-file> done <step>`.
+     If it failed, stop and report it; it stays pending.
+  Do not track progress any other way.
 """
 import json
 import os

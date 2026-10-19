@@ -24,7 +24,7 @@ Read the selected reference completely; do not load the others by default.
 | Absorb a method or learn from failures | Verify the source, find the nearest rule, choose create/merge/discard, patch and retest if authorized | [Review](references/review.md); authoring only for a new skill |
 | Resume a long task, design a stateful skill, or keep this skill's own multi-session run | Check the actual host and authoritative task state; without one, use `.dao/state/<run>.json` | [State contract](references/state-contract.md) |
 
-Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard. Exception: when a created skill's run can be cut off and a step changes an external system, copy [scripts/ledger.py](scripts/ledger.py) into the new skill and have it call `begin` before and `done` after each such step; the script's header says what its exit codes mean. Do not write your own progress tracker for this.
+Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard. Exception: when a created skill's run can be cut off and a step changes an external system, copy [scripts/ledger.py](scripts/ledger.py) into the new skill and paste the block from the script's header into the new SKILL.md's workflow as is, with its paths filled in. Do not write your own progress tracker or runner for this.
 
 ## Work contract
 
