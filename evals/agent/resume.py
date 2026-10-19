@@ -198,7 +198,7 @@ def main():
                        "s2_loaded_runbook": (made[1] if made else "backfill-runbook") in json.dumps(r2.get("skill_calls"))}
                 if mk is not None:
                     row.update(made=True, skill_name=made[1],
-                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls")}, make_tokens=tokens(mk))
+                               make={k: mk.get(k) for k in ("turns", "duration_s", "skill_calls", "bash")}, make_tokens=tokens(mk))
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
                 log.flush()
