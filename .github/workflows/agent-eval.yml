@@ -2,7 +2,8 @@ name: agent-eval
 # Evaluations B/C/D (charter 2026-10-14): Claude Code headless on frozen public tasks, with and
 # without skills, checked by each task's deterministic checker. The model runs on one of the owner's
 # subscriptions through its Anthropic-compatible endpoint: Kimi For Coding (secret KIMI_API),
-# MiniMax (secret MINIMAX_API, China endpoint) or DeepSeek (secret DEEPSEEK_API). Model jobs run on manual dispatch only, so pull
+# MiniMax (secret MINIMAX_API, China endpoint), DeepSeek (secret DEEPSEEK_API), or NVIDIA's free
+# hosted models (secret NVIDIA_API; OpenAI-format only, so through a pinned local adapter). Model jobs run on manual dispatch only, so pull
 # requests never spend a subscription window.
 on:
   workflow_dispatch:
@@ -15,10 +16,10 @@ on:
       reps:
         default: "1"
       provider:
-        description: "kimi (KIMI_API, Kimi For Coding), minimax (MINIMAX_API, MiniMax coding plan) or deepseek (DEEPSEEK_API)"
+        description: "kimi (KIMI_API, Kimi For Coding), minimax (MINIMAX_API, MiniMax coding plan), deepseek (DEEPSEEK_API) or nvidia (NVIDIA_API, free hosted)"
         default: kimi
       model:
-        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash)"
+        description: "empty = the provider's default (kimi: k3, minimax: MiniMax-M3, deepseek: deepseek-flash, nvidia: nvidia/nemotron-3-super-120b-a12b)"
         default: ""
       suite:
         description: "run = skill effect (evals/agent/tasks); create = skill creation (create-tasks); evolve = skill evolution (evolve-tasks); resume = fixed steps vs stateful skill on an interrupted task (resume-tasks)"
@@ -94,10 +95,52 @@ jobs:
             rm -rf "$d/.git"
           done
           echo "SKILL_SOURCES=$RUNNER_TEMP/sources" >> "$GITHUB_ENV"
+      - name: Install the NVIDIA adapter (no secrets in this step)
+        if: inputs.provider == 'nvidia'
+        run: |
+          # registry tarball pinned by its published sha512; no install scripts run
+          mkdir -p "$RUNNER_TEMP/ccr"; cd "$RUNNER_TEMP/ccr"
+          tgz=$(npm pack --silent @musistudio/claude-code-router@3.1.3)
+          [ "sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)" = "sha512-dVHRu9Sb/xG9dgr8nHJmvd5XVIQ5yrEeKmMoPUEBc9xtgykfRT2z76NRI+fylpeiMzYC60z6vrV6x/3IY52pvg==" ] || { echo "adapter tarball hash mismatch"; exit 1; }
+          npm install --ignore-scripts --no-audit --no-fund "./$tgz"
+          npm rebuild better-sqlite3  # the one native dependency; its prebuilt binary, still with no secret here
+          gw="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
+          echo "57c7cb2113d22ea495b2162dcd5306b1c938cde0de1c1312e79dea8bc4e261b0  $gw" | sha256sum --check
+      - name: Start the NVIDIA adapter (Anthropic Messages -> OpenAI chat)
+        if: inputs.provider == 'nvidia'
+        env:
+          NVIDIA_API: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API || '' }}
+          IN_MODEL: ${{ inputs.model || 'nvidia/nemotron-3-super-120b-a12b' }}
+        run: |
+          [ -n "$NVIDIA_API" ] || { echo "no key for provider nvidia"; exit 1; }
+          # free hosted models that call tools; request overrides per NVIDIA's model reference
+          case "$IN_MODEL" in
+            nvidia/nemotron-3-super-120b-a12b) body='{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}' ;;
+            nvidia/nemotron-3.5-super-vl-120b-a12b) body='{"reasoning_effort":"high"}' ;;
+            *) echo "model not in the tested NVIDIA list"; exit 1 ;;
+          esac
+          gw="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
+          umask 077
+          home="$RUNNER_TEMP/ccr-home"; mkdir -p "$home/.claude-code-router"
+          token=$(openssl rand -hex 32); echo "::add-mask::$token"
+          jq -n --arg model "$IN_MODEL" --arg token "$token" --argjson body "$body" '{APIKEY:$token,HOST:"127.0.0.1",PORT:3456,API_TIMEOUT_MS:180000,gateway:{enabled:true,host:"127.0.0.1",port:3456,coreHost:"127.0.0.1",corePort:3457},preferredProvider:"nvidia",Providers:[{name:"nvidia",api_base_url:"https://integrate.api.nvidia.com/v1",api_key:env.NVIDIA_API,models:[$model],protocolDetectionMode:"manual",capabilities:[{type:"openai_chat_completions",baseUrl:"https://integrate.api.nvidia.com/v1"}],account:{enabled:false},autoFetchModels:false,autoFetchKnownModels:false,extraBody:($body+{max_tokens:32000})}],Router:{builtInRules:{"claude-code":{enabled:false},codex:{enabled:false}},fallback:{mode:"off",models:[],retryCount:0},rules:[]},plugins:[],profile:{enabled:false,profiles:[],claudeCode:{enabled:false},codex:{enabled:false}},observability:{agentAnalysis:false,requestLogs:false,requestLogBodyCapture:"none",requestLogMaxBodyBytes:0}}' > "$home/.claude-code-router/config.json"
+          env -u NVIDIA_API CCR_INTERNAL_HOME_DIR="$home" CCR_GATEWAY_ENTRY="$gw" CCR_RAW_TRACE_ENABLED=0 \
+            CCR_MODEL_CATALOG_PATH="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/models.json" \
+            CCR_WEB_AUTH_TOKEN="$(openssl rand -hex 32)" UPSTREAM_TIMEOUT_MS=180000 \
+            nohup "$RUNNER_TEMP/ccr/node_modules/.bin/ccr" serve --no-open --host 127.0.0.1 --port 3458 > "$RUNNER_TEMP/ccr.log" 2>&1 &
+          for i in $(seq 1 45); do
+            curl -sf --max-time 2 http://127.0.0.1:3456/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf --max-time 2 http://127.0.0.1:3456/health >/dev/null || { echo "adapter did not start"; tail -c 3000 "$RUNNER_TEMP/ccr.log"; exit 1; }
+          # the agent is given only the local adapter and a throwaway token, but it runs as the same
+          # user and could read the key from the adapter config, as it can read its own key with the
+          # other providers; use a free-tier key only
+          { echo "NV_ADAPTER_TOKEN=$token"; echo "NV_MODEL=nvidia/$IN_MODEL"; } >> "$GITHUB_ENV"
       - name: Run tasks
         env:
           # Anthropic-compatible endpoints of the owner's subscriptions; only the chosen one's key is set
-          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || 'https://api.kimi.com/coding/' }}
+          ANTHROPIC_BASE_URL: ${{ inputs.provider == 'minimax' && 'https://api.minimaxi.com/anthropic' || inputs.provider == 'deepseek' && 'https://api.deepseek.com/anthropic' || inputs.provider == 'nvidia' && 'http://127.0.0.1:3456' || 'https://api.kimi.com/coding/' }}
           # each key is set only for its own provider (an `a && b || c` fallback could send one
           # provider's key to the other's endpoint if a secret were missing)
           KEY_KIMI: ${{ inputs.provider == 'kimi' && secrets.KIMI_API || '' }}
@@ -114,8 +157,11 @@ jobs:
           IN_SUITE: ${{ inputs.suite }}
           IN_PROVIDER: ${{ inputs.provider }}
         run: |
-          case "$IN_PROVIDER" in kimi|minimax|deepseek) ;; *) echo "unknown provider"; exit 1 ;; esac
-          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}"
+          case "$IN_PROVIDER" in kimi|minimax|deepseek|nvidia) ;; *) echo "unknown provider"; exit 1 ;; esac
+          export ANTHROPIC_AUTH_TOKEN="${KEY_KIMI}${KEY_MINIMAX}${KEY_DEEPSEEK}${NV_ADAPTER_TOKEN:-}"
+          if [ "$IN_PROVIDER" = nvidia ]; then
+            export ANTHROPIC_MODEL="$NV_MODEL" ANTHROPIC_DEFAULT_HAIKU_MODEL="$NV_MODEL" CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000
+          fi
           unset KEY_KIMI KEY_MINIMAX KEY_DEEPSEEK
           [ -n "$ANTHROPIC_AUTH_TOKEN" ] || { echo "no key for provider $IN_PROVIDER"; exit 1; }
           if [ "$IN_SUITE" = resume ]; then
@@ -133,6 +179,13 @@ jobs:
               --arms "$IN_ARMS" --reps "$IN_REPS" | tee summary.txt
           fi
           { echo "## agent-eval ($IN_PROVIDER: $ANTHROPIC_MODEL)"; echo; sed -n '/^| task/,$p' summary.txt; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the NVIDIA key out of the artifact
+        if: always() && inputs.provider == 'nvidia'
+        env:
+          NVIDIA_API: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API || '' }}
+        run: |
+          # backstop for the paths uploaded below: drops files holding the key verbatim (not encoded copies)
+          [ -z "$NVIDIA_API" ] || [ ! -d results ] || { grep -rlF -- "$NVIDIA_API" results || true; } | while read -r f; do echo "removed: $f"; rm -f "$f"; done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
