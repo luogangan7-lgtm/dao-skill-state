@@ -240,7 +240,9 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   task): status task 5/5, 0 refusals, 0 reruns (2 resumed after a clean stop, 3 finished in session 1),
   no human-only marker in any created skill; no-status task: 5/5 stopped safely at the unknown batch,
   0 double loads. The rule held on a second model; still n=5, no control.
-- A weaker free model, NVIDIA `nemotron-3-super-120b-a12b` (provider `nvidia`), both tasks:
+- A weaker free model, NVIDIA `nemotron-3-super-120b-a12b` (provider `nvidia`), both tasks; controls
+  only in the first run:
+
   | run | dao text | arms | pass |
   |---|---|---|---|
   | 39205391856 | main at #68 | none / skill-creator / dao, n=3 per task | 1/6 · 1/6 (2 made no skill) · 1/6 |
@@ -248,12 +250,13 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   | 39246989882 | main at #68, logs which files the maker reads (#70) | dao, n=3 per task | 2/6 |
   | 39261109764 | + the same rule in the entry SKILL.md | dao, n=5 per task | 1/10 (3 made no skill) |
 
-  Here dao does not help. Its skills record a step as done only after it succeeds, so a step cut off in
-  between is run again; they ignore the status query where it exists, and every maker spends most of its
-  40 turns writing a Python runner and testing it on runbooks it invents. The maker read only the entry
-  in 4 of 6 runs (39246989882), but stating the rule in the entry did not change what it wrote:
-  1 of 10 skills (authoring variant) and 3 of 7 (entry variant) mention a pending mark, and only one of those passed. Neither variant is kept. Pass rates range
-  1/6–3/10 across all variants, which is within noise at these n.
+  dao showed no gain over the controls (1/6 each). The invented-gate rule held on MiniMax and DeepSeek
+  but nothing here suggests it reaches this weaker model. Most created skills did not mention a pending
+  mark (1 of 10 with the rule in authoring.md, 3 of 7 with it in the entry, one of which passed). In
+  39246989882 all 6 makers wrote and tested a Python runner and 5 of 6 used 37–41 of their 40 turns
+  (the cap allows one over); 4 of 6 read only the entry. Stating the rule in the entry did not clearly
+  change what was written. Pass rates of 1/6–3/10 are within noise at these n; neither rule placement
+  is merged.
 
 ### Limits
 
