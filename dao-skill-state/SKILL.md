@@ -24,7 +24,7 @@ Read the selected reference completely; do not load the others by default.
 | Absorb a method or learn from failures | Verify the source, find the nearest rule, choose create/merge/discard, patch and retest if authorized | [Review](references/review.md); authoring only for a new skill |
 | Resume a long task, design a stateful skill, or keep this skill's own multi-session run | Check the actual host and authoritative task state; without one, use `.dao/state/<run>.json` | [State contract](references/state-contract.md) |
 
-Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard.
+Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard. One exception carries over into every created skill whose run can be cut off: never repeat a step that changes an external system. Before each such step the skill asks the system whether it already took effect; where the system cannot tell, it records the step as pending before running it, and on resume it reports a pending step instead of running it again.
 
 ## Work contract
 
