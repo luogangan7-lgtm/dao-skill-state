@@ -278,11 +278,13 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   runs with a hand-written form, no session 2 stopped at the unverifiable batch: 20 loaded it again
   or never hit the cut-off, one marked it loaded with no way to check. None of the variants tried
   moved it on this model; n=3–5 per cell.
-- Where the status-task runs went wrong (dao arm, 4 runs, 15 made skills, from the session Bash logs):
-  the agent ran the steps by hand and then also the runner the maker wrote, whose own progress file
-  did not know about them, so it started over (1/8 passed); by hand only 3/5; runner only 0/2. A rule
+- Where the status-task runs went wrong (dao arm, 4 runs, 15 runs that made a skill, from
+  the session Bash logs; small n, descriptive only): the agent ran steps by hand and then also the
+  runner the maker wrote in 8 (1 passed; failing ones show loads such as 1..5 then 1..5 again right
+  after the runner started); by hand only in 5 (3 passed); runner only in 2 (0 passed). A rule
   against the second path (39365404803, row above) was not followed (7 of 10 skills still shipped a
-  runner) and by-hand runs also failed (one went on to step 35), so that split is not causal.
+  runner), and the by-hand-only status runs there passed 0/3 (one went on to step 35), so the split
+  above is not causal.
 - A stronger NVIDIA model, `nemotron-3.5-super-vl-120b-a12b` with `reasoning_effort: high` (run
   39346350449, main at #74, n=3 per task), status / no-status pass: make:none 1/3 · 3/3, make:dao
   2/3 · 3/3, stateful-pending 3/3 · 3/3. Every dao no-status run stopped cleanly at batch 5 and
