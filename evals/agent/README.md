@@ -316,7 +316,7 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   description, the terminal `failed` status, the two "state file is the only authority" sentences,
   or three sections (943 → 686 words).
 
-  | arm | pass | stopped at batch 5 in session 1 |
+  | arm | pass | session 1 loaded exactly 1-5 |
   |---|---|---|
   | unchanged | 0/5 | 1/5 |
   | no stop in description | 1/5 | 0/5 |
@@ -324,11 +324,10 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   | no authority sentences | 0/5 | 1/5 |
   | shorter | 2/5 | 3/5 |
 
-  The unchanged skill passed 0/5, against 2/5 in run 39394182506, so on Lightning it passed 2 of 10
-  in all and there was no effect for the ablation to isolate. Most failures happen before any
-  resume: in 17 of 25 runs session 1 did not stop at batch 5, and in 12 of those session 2 then ran
-  from step 1 again.
-  The passes on Super (3 of 6, all after a stop at batch 5) are not replicated here.
+  The unchanged skill passed 0/5 here and 2/5 in run 39394182506, so the arm differences (0 to 2 of
+  5) are within run-to-run noise. In 17 of 25 runs (16 of the 22 that failed) session 1 did not stop
+  at batch 5, and in 12 of those 17 session 2 ran from step 1 again. The passes on Super (3 of 6, all
+  after a stop at batch 5) are not replicated here. Small n, descriptive only.
 
 ### Limits
 
