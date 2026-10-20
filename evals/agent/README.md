@@ -346,6 +346,21 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   5 on the way). In `stop-gate`'s 4 such runs the file was right (`{"done": [1, 2, 3, 4], "pending":
   5}`) and the script refused step 5 in session 2, but each time the agent then ran `python3 step.py
   5` directly. Small n, descriptive only.
+- A second run of `stop-gate`, and `stop-gate-say`, whose `STOP` text and SKILL.md also say that
+  the problem being over does not tell whether the step took effect and that running the step
+  directly is the double load to avoid (run 39437838511, 5 runs each):
+
+  | arm | pass | session 1 loaded the skill | session 1 loaded exactly 1-5 |
+  |---|---|---|---|
+  | `stop-gate` | 0/5 | 4/5 | 3/5 |
+  | `stop-gate-say` | 2/5 | 3/5 | 3/5 |
+
+  After a `STOP` in session 2, `stop-gate` runs went on by running `step.py 5` directly (2); in the
+  third, session 2 ran `run_step.py 5` twice, then 6-8, and step 5 ran again (no shell command
+  wrote the progress file; non-shell tool calls are not recorded). Of the two `stop-gate-say` passes,
+  one stopped and reported; the other found the store behind the `warehouse` module (`/tmp/warehouse`,
+  counted as probes), saw batch 5 there, marked it done and ran 6-8. The third clean run ran
+  `step.py 5` directly, cleared `pending` with `python3 -c` and ran 6-8 through the script. Across both runs `stop-gate` passed 0 of 10. Small n, descriptive only.
 
 ### Limits
 
