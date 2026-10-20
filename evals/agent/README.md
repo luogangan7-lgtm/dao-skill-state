@@ -301,13 +301,13 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   | 39384563904 | Super | written by MiniMax+dao (run 39198153129), 2 skills | 3/6 · 3 |
   | 39384563904 | Super | hand-written stateful-pending | 0/3 · 0 |
   | 39388744697 | Super | hand-written, step 4 an unconditional stop | 2/5 · 1 |
-  | 39394182506 | Lightning | stateful-pending / unconditional stop / plus "the cause being gone is not evidence" | 0/5 · 1/5 · 1/5, 0 stopped |
+  | 39394182506 | Lightning | stateful-pending / unconditional stop / plus "the cause being gone is not evidence" | 0/5 · 0/5 · 1/5, none stopped |
   | 39394182506 | Lightning | written by MiniMax+dao (one skill) | 2/5 · 0 |
 
   The checker gate changed what Super wrote (pending in 5 of 8 skills, runners in 4 of 8) but not
   the outcome. A skill a stronger model wrote with dao avoided double loads on the two weak executors
   more often (5 of 13 valid runs; a replicate on Super was cut short when the endpoint began refusing
-  that model) than the short hand-written forms (3 of 43 across these and the earlier runs). Which
+  that model) than the short hand-written forms (4 of 44 no-status runs across these and the earlier runs). Which
   part of it matters is not isolated; making the stop unconditional did not reproduce it on
   Lightning. Lightning is `nemotron-3.5-lightning-30b-a3b` without thinking (#79).
 
