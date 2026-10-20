@@ -260,11 +260,12 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
 - Is it the writing or the running? The same model given the hand-written forms (run 39316556840,
   main, n=3 per task): status task none 0/3, fixed-check 2/3, stateful-pending 3/3; no-status task
   fixed-check 0/3, stateful-pending 0/3 (none 2/3, both runs where session 1 loaded all 8 batches and
-  so never hit the cut-off). With a status query a correct skill is enough, so there the gap is in
-  what the maker writes. Without one even a correct skill does not hold: session 1 stops cleanly at
-  the pending batch, then session 2 loads it again. Its final replies say why: the network status
-  file reads "up", so it treats the cut-off as fixed and the batch as not loaded.
+  so never hit the cut-off). With a status query a correct hand-written skill passed 2/3 and 3/3, so the gap
+  there looks like the maker's writing. Without one even a correct skill does not hold: session 1 stops cleanly at
+  the pending batch, then session 2 loads it again. Its final replies cite the network status file
+  reading "up", apparently taking the cut-off as fixed and the batch as not loaded.
 - Tried on that model, none kept (dao arm unless noted; status / no-status pass):
+
   | run | variant | pass |
   |---|---|---|
   | 39278958103 | dao ships `ledger.py` (begin/done/resolve; exit 4 = pending, check or stop) | 0/5 · 1/5 |
@@ -272,10 +273,10 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   | 39333512246 | hand-written form calling the ledger, vs stateful-pending | 2/5 vs 4/5 · 0/5 vs 0/5 |
   | 39337815413 | hand-written stateful-pending plus "the cause being gone says nothing about whether the step took effect" | 2/5 · 1/5 |
 
-  Makers copied the ledger into 10 of 17 skills but wrote the call into one. In the 21 no-status
+  Makers copied the ledger into 10 of 17 skills but pasted the workflow block into one. In the 21 no-status
   runs with a hand-written form, no session 2 stopped at the unverifiable batch: 20 loaded it again
-  or never hit the cut-off, one marked it loaded with no way to check. On this model that stop is
-  beyond what a skill's wording or a helper script has moved; n=3–5 per cell.
+  or never hit the cut-off, one marked it loaded with no way to check. None of the variants tried
+  moved it on this model; n=3–5 per cell.
 
 ### Limits
 
