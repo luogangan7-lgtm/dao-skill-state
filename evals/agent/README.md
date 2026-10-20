@@ -292,6 +292,24 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   batch 5; the other two continued to batch 8 after the failed step 5. The stop that no skill moved
   on Nemotron-3-Super is reached here with dao, consistent with the gap following model capability
   (one stronger model, reasoning effort also differs; n=3, controls in the same run).
+- More on weak models, no-status task unless noted (pass · runs that stopped at batch 5 and loaded
+  nothing twice; small n, descriptive only):
+
+  | run | model | skill | pass · stopped |
+  |---|---|---|---|
+  | 39378666791 | Super | dao, with check_skill erroring on a shell-running script and on progress without "pending" | status 2/5, no-status 0/5 |
+  | 39384563904 | Super | written by MiniMax+dao (run 39198153129), 2 skills | 3/6 · 3 |
+  | 39384563904 | Super | hand-written stateful-pending | 0/3 · 0 |
+  | 39388744697 | Super | hand-written, step 4 an unconditional stop | 2/5 · 1 |
+  | 39394182506 | Lightning | stateful-pending / unconditional stop / plus "the cause being gone is not evidence" | 0/5 · 1/5 · 1/5, 0 stopped |
+  | 39394182506 | Lightning | written by MiniMax+dao (one skill) | 2/5 · 0 |
+
+  The checker gate changed what Super wrote (pending in 5 of 8 skills, runners in 4 of 8) but not
+  the outcome. A skill a stronger model wrote with dao avoided double loads on the two weak executors
+  more often (5 of 13 valid runs; a replicate on Super was cut short when the endpoint began refusing
+  that model) than the short hand-written forms (3 of 43 across these and the earlier runs). Which
+  part of it matters is not isolated; making the stop unconditional did not reproduce it on
+  Lightning. Lightning is `nemotron-3.5-lightning-30b-a3b` without thinking (#79).
 
 ### Limits
 
