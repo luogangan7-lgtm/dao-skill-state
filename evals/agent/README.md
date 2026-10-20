@@ -280,9 +280,10 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
 - A stronger NVIDIA model, `nemotron-3.5-super-vl-120b-a12b` with `reasoning_effort: high` (run
   39346350449, main at #74, n=3 per task), status / no-status pass: make:none 1/3 · 3/3, make:dao
   2/3 · 3/3, stateful-pending 3/3 · 3/3. Every dao no-status run stopped cleanly at batch 5 and
-  loaded nothing twice; of the make:none passes only one stopped there, the other two went past the
-  failed step without loading it again. So the stop that no skill moved on Nemotron-3-Super is
-  reached here with dao; the gap tracks model capability. n=3, controls in the same run.
+  loaded nothing twice. make:none also passed 3/3 by the checker, but only one of those stopped at
+  batch 5; the other two continued to batch 8 after the failed step 5. The stop that no skill moved
+  on Nemotron-3-Super is reached here with dao, consistent with the gap following model capability
+  (one stronger model, reasoning effort also differs; n=3, controls in the same run).
 
 ### Limits
 
