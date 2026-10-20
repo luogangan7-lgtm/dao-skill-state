@@ -86,6 +86,20 @@ metadata:
             (broken / "SKILL.md").write_text("---\nname: broken\ndescription: short\n", encoding="utf-8")
             self.assertEqual(check_skill(broken)["status"], "invalid")
 
+    def test_behavior_gates_two_paths_and_pending(self):
+        with tempfile.TemporaryDirectory() as d:
+            skill = write_skill(Path(d), "runner", "name: runner\ndescription: Runs a runbook.\n")
+            (skill / "run.py").write_text("import subprocess\nsubprocess.run(['sh', '-c', 'x'])\n", encoding="utf-8")
+            (skill / "test_run.py").write_text("import subprocess\n", encoding="utf-8")
+            kinds = [e["kind"] for e in check_skill(skill)["errors"]]
+            self.assertEqual(kinds, ["two-paths"])
+            (skill / "run.py").unlink()
+            md = skill / "SKILL.md"
+            md.write_text(md.read_text(encoding="utf-8") + "Mark each step done in the progress file.\n", encoding="utf-8")
+            self.assertEqual([e["kind"] for e in check_skill(skill)["errors"]], ["progress"])
+            md.write_text(md.read_text(encoding="utf-8") + "Record a step as pending before running it.\n", encoding="utf-8")
+            self.assertEqual(check_skill(skill)["status"], "valid")
+
     def test_cli_json_and_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
             valid = write_skill(Path(tmp), "ok", "name: ok\ndescription: short\n")

@@ -76,6 +76,33 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
+_RUNS_SHELL = re.compile(r"\b(subprocess|os\.system|os\.popen|os\.exec)")
+_PROGRESS = re.compile(r"progress (file|is|lives|json|state)|state file|completed steps|(mark|record)s? (it|the step|each step|steps?) (as )?(done|complete)", re.I)
+
+
+def _behavior(root: Path, text: str) -> list[dict[str, str]]:
+    """Lexical behavior gates for created skills (experiment): one path per action, and progress
+    that survives a cut-off. A hint for the author, not proof the skill behaves."""
+    issues = []
+    for script in sorted(root.rglob("*.py")):
+        if script.name.startswith("test_"):  # a test is not a path an action runs through
+            continue
+        try:
+            body = script.read_text(encoding="utf-8")[:200_000]
+        except (OSError, UnicodeError):
+            continue
+        if _RUNS_SHELL.search(body):
+            rel = script.relative_to(root)
+            issues.append(_issue("two-paths", f"{rel} runs shell commands. Give each action one path: delete "
+                                 f"{rel} and have SKILL.md tell the agent to run the commands itself, step by step"))
+    if _PROGRESS.search(text) and "pending" not in text.lower():
+        issues.append(_issue("progress", "SKILL.md keeps progress but never marks a step pending before running it: "
+                             "a step cut off after it took effect but before it was recorded runs again. Before "
+                             "each step record it as pending; when continuing, check a pending step in the real "
+                             "system and stop and report it if the system cannot tell"))
+    return issues
+
+
 def check_skill(skill_dir: str | Path) -> dict[str, Any]:
     root = Path(skill_dir)
     result: dict[str, Any] = {"path": str(root), "errors": [], "warnings": []}
@@ -139,6 +166,7 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
         elif any(not isinstance(key, str) or not isinstance(value, str) for key, value in metadata.items()):
             result["errors"].append(_issue("metadata", "metadata keys and values must all be strings"))
 
+    result["errors"].extend(_behavior(root, text))
     result["status"] = "valid" if not result["errors"] else "invalid"
     return result
 
