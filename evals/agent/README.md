@@ -311,6 +311,23 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   model) than the short hand-written forms (4 of 44 no-status runs across these and earlier runs).
   Which part of those skills matters is not isolated; an unconditional stop alone did not reproduce
   it on Lightning. Lightning is `nemotron-3.5-lightning-30b-a3b` without thinking (#79).
+- Ablating that skill (`mm-dao-a`) on Lightning, no-status task, 5 runs per arm (run 39405633274;
+  arms on branch `exp/nvidia-ablate`). Each arm drops one part: the stop restated in the
+  description, the terminal `failed` status, the two "state file is the only authority" sentences,
+  or three sections (943 → 686 words).
+
+  | arm | pass | session 1 loaded exactly 1-5 |
+  |---|---|---|
+  | unchanged | 0/5 | 1/5 |
+  | no stop in description | 1/5 | 0/5 |
+  | no `failed` status | 0/5 | 3/5 |
+  | no authority sentences | 0/5 | 1/5 |
+  | shorter | 2/5 | 3/5 |
+
+  The unchanged skill passed 0/5 here and 2/5 in run 39394182506, so the arm differences (0 to 2 of
+  5) are within run-to-run noise. In 17 of 25 runs (16 of the 22 that failed) session 1 did not stop
+  at batch 5, and in 12 of those 17 session 2 ran from step 1 again. The passes on Super (3 of 6, all
+  after a stop at batch 5) are not replicated here. Small n, descriptive only.
 
 ### Limits
 
