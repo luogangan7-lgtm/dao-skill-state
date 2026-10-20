@@ -116,7 +116,6 @@ jobs:
             nvidia/nemotron-3-super-120b-a12b) body='{"reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":false}}' ;;
             nvidia/nemotron-3.5-super-vl-120b-a12b) body='{"reasoning_effort":"high"}' ;;
             nvidia/nemotron-3.5-lightning-30b-a3b) body='{"chat_template_kwargs":{"enable_thinking":false}}' ;;
-            openai/gpt-oss-20b) body='{"reasoning_effort":"low"}' ;;
             *) echo "model not in the tested NVIDIA list"; exit 1 ;;
           esac
           gw="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
