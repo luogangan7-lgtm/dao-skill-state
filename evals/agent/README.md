@@ -277,6 +277,11 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   runs with a hand-written form, no session 2 stopped at the unverifiable batch: 20 loaded it again
   or never hit the cut-off, one marked it loaded with no way to check. None of the variants tried
   moved it on this model; n=3–5 per cell.
+- A stronger NVIDIA model, `nemotron-3.5-super-vl-120b-a12b` with `reasoning_effort: high` (run
+  39346350449, main at #74, n=3 per task), status / no-status pass: make:none 1/3 · 3/3, make:dao
+  2/3 · 3/3, stateful-pending 3/3 · 3/3. Every dao no-status run stopped cleanly at batch 5 and
+  loaded nothing twice. So the no-status stop that no skill moved on Nemotron-3-Super holds here
+  with or without a skill; the failures above track model capability. n=3, controls in the same run.
 
 ### Limits
 
