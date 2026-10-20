@@ -328,6 +328,24 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   5) are within run-to-run noise. In 17 of 25 runs (16 of the 22 that failed) session 1 did not stop
   at batch 5, and in 12 of those 17 session 2 ran from step 1 again. The passes on Super (3 of 6, all
   after a stop at batch 5) are not replicated here. Small n, descriptive only.
+- Where Lightning fails, no-status task, 5 runs per arm (run 39417288601; forms on branch
+  `exp/nvidia-stop`). `stop-first` is `stateful-pending` with "a step that exits non-zero ends the
+  run" as its first line. `stop-gate` runs each step only through a script in the skill that keeps
+  the progress file and prints `STOP` on a failed or pending step.
+
+  | arm | pass | session 1 loaded the skill | session 1 loaded exactly 1-5 | of those: progress file written · session 2 ran step 5 again |
+  |---|---|---|---|---|
+  | none | 0/5 | 0/5 | 1/5 | 0 · 1 |
+  | `stateful-pending` | 1/5 | 5/5 | 4/5 | 3 · 3 |
+  | `stop-first` | 0/5 | 5/5 | 4/5 | 0 · 4 |
+  | `stop-gate` | 0/5 | 4/5 | 4/5 | 4 · 4 |
+
+  When session 1 loaded one of these short hand-written skills, it loaded exactly steps 1-5 in 12 of
+  14 runs (the `mm-a-*` arms on Lightning, run 39405633274: 8 of 25). In its 4 runs that loaded 1-5,
+  `stop-first` never wrote the progress file and session 2 started again from step 1 (rerunning step
+  5 on the way). In `stop-gate`'s 4 such runs the file was right (`{"done": [1, 2, 3, 4], "pending":
+  5}`) and the script refused step 5 in session 2, but each time the agent then ran `python3 step.py
+  5` directly. Small n, descriptive only.
 
 ### Limits
 
