@@ -24,7 +24,7 @@ Read the selected reference completely; do not load the others by default.
 | Absorb a method or learn from failures | Verify the source, find the nearest rule, choose create/merge/discard, patch and retest if authorized | [Review](references/review.md); authoring only for a new skill |
 | Resume a long task, design a stateful skill, or keep this skill's own multi-session run | Check the actual host and authoritative task state; without one, use `.dao/state/<run>.json` | [State contract](references/state-contract.md) |
 
-Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard.
+Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard. A created skill gives each action one path: when its input already lists commands the agent can run, the skill tells the agent to run them and ships no script that runs them too, and it runs only the steps the input lists.
 
 ## Work contract
 
