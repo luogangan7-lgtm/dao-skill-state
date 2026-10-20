@@ -272,11 +272,17 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   | 39296706971 | the same plus a workflow block to paste as is | 0/5 · 1/5 |
   | 39333512246 | hand-written form calling the ledger, vs stateful-pending | 2/5 vs 4/5 · 0/5 vs 0/5 |
   | 39337815413 | hand-written stateful-pending plus "the cause being gone says nothing about whether the step took effect" | 2/5 · 1/5 |
+  | 39365404803 | dao entry: one path per action, no runner for commands the agent can run | 0/5 · 1/5 |
 
   Makers copied the ledger into 10 of 17 skills but pasted the workflow block into one. In the 21 no-status
   runs with a hand-written form, no session 2 stopped at the unverifiable batch: 20 loaded it again
   or never hit the cut-off, one marked it loaded with no way to check. None of the variants tried
   moved it on this model; n=3–5 per cell.
+- Where the status-task runs went wrong (dao arm, 4 runs, 15 made skills, from the session Bash logs):
+  the agent ran the steps by hand and then also the runner the maker wrote, whose own progress file
+  did not know about them, so it started over (1/8 passed); by hand only 3/5; runner only 0/2. A rule
+  against the second path (39365404803, row above) was not followed (7 of 10 skills still shipped a
+  runner) and by-hand runs also failed (one went on to step 35), so that split is not causal.
 - A stronger NVIDIA model, `nemotron-3.5-super-vl-120b-a12b` with `reasoning_effort: high` (run
   39346350449, main at #74, n=3 per task), status / no-status pass: make:none 1/3 · 3/3, make:dao
   2/3 · 3/3, stateful-pending 3/3 · 3/3. Every dao no-status run stopped cleanly at batch 5 and
