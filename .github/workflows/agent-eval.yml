@@ -98,11 +98,9 @@ jobs:
       - name: Install the NVIDIA adapter (no secrets in this step)
         if: inputs.provider == 'nvidia'
         run: |
-          # registry tarball pinned by its published sha512; no install scripts run
-          mkdir -p "$RUNNER_TEMP/ccr"; cd "$RUNNER_TEMP/ccr"
-          tgz=$(npm pack --silent @musistudio/claude-code-router@3.1.3)
-          [ "sha512-$(openssl dgst -sha512 -binary "$tgz" | base64 -w0)" = "sha512-dVHRu9Sb/xG9dgr8nHJmvd5XVIQ5yrEeKmMoPUEBc9xtgykfRT2z76NRI+fylpeiMzYC60z6vrV6x/3IY52pvg==" ] || { echo "adapter tarball hash mismatch"; exit 1; }
-          npm install --ignore-scripts --no-audit --no-fund "./$tgz"
+          # every package pinned with its sha512 by the committed lockfile; no install scripts run
+          mkdir -p "$RUNNER_TEMP/ccr"; cp evals/agent/nvidia-adapter/package*.json "$RUNNER_TEMP/ccr/"; cd "$RUNNER_TEMP/ccr"
+          npm ci --ignore-scripts --no-audit --no-fund
           npm rebuild better-sqlite3  # the one native dependency; its prebuilt binary, still with no secret here
           gw="$RUNNER_TEMP/ccr/node_modules/@musistudio/claude-code-router/dist/main/next-ai-gateway.js"
           echo "57c7cb2113d22ea495b2162dcd5306b1c938cde0de1c1312e79dea8bc4e261b0  $gw" | sha256sum --check
@@ -185,7 +183,7 @@ jobs:
           NVIDIA_API: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API || '' }}
         run: |
           # backstop for the paths uploaded below: drops files holding the key verbatim (not encoded copies)
-          [ -z "$NVIDIA_API" ] || [ ! -d results ] || { grep -rlF -- "$NVIDIA_API" results || true; } | while read -r f; do echo "removed: $f"; rm -f "$f"; done
+          [ -z "$NVIDIA_API" ] || [ ! -d results ] || { grep -rlZF -- "$NVIDIA_API" results || true; } | xargs -0 -r rm -vf --
       - uses: actions/upload-artifact@v4
         if: always()
         with:

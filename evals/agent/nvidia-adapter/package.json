@@ -1,0 +1,8 @@
+{
+  "name": "nvidia-adapter",
+  "private": true,
+  "description": "Pinned NVIDIA adapter for agent-eval.yml; lockfile resolved in CI run 39365450331.",
+  "dependencies": {
+    "@musistudio/claude-code-router": "3.1.3"
+  }
+}
