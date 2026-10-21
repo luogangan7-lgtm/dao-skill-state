@@ -377,11 +377,11 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   being gone does not show whether the step took effect. MiniMax with dao then wrote skills from the
   request (run 39594020075, 3 runs per task): status task 3/3 (two runs probed the store once each),
   no-status 3/3, each no-status run ending with batches 1-5 loaded once; each no-status skill
-  shipped a script with a pending marker and a stop path. Run by Lightning (run 39601418222, 4 runs
-  per skill): 6 of 12 passed (per skill 2/4, 0/4, 4/4). In 4 of them session 2 ran nothing and
-  probed nothing; one ran only step 6; one probed the store (2 probes) and then ran 6-8. With the
-  rule's first wording, which had no resolve path (run 39591442902, skills from run 39585338002), 5
-  of 12 passed, each with ran = 1-5 and no probes. The skill MiniMax wrote with dao before the rule
+  shipped a script with a pending-type marker and a stop path. Run by Lightning (run 39601418222, 4
+  runs per skill): 6 of 12 passed (per skill 2/4, 0/4, 4/4). In 4 of them session 2 ran nothing and
+  probed nothing; one ran only step 6; one probed the store (2 probes) and ran 6-8. With the rule's
+  first wording, which had no resolve path (run 39591442902, skills from run 39585338002), 5 of 12
+  passed, each with ran = 1-5 and no probes. The skill MiniMax wrote with dao before the rule
   (`mm-dao-a`, runs 39394182506 and 39405633274) passed 2 of 10 on Lightning, neither by stopping at
   batch 5. Small n, descriptive only.
 
