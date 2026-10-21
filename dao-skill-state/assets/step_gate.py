@@ -55,7 +55,7 @@ def main(argv):
         print(f"resolved step {argv[1]}: {argv[2]}")
     elif len(argv) > 3 and argv[0] == "run" and argv[2] == "--":
         step, command = argv[1], argv[3:]
-        if False and state["pending"] is not None:
+        if state["pending"] is not None:
             stop(f"step {state['pending']} failed or was cut off; whether it took effect is unknown.")
         if step in state["done"]:
             print(f"SKIP step {step}: already done")
