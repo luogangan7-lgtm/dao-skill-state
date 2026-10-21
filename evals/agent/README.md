@@ -384,6 +384,18 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   passed, each with ran = 1-5 and no probes. The skill MiniMax wrote with dao before the rule
   (`mm-dao-a`, runs 39394182506 and 39405633274) passed 2 of 10 on Lightning, neither by stopping at
   batch 5. Small n, descriptive only.
+- Cost of that rule for the writer, MiniMax with dao. Before it (run 39198153129, 5 runs per task)
+  no status-task skill shipped a script and 3 of 5 no-status skills did (315-365 lines); median
+  maker turns 13 and 24, median maker time 111 s and 171 s. With it (runs 39585338002 and
+  39594020075, 6 per task): status-task scripts in 4 of 6 (up to 847 lines), no-status scripts in 6
+  of 6 (413-602 lines), median turns about 32 and 40, time about 430 s and 385 s. A candidate
+  sentence ("keep the script to what the rule needs, a few dozen lines ... a fixed-steps skill needs
+  no such script", branch `skill/small-step-script`, runs 39606904444 and 39614111245, 6 per task)
+  brought status-task scripts to 2 of 6, no-status scripts to 257-466 lines (median about 310) and
+  median turns to about 26 and 28, but no script came near a few dozen lines, and 2 of the 12 runs
+  refused at the start of session 1 (one on a mismatch between its helper and the status command's
+  exit codes, one treating a missing state file as an unknown run), against none in the 22 runs
+  before. Not merged. Small n, descriptive only.
 
 ### Limits
 
