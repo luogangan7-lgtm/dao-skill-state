@@ -397,6 +397,18 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   stopped on a mismatch between its helper and the status command's exit codes, one treated a
   missing state file as an unknown run; the 22 earlier runs had no such stop. Not merged. Small n,
   descriptive only.
+- A 77-line reference script in the meta-skill (`assets/step_gate.py`, linked from the state
+  contract with "copy it and adapt it rather than writing a larger one"; branch
+  `skill/step-gate-template`, PR #87, not merged), MiniMax with dao, 3 runs per task. First version
+  (run 39621795655): no-status 3/3, scripts 107, 125 and 269 lines (two adapted from the reference);
+  status task 1/3, two of its skills wrote a `step_gate.py` although that task has a status query,
+  one session tried it with a made-up step that loaded a batch the runbook does not have, one ran
+  nothing in session 1, citing a path mismatch for its script, the pass probed the store twice. With
+  "for stateful skills only ... never try it on the real system" added (run 39628099379): no-status
+  3/3, scripts 228, 270 and 305 lines; status task 2/3 with no scripts, the third rep's writer
+  produced no skill. Across both, no-status scripts were 107-305 lines against 413-602 with the rule
+  alone, and the status task passed 3 of 6 against 6 of 6 (one of the three losses is a writer that
+  produced no skill, with no script involved). Small n, descriptive only.
 
 ### Limits
 
