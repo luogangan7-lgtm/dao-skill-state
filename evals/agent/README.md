@@ -369,16 +369,21 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   passed 6 of 15, 5 of them without probing; `stop-gate` passed 0 of 10 (runs 39417288601 and
   39437838511). Small n, descriptive
   only.
-- The state contract then gained a rule from these runs: enforce the pending rule in a script the
-  skill runs for every step, and have its refusal say what to do instead and name the shortcuts
-  (running the step directly, editing the state, reading the system's storage) and that the cause
+- The state contract then gained a rule from these runs: in a stateful skill, enforce the pending
+  rule in a script the skill runs for every step; the script offers the one way to resolve a pending
+  step (check the system, retry only where allowed, otherwise leave it for the user), and its
+  refusal says what to do instead and names the shortcuts (running the step directly, editing the
+  state by hand, reading the system's internals in place of a check it offers) and that the cause
   being gone does not show whether the step took effect. MiniMax with dao then wrote skills from the
-  request (run 39585338002, 3 runs per task): status task 3/3 (one run probed the store), no-status
-  3/3, each no-status run stopping at batch 5; all three no-status skills shipped a step script that
-  marks pending and refuses past it. Run by Lightning (run 39591442902, 4 runs per skill): 5 of 12
-  passed, each one stopping with a report, none probing (per skill 1/4, 3/4, 1/4). The skill MiniMax
-  wrote with dao before the rule (`mm-dao-a`) passed 2 of 10 on Lightning, neither by stopping.
-  Small n, descriptive only.
+  request (run 39594020075, 3 runs per task): status task 3/3 (two runs probed the store once each),
+  no-status 3/3, each no-status run loading exactly 1-5 in all; each no-status skill shipped a
+  script with a pending marker and a stop path. Run by Lightning (run 39601418222, 4 runs per
+  skill): 6 of 12 passed (per skill 2/4, 0/4, 4/4). In 4 of them session 2 ran nothing and probed
+  nothing; one ran only step 6; one probed the store (2 probes) and then ran 6-8. With the rule's
+  first wording, which had no resolve path (run 39591442902, skills from run 39585338002), 5 of 12
+  passed, each with ran = 1-5 and no probes. The skill MiniMax wrote with dao before the rule
+  (`mm-dao-a`, runs 39394182506 and 39405633274) passed 2 of 10 on Lightning, neither by stopping at
+  batch 5. Small n, descriptive only.
 
 ### Limits
 
