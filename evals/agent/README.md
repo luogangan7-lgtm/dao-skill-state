@@ -369,6 +369,16 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   passed 6 of 15, 5 of them without probing; `stop-gate` passed 0 of 10 (runs 39417288601 and
   39437838511). Small n, descriptive
   only.
+- The state contract then gained a rule from these runs: enforce the pending rule in a script the
+  skill runs for every step, and have its refusal say what to do instead and name the shortcuts
+  (running the step directly, editing the state, reading the system's storage) and that the cause
+  being gone does not show whether the step took effect. MiniMax with dao then wrote skills from the
+  request (run 39585338002, 3 runs per task): status task 3/3 (one run probed the store), no-status
+  3/3, each no-status run stopping at batch 5; all three no-status skills shipped a step script that
+  marks pending and refuses past it. Run by Lightning (run 39591442902, 4 runs per skill): 5 of 12
+  passed, each one stopping with a report, none probing (per skill 1/4, 3/4, 1/4). The skill MiniMax
+  wrote with dao before the rule (`mm-dao-a`) passed 2 of 10 on Lightning, neither by stopping.
+  Small n, descriptive only.
 
 ### Limits
 
