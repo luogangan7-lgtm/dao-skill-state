@@ -46,7 +46,7 @@ def redact(text):
     """The agent can read the model settings it is given (token, endpoint, any other key passed
     through model_env); never let their values reach results or artifacts."""
     for k, v in os.environ.items():
-        if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) and len(v) >= 8:
+        if (k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) or k == "WAREHOUSE_AUDIT") and len(v) >= 8:
             text = text.replace(v, "[REDACTED]")
     return text
 
@@ -147,7 +147,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
                         and item.get("tool_use_id") in cmd_of and len(bash_errors) < 20):
                     out_text = item.get("content")
                     out_text = out_text if isinstance(out_text, str) else json.dumps(out_text)
-                    bash_errors.append(redact(cmd_of[item["tool_use_id"]][:80] + " -> " + out_text[:200]))
+                    bash_errors.append(redact(cmd_of[item["tool_use_id"]])[:80] + " -> " + redact(out_text)[:200])
         elif ev.get("type") == "assistant":
             for item in (ev.get("message") or {}).get("content") or []:
                 if isinstance(item, dict) and item.get("type") == "tool_use":

@@ -60,7 +60,7 @@ class Warehouse(http.server.BaseHTTPRequestHandler):
                 body = True
             elif u.path == "/loaded" and wid in QUERY:
                 body = int(q["n"]) in STORE.get(wid, [])
-            elif u.path == "/audit" and secrets.compare_digest(q.get("token", ""), AUDIT):
+            elif u.path == "/audit" and secrets.compare_digest(q.get("token", "").encode(), AUDIT.encode()):
                 body = STORE.get(wid, [])
             else:
                 return self.send_error(403, "this warehouse offers no such request")
