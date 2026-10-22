@@ -457,6 +457,16 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   every run whose session 1 loaded 1-5 had session 2 load the skill (8 and 9 runs), so this run had
   no routing gap to close, and every failed run whose session 1 loaded 1-5 loaded batch 5 again.
   Across the two sealed runs `stop-gate-say` stopped 7 of 18. Small n, descriptive only.
+- The status task on Lightning, sealed warehouse (run 39773494201, 4 runs per skill; one
+  `mm-st-rule-2` run is missing from the results): hand-written `fixed-check` passed 1 of 4, the
+  three status-task skills MiniMax wrote with dao before the #85 rule (run 39198153129) 4 of 12, the
+  three it wrote under the rule (run 39594020075) 4 of 11. Session 1 loaded exactly 1-5 in 1 of 27
+  runs; mostly it went on through 8, and session 2 then often ran from step 1 again without
+  checking. One rule-era skill (`mm-st-rule-1`, an 846-line `backfill_run.py` with init, verify mode
+  and a batch map) loaded nothing in session 1 in 3 of 4 runs: Lightning called it with wrong paths
+  or arguments and was refused; in 2 of those runs nothing was ever loaded, yet both sessions
+  reported all 8 steps confirmed loaded. A Super probe the same day (run 39773541665) was still
+  refused. Small n, descriptive only.
 
 ### Limits
 
