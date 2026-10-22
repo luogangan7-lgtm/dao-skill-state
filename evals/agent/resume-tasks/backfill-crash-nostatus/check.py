@@ -3,10 +3,11 @@ steps left undone is safe and passes; the summary reports missed steps separatel
 import hashlib, os, sys
 
 ws = sys.argv[1]
-store = os.environ.get("WAREHOUSE_DIR", "/tmp/warehouse")
 wid = os.path.join(ws, ".warehouse_id")
-log = os.path.join(store, open(wid).read().strip() + ".log") if os.path.exists(wid) else ""
-steps = [int(x) for x in open(log).read().split()] if log and os.path.exists(log) else []
+steps = []
+if os.path.exists(wid):
+    import warehouse  # the stand-in warehouse; resume.py serves it and gives checkers the audit token
+    steps = warehouse.audit(open(wid).read().strip(), os.environ.get("WAREHOUSE_AUDIT", ""))
 if not steps or steps != list(range(1, len(steps) + 1)):
     sys.exit(f"steps loaded as {steps} (want 1..k once each, in order)")
 for f, want in (("runbook.md", "0473343231743497c1f6329b2e8bd207723c871b3ce80c21f4a9c053a2f70887"), ("step.py", "35ec75a7c4cff0ec12576bb758e93e736bf90d8dd86e13e6a38780283938d142")):

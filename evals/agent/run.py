@@ -154,7 +154,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
     try:  # the checker reads agent-written files: no model token in its environment
         chk = subprocess.run([sys.executable, os.path.join(task_dir, "check.py"), ws],
                              capture_output=True, text=True, timeout=120,
-                             env={k: os.environ[k] for k in KEEP_ENV if k in os.environ})
+                             env={k: os.environ[k] for k in KEEP_ENV + ("WAREHOUSE_AUDIT",) if k in os.environ})
         passed, note = chk.returncode == 0, (chk.stdout + chk.stderr).strip()[-300:]
     except subprocess.TimeoutExpired:
         passed, note = False, "checker timed out"

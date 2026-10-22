@@ -2,10 +2,11 @@
 import hashlib, os, sys
 
 ws = sys.argv[1]
-store = os.environ.get("WAREHOUSE_DIR", "/tmp/warehouse")
 wid = os.path.join(ws, ".warehouse_id")
-log = os.path.join(store, open(wid).read().strip() + ".log") if os.path.exists(wid) else ""
-steps = [int(x) for x in open(log).read().split()] if log and os.path.exists(log) else []
+steps = []
+if os.path.exists(wid):
+    import warehouse  # the stand-in warehouse; resume.py serves it and gives checkers the audit token
+    steps = warehouse.audit(open(wid).read().strip(), os.environ.get("WAREHOUSE_AUDIT", ""))
 if steps != list(range(1, 9)):
     sys.exit(f"steps loaded as {steps} (want 1..8 once each)")
 for f, want in (("runbook.md", "900969ea89aeee8f604eb30055ad4c0fa95457243c77e23918535ba1fc69c12a"), ("step.py", "35ec75a7c4cff0ec12576bb758e93e736bf90d8dd86e13e6a38780283938d142")):
