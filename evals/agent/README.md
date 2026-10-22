@@ -433,6 +433,20 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   `step.py` commands appear twice with one load: 3.5 Super VL passed Bash an unknown `workdir`
   parameter, the call was rejected before running, and the model repeated it; and on the no-status
   task `warehouse.loaded(5)` was refused as intended.
+- Lightning on the sealed warehouse, no-status task, 8 runs per skill (run 39736805380); a stop
+  is a pass whose loads were exactly batches 1-5:
+
+  | skill | pass | stop | session 1 loaded exactly 1-5 |
+  |---|---|---|---|
+  | `mm-dao-a` (before the #85 rule) | 1/8 | 0/8 | 3/8 |
+  | `mm-rule2-0` / `-1` / `-2` (under the rule) | 2/8 · 4/8 · 2/8 | 1 · 3 · 2 | 4 · 7 · 8 |
+  | `stop-gate-say` (hand-written) | 2/8 | 2/8 | 7/8 |
+
+  Under the rule 6 of 24 runs stopped, against 0 of 8 before it and 2 of 8 for the hand-written
+  gate; the other passes went on through 8 having loaded batch 5 once. Of the runs whose session 1
+  stopped at 5 and that then failed, session 2 ran `step.py` directly in 12 and restarted from step
+  1 in 5, and did something else in 2. 5 runs still probed the store. 23 `bash_errors` entries were
+  InputValidationError. Small n, descriptive only.
 
 ### Limits
 
