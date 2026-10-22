@@ -447,14 +447,15 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   stopped at 5 and that then failed, session 2 ran `step.py` directly in 12 and restarted from step
   1 in 5, and did something else in 2. 5 runs still probed the store. 23 `bash_errors` entries were
   InputValidationError. Small n, descriptive only.
-- Why session 2 failed there: of the 29 runs whose session 1 loaded exactly 1-5, the 18 whose
-  session 2 loaded the skill stopped 8 times, the 11 whose session 2 did not load it never stopped.
-  A pointer in the state file (`stop-gate-ptr`: `stop-gate-say` whose script writes "kept by the
-  backfill-runbook skill ... read its SKILL.md and continue only through its scripts/run_step.py"
-  into the progress file; run 39757471153, 10 runs each, sealed warehouse) did not help:
-  `stop-gate-say` stopped 5 of 10 and `stop-gate-ptr` 4 of 10, and in both arms every run whose
-  session 1 loaded 1-5 had session 2 load the skill (8 and 9 runs), so in this run there was no
-  routing gap to close. The failures that remain loaded the skill and still loaded batch 5 again.
+- How session 2 loading the skill relates to stopping, in that run: of the 29 runs whose session 1
+  loaded exactly 1-5, the 18 whose session 2 loaded the skill stopped 8 times, the 11 whose session
+  2 did not load it never stopped. A pointer in the state file (`stop-gate-ptr`: `stop-gate-say`
+  whose script writes a note into the progress file saying the progress is kept by the
+  backfill-runbook skill and to read that skill's SKILL.md and continue only through its
+  scripts/run_step.py) stopped no more often: Lightning, no-status task, sealed warehouse, 10 runs
+  each (run 39757471153), `stop-gate-say` stopped 5 of 10 and `stop-gate-ptr` 4 of 10. In both arms
+  every run whose session 1 loaded 1-5 had session 2 load the skill (8 and 9 runs), so this run had
+  no routing gap to close, and every failed run whose session 1 loaded 1-5 loaded batch 5 again.
   Across the two sealed runs `stop-gate-say` stopped 7 of 18. Small n, descriptive only.
 
 ### Limits
