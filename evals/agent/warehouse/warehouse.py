@@ -1,19 +1,36 @@
-"""A stand-in external warehouse for the resume eval: load(n) appends batch n to a log outside the
-workspace, keyed by the workspace's .warehouse_id, so the agent sees no local trace of what loaded.
-Installed into the runner's Python by the agent-eval workflow."""
-import os
+"""A stand-in external warehouse for the resume eval. The harness (resume.py) serves it on localhost
+and keeps what loaded in its own memory, so an agent can load batches but cannot read the store.
+loaded(n) answers only where the task's runbook names a status query; audit() needs the harness's
+token, which the agent's environment does not carry. Installed into the runner's Python by the
+agent-eval workflow; the workspace's .warehouse_id names the run."""
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
-STORE = os.environ.get("WAREHOUSE_DIR", "/tmp/warehouse")
+URL = "http://127.0.0.1:47123"
+
+
+def _get(path, **q):
+    try:
+        with urllib.request.urlopen(f"{URL}/{path}?{urllib.parse.urlencode(q)}", timeout=10) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"warehouse refused {path}: {e.reason}") from None
+
+
+def _wid():
+    return open(".warehouse_id").read().strip()
 
 
 def load(n):
-    os.makedirs(STORE, exist_ok=True)
-    wid = open(".warehouse_id").read().strip()
-    with open(os.path.join(STORE, wid + ".log"), "a") as f:
-        f.write(f"{n}\n")
+    _get("load", wid=_wid(), n=n)
 
 
 def loaded(n):
-    wid = open(".warehouse_id").read().strip()
-    p = os.path.join(STORE, wid + ".log")
-    return os.path.exists(p) and str(n) in open(p).read().split()
+    return _get("loaded", wid=_wid(), n=n)
+
+
+def audit(wid, token):
+    """Batches loaded for run wid, in load order (the harness and the task checkers only)."""
+    return _get("audit", wid=wid, token=token)
