@@ -236,9 +236,9 @@ def main():
                        "clean_stop": after1 == expect_s1(troot), "progress_file_after_s1": progress1,
                        "progress_after_s1": progress_text,
                        "reruns": len(ran) - len(set(ran)), "missed": sorted(set(range(1, 9)) - set(ran)),
-                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
+                       "s1": {k: r1.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "bash_errors")},
                        "probes": probed(r1, r2),
-                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash")},
+                       "s2": {k: r2.get(k) for k in ("turns", "duration_s", "skill_calls", "final", "error", "bash", "bash_errors")},
                        "s1_tokens": tokens(r1), "s2_tokens": tokens(r2),
                        "hook": [r1.get("hook"), r2.get("hook")],
                        "s2_loaded_runbook": (made[1] if made else "backfill-runbook") in json.dumps(r2.get("skill_calls"))}

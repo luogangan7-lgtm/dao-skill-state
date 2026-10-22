@@ -133,6 +133,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
         out, rc = "", f"error: {e.strerror}"
     wall = time.time() - t0
     res, tools, skill_calls, bash = {}, {}, [], []
+    cmd_of, bash_errors = {}, []  # tool_use id -> command; failed Bash calls and what they said
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -140,13 +141,23 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
             continue
         if ev.get("type") == "result":
             res = ev
+        elif ev.get("type") == "user":
+            for item in (ev.get("message") or {}).get("content") or []:
+                if (isinstance(item, dict) and item.get("type") == "tool_result" and item.get("is_error")
+                        and item.get("tool_use_id") in cmd_of and len(bash_errors) < 20):
+                    out_text = item.get("content")
+                    out_text = out_text if isinstance(out_text, str) else json.dumps(out_text)
+                    bash_errors.append(redact(cmd_of[item["tool_use_id"]][:80] + " -> " + out_text[:200]))
         elif ev.get("type") == "assistant":
             for item in (ev.get("message") or {}).get("content") or []:
                 if isinstance(item, dict) and item.get("type") == "tool_use":
                     name = item.get("name", "?")
                     tools[name] = tools.get(name, 0) + 1
+                    if name == "Bash":
+                        inp = item.get("input") or {}
+                        cmd_of[item.get("id")] = ("[unsandboxed] " if inp.get("dangerouslyDisableSandbox") else "") + str(inp.get("command", ""))
                     if name == "Bash" and len(bash) < 40:  # what the extra turns were spent on
-                        bash.append(redact(str((item.get("input") or {}).get("command", "")))[:120])
+                        bash.append(redact(cmd_of[item.get("id")])[:120])
                     if name == "Skill":
                         skill_calls.append(str((item.get("input") or {}).get("skill") or (item.get("input") or {}).get("command") or "?"))
                     elif name == "Read" and "/.claude/skills/" in str((item.get("input") or {}).get("file_path", "")):
@@ -166,7 +177,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
     u = res.get("usage") or {}
     return {"pass": passed, "check": redact(note), "hook": hook, "ws": ws,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
-            "skill_calls": skill_calls, "tools": tools, "bash": bash,
+            "skill_calls": skill_calls, "tools": tools, "bash": bash, "bash_errors": bash_errors,
             # on an API error (quota window, rate limit) keep what the host said, redacted
             # the host's last message: why a run stopped (asked a question, wrote elsewhere, gave up)
             "final": redact(str(res.get("result") or ""))[-600:],
