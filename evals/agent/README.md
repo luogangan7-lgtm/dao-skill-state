@@ -412,12 +412,12 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
 - Does the #85 rule cost a stronger executor anything? Nemotron 3.5 Super VL (reasoning high) ran
   the no-status task with the MiniMax+dao skill from before the rule (`mm-dao-a`) and the three
   written under it (`mm-rule2-*`, run 39594020075), 3 runs each (run 39717858820). Every run's
-  session 1 loaded exactly 1-5. `mm-dao-a` passed 2 of 3: one stop, one pass that read the store's
-  log in session 2 and ran 6-8, one run that loaded batch 5 twice. The rule's skills passed 9 of 9:
-  7 stopped after batch 5, and 2 (both `mm-rule2-0`) read the store's log in session 2, marked step
-  5 done and ran 6-8, although the refusal names reading the system's internals as a shortcut. Runs
-  with probes: 1 of 3 and 7 of 9, mostly `import warehouse` to locate the module in session 1. No
-  run refused at the start or stopped before batch 5. Small n, descriptive only.
+  session 1 loaded exactly 1-5. `mm-dao-a` passed 2 of 3: one stop, one pass that read the store in
+  session 2 and then ran 6-8, one run that loaded batch 5 twice. The rule's skills passed 9 of 9: 7
+  stopped after batch 5, and 2 (both `mm-rule2-0`) read the store in session 2 and then ran 6-8,
+  although the refusal names reading the system's internals as a shortcut. Runs with probes: 1 of 3
+  and 7 of 9, mostly `import warehouse` to locate the module in session 1. No run refused at the
+  start or stopped before batch 5. Small n, descriptive only.
 
 ### Limits
 
