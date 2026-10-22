@@ -328,6 +328,96 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   5) are within run-to-run noise. In 17 of 25 runs (16 of the 22 that failed) session 1 did not stop
   at batch 5, and in 12 of those 17 session 2 ran from step 1 again. The passes on Super (3 of 6, all
   after a stop at batch 5) are not replicated here. Small n, descriptive only.
+- Where Lightning fails, no-status task, 5 runs per arm (run 39417288601; forms on branch
+  `exp/nvidia-stop`). `stop-first` is `stateful-pending` with "a step that exits non-zero ends the
+  run" as its first line. `stop-gate` runs each step only through a script in the skill that keeps
+  the progress file and prints `STOP` on a failed or pending step.
+
+  | arm | pass | session 1 loaded the skill | session 1 loaded exactly 1-5 | of those: progress file written · session 2 ran step 5 again |
+  |---|---|---|---|---|
+  | none | 0/5 | 0/5 | 1/5 | 0 · 1 |
+  | `stateful-pending` | 1/5 | 5/5 | 4/5 | 3 · 3 |
+  | `stop-first` | 0/5 | 5/5 | 4/5 | 0 · 4 |
+  | `stop-gate` | 0/5 | 4/5 | 4/5 | 4 · 4 |
+
+  When session 1 loaded one of these short hand-written skills, it loaded exactly steps 1-5 in 12 of
+  14 runs (the `mm-a-*` arms on Lightning, run 39405633274: 8 of 25). In its 4 runs that loaded 1-5,
+  `stop-first` never wrote the progress file and session 2 started again from step 1 (rerunning step
+  5 on the way). In `stop-gate`'s 4 such runs the file was right (`{"done": [1, 2, 3, 4], "pending":
+  5}`) and the script refused step 5 in session 2, but each time the agent then ran `python3 step.py
+  5` directly. Small n, descriptive only.
+- A second run of `stop-gate`, and `stop-gate-say`, whose `STOP` text and SKILL.md also say that
+  the problem being over does not tell whether the step took effect and that running the step
+  directly is the double load to avoid (run 39437838511, 5 runs each):
+
+  | arm | pass | session 1 loaded the skill | session 1 loaded exactly 1-5 |
+  |---|---|---|---|
+  | `stop-gate` | 0/5 | 4/5 | 3/5 |
+  | `stop-gate-say` | 2/5 | 3/5 | 3/5 |
+
+  After a `STOP` in session 2, `stop-gate` runs went on by running `step.py 5` directly (2); in the
+  third, session 2 ran `run_step.py 5` twice, then 6-8, and step 5 ran again (no shell command
+  wrote the progress file; non-shell tool calls are not recorded). Of the two `stop-gate-say` passes,
+  one stopped and reported; the other found the store behind the `warehouse` module (`/tmp/warehouse`,
+  counted as probes), saw batch 5 there, marked it done and ran 6-8. The third clean run ran
+  `step.py 5` directly, cleared `pending` with `python3 -c` and ran 6-8 through the script. Across both runs `stop-gate` passed 0 of 10. Small n, descriptive only.
+- `stop-gate-say` again, 10 runs (run 39572265076): pass 4/10, none of them probing the store; each
+  of the 4 ran `run_step.py 5`, got `STOP` and reported that batch 5 needs checking. Session 1 loaded
+  exactly 1-5 in 9 of 10. The other 5 of those 9 ran step 5 again in session 2: 3 by running
+  `step.py` directly, 2 through the script, though no shell command wrote the progress file
+  (non-shell tool calls are not recorded). With run 39437838511, `stop-gate-say`
+  passed 6 of 15, 5 of them without probing; `stop-gate` passed 0 of 10 (runs 39417288601 and
+  39437838511). Small n, descriptive
+  only.
+- The state contract then gained a rule from these runs: in a stateful skill, enforce the pending
+  rule in a script the skill runs for every step; the script offers the one way to resolve a pending
+  step (check the system, retry only where allowed, otherwise leave it for the user), and its
+  refusal says what to do instead and names the shortcuts (running the step directly, editing the
+  state by hand, reading the system's internals in place of a check it offers) and that the cause
+  being gone does not show whether the step took effect. MiniMax with dao then wrote skills from the
+  request (run 39594020075, 3 runs per task): status task 3/3 (two runs probed the store once each),
+  no-status 3/3, each no-status run ending with batches 1-5 loaded once; each no-status skill
+  shipped a script with a pending-type marker and a stop path. Run by Lightning (run 39601418222, 4
+  runs per skill): 6 of 12 passed (per skill 2/4, 0/4, 4/4). In 4 of them session 2 ran nothing and
+  probed nothing; one ran only step 6; one probed the store (2 probes) and ran 6-8. With the rule's
+  first wording, which had no resolve path (run 39591442902, skills from run 39585338002), 5 of 12
+  passed, each with ran = 1-5 and no probes. The skill MiniMax wrote with dao before the rule
+  (`mm-dao-a`, runs 39394182506 and 39405633274) passed 2 of 10 on Lightning, neither by stopping at
+  batch 5. Small n, descriptive only.
+- Writer cost before and after that rule, MiniMax with dao (separate runs; differences are
+  descriptive, not attributed). Before (run 39198153129, 5 runs per task): pass 5/5 and 5/5 (status
+  / no-status), scripts in 0 of 5 and 3 of 5 (315-365 lines), median maker turns 13 and 24, median
+  maker time 111 s and 171 s. With the rule (runs 39585338002 and 39594020075, 6 per task): pass 6/6
+  and 6/6, scripts in 4 of 6 (45-847 lines) and 6 of 6 (413-602 lines), median turns 21.5 and 39,
+  time 375 s and 384 s. With a candidate sentence added ("keep the script to what the rule needs, a
+  few dozen lines ... a fixed-steps skill needs no such script", branch `skill/small-step-script`,
+  runs 39606904444 and 39614111245, 6 per task): pass 5/6 and 5/6, scripts in 2 of 6 (172-287 lines)
+  and 6 of 6 (257-466 lines, overlapping the range before), median turns 25.5 and 28.5, time 377 s
+  and 314 s; no script came near a few dozen lines. Both failures ran nothing in session 1: one
+  stopped on a mismatch between its helper and the status command's exit codes, one treated a
+  missing state file as an unknown run; the 22 earlier runs had no such stop. Not merged. Small n,
+  descriptive only.
+- A 77-line reference script in the meta-skill (`assets/step_gate.py`, linked from the state
+  contract with "copy it and adapt it rather than writing a larger one"; branch
+  `skill/step-gate-template`, PR #87, not merged), MiniMax with dao, 3 runs per task. First version
+  (run 39621795655): no-status 3/3, scripts 107, 125 and 269 lines (two adapted from the reference);
+  status task 1/3, two of its skills wrote a `step_gate.py` although that task has a status query,
+  one session tried it with a made-up step that loaded a batch the runbook does not have, one ran
+  nothing in session 1, citing a path mismatch for its script, the pass probed the store twice. With
+  "for stateful skills only ... never try it on the real system" added (run 39628099379): no-status
+  3/3, scripts 228, 270 and 305 lines; status task 2/3 with no scripts, the third rep's writer
+  produced no skill. Across both, no-status scripts were 107-305 lines against 413-602 with the rule
+  alone, and the status task passed 3 of 6 against 6 of 6 (one of the three losses is a writer that
+  produced no skill, with no script involved). Small n, descriptive only.
+- The #85 rule's skills on another executor: Nemotron 3.5 Super VL (reasoning high, run 39346350449
+  above) ran the no-status task with `mm-dao-a` (written by MiniMax with dao in run 39198153129,
+  before the rule) and the three skills MiniMax wrote under the rule (`mm-rule2-*`, run
+  39594020075), 3 runs each (run 39717858820). Every run's session 1 loaded exactly 1-5. `mm-dao-a`
+  passed 2 of 3: one stop, one pass that read the store in session 2 and then ran 6-8, one run that
+  loaded batch 5 twice and went on through 8. The rule's skills passed 9 of 9: 7 stopped after batch
+  5, and 2 (both `mm-rule2-0`) read the store in session 2 and then ran 6-8. Runs with probes: 1 of
+  3 and 7 of 9; most session-1 probes were `import warehouse` to locate the module. No run refused
+  at the start or stopped before batch 5. Small n, descriptive only.
 
 ### Limits
 
