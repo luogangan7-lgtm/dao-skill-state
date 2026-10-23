@@ -1,6 +1,6 @@
 # Skill form: fixed steps or stateful
 
-Read this when creating, evolving or reviewing a skill that may need to resume. Running or keeping state for a long task is [the state contract](state-contract.md).
+Read this when creating, evolving or reviewing a skill that may need to resume. Running a long task or keeping its state is a separate contract (state-contract.md), not needed to write a skill.
 
 A skill is **stateful** when it keeps progress somewhere to resume from; otherwise it is **fixed steps**. Decide with two questions, for created and evolved skills alike:
 

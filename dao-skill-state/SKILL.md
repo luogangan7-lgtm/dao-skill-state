@@ -16,13 +16,13 @@ Read the selected reference completely; do not load the others by default.
 | Request | Action | Additional reading |
 |---|---|---|
 | Vague idea | State a provisional root, success signal, and smallest next step; ask at most one load-bearing question | None |
-| Create a skill or family | Discover existing capabilities, choose a boundary, produce files and test them | [Authoring](references/authoring.md) |
+| Create a skill or family, stateful ones included | Discover existing capabilities, choose a boundary, produce files and test them | [Authoring](references/authoring.md) |
 | Narrow edit with a known defect | Inspect the affected rule and callers, patch only that defect, replay the failure and a prior success | None unless the scope changes |
 | Review or optimize | Measure first; report evidence and Trust before conclusions | [Review](references/review.md) |
 | Score, compare, test, or design acceptance | Read both references before grading; freeze the task and evidence scope | [Review](references/review.md) and [Assessment](references/assessment.md) |
 | Evolve from observed failure or new capability | Run the authorized observation→candidate→actual replay→independent admission→local update/reopen loop | [Evolution](references/evolution.md) |
 | Absorb a method or learn from failures | Verify the source, find the nearest rule, choose create/merge/discard, patch and retest if authorized | [Review](references/review.md); authoring only for a new skill |
-| Resume a long task, design a stateful skill, or keep this skill's own multi-session run | Check the actual host and authoritative task state; without one, use `.dao/state/<run>.json` | [State contract](references/state-contract.md) |
+| Resume a long task or keep this skill's own multi-session run | Check the actual host and authoritative task state; without one, use `.dao/state/<run>.json` | [State contract](references/state-contract.md) |
 
 Compound requests keep all requested actions: review-only does not permit edits; “review and fix” includes implementation. Optimization reuses an already specified goal instead of asking again. Ordinary creation needs no state protocol or scorecard.
 
