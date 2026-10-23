@@ -482,6 +482,15 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   3 of 3, but the status task 1 of 3; in both failures the runner ran and nothing was loaded, one
   final reply saying the step command needed a `--batch` argument to be fixed in runbook.md, the
   other session grepping the runner for placeholder code. Small n, descriptive only.
+- Is it the entry's length? `check-runner-long` is `check-runner` with the same script and the same
+  instructions, its SKILL.md expanded from 130 to 939 words with background, output meanings,
+  failure handling, reporting and troubleshooting (run 39884891166, Lightning, sealed warehouse, 8
+  runs each): `check-runner` passed 5 of 8 (one run tampered) and `check-runner-long` 7 of 8, a
+  difference too small to read at this n; in all 16 runs some session called the runner, and runs
+  with no direct `step.py N` command were 5 of 8 and 7 of 8. The longer entry did not lower the pass
+  rate. Across three runs `check-runner` passed 15 of 24. The rule-era runners above differ from it
+  in size (227-639 lines against 21 for `run_checked.py`) and in being called with arguments or
+  options; `mm-st-cr-1` also needed a check plan the agent writes first. Small n, descriptive only.
 
 ### Limits
 
