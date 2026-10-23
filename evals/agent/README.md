@@ -505,6 +505,13 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   1175-1629 words, scripts 439-626 → 563-1176 lines, and 2 of 3 writes ran to the 1200 s limit (none
   on main). The status-task skills came out somewhat shorter and the no-status ones longer. Small n,
   descriptive only.
+- Regression check of B and D on main after these rule changes (2e2758b, MiniMax, dao only, 3 runs
+  per task). B (run 39947248661): created 9/9 and all valid; using the created skills passed 8/9
+  with the skill installed and 9/9 with the hook (after #43: 8/9 and 8/9); creation took 3-39 turns,
+  mean 23.4 (after #43: 18), and 139-699 s. D over-fix trap `csv-region` (run 39947271422): 3/3
+  clean, as before (8/8); the evolvers took 23 and 28 turns and one ran to the 1200 s limit while
+  still leaving a candidate (before: 12-15 turns on average). Results held; the writer and evolver
+  took more turns. Small n, descriptive only.
 
 ### Limits
 
