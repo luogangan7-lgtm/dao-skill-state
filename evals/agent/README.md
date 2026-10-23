@@ -537,6 +537,19 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   skills looked for an approval marker format of their own (an `[APPROVAL: ...]` annotation, a line
   before the step) and missed the runbook's prose, and the third asked the user after running step
   6. Small n, descriptive only.
+- Invented input formats, again. Failures seen so far include a generated skill (or its helper)
+  expecting a format the request never fixed: a `## Check command` heading (#62), runners
+  mis-reading the runbook (above), and on `backfill-approval` an `[APPROVAL: ...]` annotation or a
+  line before the step; in one such run (39999144369, rep 1) session 1's final reply says the
+  runbook's approval note "is descriptive only, not a parsed approval gate", and session 1 loaded
+  steps 1 to 8. A candidate line in authoring.md's trial step (branch `skill/varied-trial`, not
+  merged) asked for one trial input that states each thing the request mentions in other words,
+  layout or position than the skill's own examples. Nemotron 3.5 Super VL as writer,
+  `backfill-approval`, 4 runs each: candidate (run 40022343248) 1 of 4 passed and 3 loaded past step
+  5 in session 1 (one of them after its writer ran to the 1200 s limit); main (run 40022365599) 1 of
+  4 passed, 2 loaded past step 5, and one more stopped after 5 in both sessions. Approval-marker
+  wording appeared alongside in 4 of 4 candidate skills and 2 of 4 on main (text search). The pass
+  count was the same, 1 of 4 each. Small n, descriptive only.
 
 ### Limits
 
