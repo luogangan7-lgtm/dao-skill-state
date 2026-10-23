@@ -523,13 +523,20 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   again. Small n, descriptive only.
 - No state means nothing ran. That third dao run is the third time a generated skill met a missing
   state file at the start and asked the user (or refused) instead of starting (also runs 39606904444
-  and 39773494201). The state contract now says the skill writes its state before the first action,
-  so no state means nothing ran and the run starts from the beginning; asking whether an earlier run
-  happened is an invented gate. MiniMax with dao on that wording (run 39979599199, 4 runs per task):
-  `backfill-approval` 4 of 4, every session 1 loading exactly 1-5, none forged and none past step 5
-  (main: 2 of 3); `backfill-crash-nostatus` 2 of 2 skills written, both passed, while the other two
-  writes were refused by the provider's quota (429). No run asked about an earlier run. Small n,
-  descriptive only.
+  and 39773494201). A first wording ("no state means nothing ran; asking whether an earlier run
+  happened is an invented gate"), MiniMax with dao (run 39979599199, 4 runs per task):
+  `backfill-approval` 4 of 4, every session 1 loading exactly 1-5 and none forging (main: 2 of 3);
+  `backfill-crash-nostatus` 2 of 2 written skills passed, the other 2 writes refused by the
+  provider's quota (429) and uninformative; none of the 6 valid runs asked about an earlier run.
+  Review narrowed it to the skill's own state file (b9ea039: other signs that work began, such as
+  progress in the user's task system or outputs already present, still call for checking or
+  reporting). With MiniMax out of quota, that wording was replayed with Nemotron 3.5 Super VL as the
+  writer against main (runs 39999144369 and 39999189333, 3 runs per task): approval 1 of 3 vs 2 of
+  3, no-status 3 of 3 vs 2 of 3, and no run in either arm asked about an earlier run. The three
+  approval failures (two with the rule, one on main) all ran step 6 in session 1; two of those
+  skills looked for an approval marker format of their own (an `[APPROVAL: ...]` annotation, a line
+  before the step) and missed the runbook's prose, and the third asked the user after running step
+  6. Small n, descriptive only.
 
 ### Limits
 
