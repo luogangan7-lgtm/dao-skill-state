@@ -482,6 +482,14 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   3 of 3, but the status task 1 of 3; in both failures the runner ran and nothing was loaded, one
   final reply saying the step command needed a `--batch` argument to be fixed in runbook.md, the
   other session grepping the runner for placeholder code. Small n, descriptive only.
+- Is it the entry's length? `check-runner-long` is `check-runner` with the same script and the same
+  instructions, its SKILL.md expanded from 130 to 939 words with background, output meanings,
+  failure handling, reporting and troubleshooting (run 39884891166, Lightning, sealed warehouse, 8
+  runs each): `check-runner` passed 5 of 8 and `check-runner-long` 7 of 8, and every run in both
+  arms called the runner. So a longer entry did not stop Lightning from following one argument-free
+  command; across three runs `check-runner` passed 15 of 24. What the rule-era runners above had in
+  addition was a large script and a setup the agent had to do itself (arguments, options, a check
+  plan file). Small n, descriptive only.
 
 ### Limits
 
