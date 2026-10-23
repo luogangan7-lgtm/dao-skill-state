@@ -57,7 +57,7 @@ pub struct Card {
     /// Hyphenated identifiers named in the body (`foo-bar`), sorted: candidate skill names.
     pub mentions: Vec<String>,
     /// fixed | stateful: whether the skill keeps progress somewhere to resume from (the
-    /// form standard in dao-skill-state/references/state-contract.md).
+    /// form standard in dao-skill-state/references/forms.md).
     #[serde(default)]
     pub form: String,
     /// The body lines (verbatim, trimmed, at most 6) that make it stateful.

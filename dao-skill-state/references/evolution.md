@@ -33,7 +33,7 @@ unrelated methods or the entire knowledge library.
    before seeing candidate grades. Make the smallest complete candidate in a
    package-external attempt directory; no speculative new platform or memory.
    A resume failure (repeated action, lost approval or position) changes the
-   skill's form only as the [form standard](state-contract.md#form-standard-created-and-third-party-skills-alike) says.
+   skill's form only as the [form standard](forms.md) says.
 3. **Consume.** Run both frozen base and candidate on the same inputs and matched
    environment. Re-read the actual candidate files; record the consumer hash,
    native return, artifact and criterion results for each required case. Keep

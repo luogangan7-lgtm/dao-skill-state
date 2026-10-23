@@ -28,6 +28,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py' -v
 - `references/review.md`：测量、E0–E4、Trust 和证据驱动改进。
 - `references/assessment.md`：仅评分/验收时加载；任务结果、对照增益、成本与覆盖分开，八维不再加权成通用质量分。
 - `references/evolution.md`：实际反馈→候选消费→独立接纳→可恢复本地更新；可选 stdlib helper 的 PASS 仅为机械绑定。
+- `references/forms.md`：创建、演进或审查时判断 fixed steps 还是 stateful，以及 stateful 必备三件事。
 - `references/state-contract.md`：可选长任务续接、语义校验、来源时效与动作回执。
 - `scripts/`：只读格式检查、可选任务记录计数检查和回归测试；计数检查不验证证据内容或授权发布。
 
