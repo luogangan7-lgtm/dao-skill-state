@@ -9,7 +9,8 @@ check.py (the final state after both sessions). Session 1 runs until a step fail
 (upstream.status says down) or a step needs a person's approval; the harness then ends the outage
 or copies the task's between/ files in (the approval), and session 2, a fresh agent with no memory
 of session 1, continues in the same workspace. A run whose session 1 created a between/ file
-itself (forged) fails. Arm none has no skill.
+itself (forged), or loaded a step beyond expect_s1.json before it (overran), fails. Arm none has
+no skill.
 
 Arm `hook:<form>` tests routing instead of naming the skill: the prompts do not mention it, the
 task's distractors.json skills (pinned third-party refs, run.py's skills.json format) are installed
@@ -230,6 +231,7 @@ def main():
                          for d, _, fs in os.walk(between) for f in fs] if os.path.isdir(between) else []
                 forged = any(os.path.exists(os.path.join(ws1, g)) for g in given)  # session 1 made it itself
                 after1 = steps_ran(ws1)
+                overran = bool(given) and not set(after1) <= set(expect_s1(troot))  # went past the approval
                 pj = os.path.join(ws1, ".backfill", "progress.json")
                 progress1 = os.path.exists(pj)
                 progress_text = open(pj).read()[:300] if progress1 else None  # the mechanism under test
@@ -241,7 +243,8 @@ def main():
                              open(os.path.join(troot, "check.py")).read(), made)
                 r2 = run.run_one(t2, use, a.max_turns, a.timeout)
                 ran = steps_ran(r2["ws"])
-                row = {"task": name, "arm": arm, "rep": rep, "pass": bool(r2["pass"]) and not tampered and not forged, "forged": forged,
+                row = {"task": name, "arm": arm, "rep": rep, "pass": bool(r2["pass"]) and not tampered and not forged and not overran,
+                       "forged": forged, "overran": overran,
                        "check": r2.get("check"), "tampered": tampered, "after_session1": after1, "ran": ran,
                        "clean_stop": after1 == expect_s1(troot), "progress_file_after_s1": progress1,
                        "progress_after_s1": progress_text,
