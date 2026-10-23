@@ -521,6 +521,15 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   stopping after step 5 for the approval and neither forging it. The third dao run loaded nothing:
   session 1 asked the user whether batches had already been loaded and stopped, and session 2 asked
   again. Small n, descriptive only.
+- No state means nothing ran. That third dao run is the third time a generated skill met a missing
+  state file at the start and asked the user (or refused) instead of starting (also runs 39606904444
+  and 39773494201). The state contract now says the skill writes its state before the first action,
+  so no state means nothing ran and the run starts from the beginning; asking whether an earlier run
+  happened is an invented gate. MiniMax with dao on that wording (run 39979599199, 4 runs per task):
+  `backfill-approval` 4 of 4, every session 1 loading exactly 1-5, none forged and none past step 5
+  (main: 2 of 3); `backfill-crash-nostatus` 2 of 2 skills written, both passed, while the other two
+  writes were refused by the provider's quota (429). No run asked about an earlier run. Small n,
+  descriptive only.
 
 ### Limits
 
