@@ -485,11 +485,12 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
 - Is it the entry's length? `check-runner-long` is `check-runner` with the same script and the same
   instructions, its SKILL.md expanded from 130 to 939 words with background, output meanings,
   failure handling, reporting and troubleshooting (run 39884891166, Lightning, sealed warehouse, 8
-  runs each): `check-runner` passed 5 of 8 and `check-runner-long` 7 of 8, and every run in both
-  arms called the runner. So a longer entry did not stop Lightning from following one argument-free
-  command; across three runs `check-runner` passed 15 of 24. What the rule-era runners above had in
-  addition was a large script and a setup the agent had to do itself (arguments, options, a check
-  plan file). Small n, descriptive only.
+  runs each): `check-runner` passed 5 of 8 (one run tampered) and `check-runner-long` 7 of 8, a
+  difference too small to read at this n; in all 16 runs some session called the runner, and runs
+  with no direct `step.py N` command were 5 of 8 and 7 of 8. The longer entry did not lower the pass
+  rate. Across three runs `check-runner` passed 15 of 24. The rule-era runners above differ from it
+  in size (227-639 lines against about 20) and in being called with arguments or options;
+  `mm-st-cr-1` also needed a check plan the agent writes first. Small n, descriptive only.
 
 ### Limits
 
