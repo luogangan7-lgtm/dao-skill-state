@@ -491,18 +491,20 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   rate. Across three runs `check-runner` passed 15 of 24. The rule-era runners above differ from it
   in size (227-639 lines against 21 for `run_checked.py`) and in being called with arguments or
   options; `mm-st-cr-1` also needed a check plan the agent writes first. Small n, descriptive only.
-- Does reading less make the writer write less? Every MiniMax+dao writer read the entry,
-  authoring.md and the whole state contract (965 + 960 + 1409 words), whose later half is about
-  running state (patch validation, merges, locks, receipts). Branch `skill/forms-split` (not merged)
-  moved the form standard into a 606-word `forms.md` that authoring links instead, and routed
-  creating a stateful skill to authoring. Against main (run 39912647657, 3 runs per task): the first
-  version (run 39912666240) still read the state contract in 6 of 6 writes, through the entry's
-  route for designing a stateful skill and a link in `forms.md`; with both removed (run 39932065942)
-  status-task writers read it in 1 of 3 and no-status writers in 3 of 3. Status task, main → second
-  version: pass 3/3 → 3/3, writer turns 26, 41, 27 → 23, 27, 19, time 586-694 s → 375-738 s,
-  SKILL.md 1136-1469 → 998-1209 words, scripts in 1 → 1 of 3. No-status task: pass 2/3 → 2/3,
-  SKILL.md 977-1101 → 1175-1629 words, scripts 439-626 → 563-1176 lines, and 2 of 3 writes ran to
-  the 1200 s limit (none on main). Generated skills did not get smaller. Small n, descriptive only.
+- Does reading less make the writer write less? On main the MiniMax+dao writers' recorded reads were
+  the entry (Skill call), authoring.md and the whole state contract (965 + 960 + 1409 words); the
+  contract's later half is about running state (patch validation, merges, locks, receipts). Branch
+  `skill/forms-split` (not merged) moved the form standard into a 606-word `forms.md` that authoring
+  links instead (f8cb60e), then also routed creating a stateful skill to authoring and unlinked the
+  contract from `forms.md` (bf54a8d). Against main (run 39912647657, 3 runs per task): the first
+  version (run 39912666240) still read the state contract in 6 of 6 writes, while the entry's route
+  and the `forms.md` link both pointed to it; the second (run 39932065942) read it in 1 of 3
+  status-task writes and 3 of 3 no-status writes. Status task, main → second version: pass 3/3 →
+  3/3, writer turns 26, 41, 27 → 23, 27, 19, time 586-694 s → 375-738 s, SKILL.md 1136-1469 →
+  998-1209 words, scripts in 1 → 1 of 3. No-status task: pass 2/3 → 2/3, SKILL.md 977-1101 →
+  1175-1629 words, scripts 439-626 → 563-1176 lines, and 2 of 3 writes ran to the 1200 s limit (none
+  on main). The status-task skills came out somewhat shorter and the no-status ones longer. Small n,
+  descriptive only.
 
 ### Limits
 
