@@ -472,16 +472,16 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   argument-free command; its ~20-line script runs the runbook's steps in order, asks `status.py`
   first, skips a loaded batch, runs the rest, stops at the first failure and never refuses. It
   passed 4 of 8 (run 39818849834) and 6 of 8 (run 39823431669), against 0 of 8 for the prose
-  `fixed-check` and 1 of 8 for `mm-st-pre-1`. Written into the state contract as a rule (branch
-  `skill/check-runner`, not merged), the skills it produced did not do as well. First wording
-  ("prefer a small runner"): MiniMax with dao passed 6 of 6 (run 39841583168) and every status-task
-  skill shipped a runner, but those skills ran 1278-1468 words with 227-639-line runners called with
-  arguments or options; Lightning running them passed 5 of 17 (run 39850080507, one run missing at
-  the job's 300-minute limit), and in 15 of the 17 at least one session ran `step.py N` directly.
-  Adding "no arguments, first in SKILL.md" (run 39875189423): the no-status task passed 3 of 3, but
-  the status task 1 of 3; in both failures the runner ran and nothing was loaded, one final reply
-  saying the step command needed a `--batch` argument to be fixed in runbook.md, the other session
-  grepping the runner for placeholder code. Small n, descriptive only.
+  `fixed-check` and 1 of 8 for `mm-st-pre-1`. It was then written into the state contract as a rule
+  (branch `skill/check-runner`, not merged). First wording ("prefer a small runner"): MiniMax with
+  dao passed 6 of 6 (run 39841583168) and every status-task skill shipped a runner, but those skills
+  ran 1278-1468 words with 227-639-line runners called with arguments or options; Lightning running
+  them passed 5 of 17 (run 39850080507, one run missing at the job's 300-minute limit), and in 15 of
+  the 17 at least one session ran `step.py N` directly. With the wording refined to "no arguments,
+  first in SKILL.md" (commit 9faa4ba), MiniMax with dao (run 39875189423): the no-status task passed
+  3 of 3, but the status task 1 of 3; in both failures the runner ran and nothing was loaded, one
+  final reply saying the step command needed a `--batch` argument to be fixed in runbook.md, the
+  other session grepping the runner for placeholder code. Small n, descriptive only.
 
 ### Limits
 
