@@ -467,6 +467,20 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   REFUSED messages; in 2 of those runs nothing was ever loaded, yet both sessions reported all 8
   steps confirmed loaded. A Super probe the same day (run 39773541665) ran 0 steps with 0 tokens.
   Small n, descriptive only.
+- A runner that checks before it runs, on the status task (Lightning, sealed warehouse):
+  `check-runner` is a hand-written skill of about 120 words whose only instruction is one
+  argument-free command; its ~20-line script runs the runbook's steps in order, asks `status.py`
+  first, skips a loaded batch, runs the rest, stops at the first failure and never refuses. It
+  passed 4 of 8 (run 39818849834) and 6 of 8 (run 39823431669), against 0 of 8 for the prose
+  `fixed-check` and 1 of 8 for `mm-st-pre-1`. As a rule in the state contract (branch
+  `skill/check-runner`, not merged), it did not carry over. First wording ("prefer a small runner"):
+  MiniMax with dao passed 6 of 6 (run 39841583168) and every status-task skill shipped a runner, but
+  those skills ran 1278-1468 words with 227-639-line runners called with options, and Lightning
+  running them passed 5 of 17 (run 39850080507, the 18th cut by the job's time limit), calling
+  `step.py` directly in 15. Adding "no arguments, first in SKILL.md" (run 39875189423) put the
+  command first, but MiniMax's own status-task runs passed 1 of 3: two runners parsed the runbook
+  wrongly and loaded nothing, the failure authoring.md warns of when a skill writes a parser for an
+  open format. Small n, descriptive only.
 
 ### Limits
 
