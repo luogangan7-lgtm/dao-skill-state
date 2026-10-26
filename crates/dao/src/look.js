@@ -98,10 +98,7 @@ addEventListener("load", function () {
     var exempt = el.disabled || el.matches("input[type=checkbox],input[type=radio]") ||
       (cs.display === "inline" && el.parentElement && ownText(el.parentElement).length > 0);
     if (interactive && !exempt) targets.push({ el: el, r: r });
-    if (el.tagName === "IMG") {
-      if (!el.hasAttribute("alt")) add("img-alt", el, "image without alt");
-      if (el.complete && el.naturalWidth === 0) add("missing-resource", el, "image did not load: " + el.getAttribute("src"));
-    }
+    if (el.tagName === "IMG" && !el.hasAttribute("alt")) add("img-alt", el, "image without alt");
   }
   // undersized targets fail unless a 24px circle on each stays clear of the others (spacing exception)
   targets.forEach(function (t) {
@@ -114,8 +111,9 @@ addEventListener("load", function () {
     });
     if (crowded) add("target-size", t.el, Math.round(t.r.width) + "x" + Math.round(t.r.height) + " below 24x24 and closer than 24px to another target (WCAG 2.2 2.5.8)");
   });
-  Array.prototype.forEach.call(document.querySelectorAll("link[rel~=stylesheet]"), function (l) {
-    if (!l.sheet) add("missing-resource", l, "stylesheet did not load: " + l.getAttribute("href"));
+  // recorded from the start of <head> by the listener look.rs inserts with the <base>
+  (window.__daoMissing || []).forEach(function (t) {
+    add("missing-resource", t, t.tagName.toLowerCase() + " did not load: " + (t.getAttribute("src") || t.getAttribute("href")));
   });
 
   var doc = document.documentElement;

@@ -111,7 +111,13 @@ fn file_url(p: &Path) -> String {
 /// The page with a <base> back to its own folder (right after the doctype, so the parser puts it
 /// in the head without changing the rendering mode) and the measurement before </body>.
 fn instrument(html: &str, dir: &Path, attr: &str) -> String {
-    let base = format!("<base href=\"{}/\">", file_url(dir));
+    // resource load errors do not bubble; a capturing listener installed first sees all of them
+    let base = format!(
+        "<base href=\"{}/\"><script>window.__daoMissing=[];addEventListener(\"error\",\
+         function(e){{var t=e.target;if(t&&t.getAttribute&&(t.src||t.href))__daoMissing.push(t);}},true);\
+         </script>",
+        file_url(dir)
+    );
     let script = format!(
         "<script>{}</script>",
         MEASURE_JS.replace("__DAO_ATTR__", attr)
