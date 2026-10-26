@@ -117,6 +117,7 @@ def main():
         usage = sorted(os.listdir(os.path.join(root, name, "usage")))
         for u in usage:  # baseline: the rules are not guessable
             r = run.run_one(os.path.join(root, name, "usage", u), "none", a.max_turns, a.timeout)
+            run.keep_files(os.path.join(root, name, "usage", u), r["ws"], os.path.join(a.out_dir, "kept", f"{name}-baseline-{u}"))
             emit({"task": name, "phase": "baseline", "usage": u, **r})
         for arm in a.arms.split(","):
             for rep in range(a.reps):
@@ -140,6 +141,7 @@ def main():
                     shutil.copytree(created, os.path.join(udir, "skills", "created-skill"))
                     for use_arm in a.use_arms.split(","):
                         r = run.run_one(udir, use_arm, a.max_turns, a.timeout)
+                        run.keep_files(udir, r["ws"], os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-{u}-{use_arm}"))
                         emit({"task": name, "arm": arm, "rep": rep, "phase": "use", "usage": u,
                               "use_arm": use_arm, **r})
     print("\n| task | creator arm | created | valid | use: skills pass | use: hook pass | baseline pass |")
