@@ -132,6 +132,16 @@ def main():
                 created = os.path.join(c.get("ws", ""), "new-skill")
                 valid = bool(c["pass"]) and structure_ok(created)
                 emit({"task": name, "arm": arm, "rep": rep, "phase": "create", "valid": valid, **c})
+                # keep the created skill, redacted, so a reviewer can see why a use run did or did not load it
+                for d, _, fs in os.walk(created):
+                    for f in fs:
+                        src = os.path.join(d, f)
+                        if os.path.islink(src) or os.path.getsize(src) > 1 << 20:
+                            continue
+                        dst = os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-skill", os.path.relpath(src, created))
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        with open(src, errors="replace") as fi, open(dst, "w") as fo:
+                            fo.write(run.redact(fi.read()))
                 if not c["pass"]:
                     continue
                 # phase 2: use the created skill on every usage task
