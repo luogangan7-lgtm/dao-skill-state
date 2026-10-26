@@ -2,7 +2,7 @@
 //!
 //! Role: entry point; routes subcommands to modules. Stage 1 (this crate's first card):
 //! `dao intake` = source pinning + quarantine into a content-addressed store.
-//! Depends on: source, quarantine, scan, normalize, relations, eval, admission, upstream, check, assess. Called by: users, CI, later DAO stages (scan, normalize).
+//! Depends on: source, quarantine, scan, normalize, relations, eval, admission, upstream, check, assess, look. Called by: users, CI, later DAO stages (scan, normalize).
 //! Invariants: exit 0 when the command ran (rejected skills are a normal outcome, listed in
 //! the JSON summary and `rejected.jsonl`); exit 2 on usage or environment errors.
 
@@ -10,6 +10,7 @@ mod admission;
 mod assess;
 mod check;
 mod eval;
+mod look;
 mod normalize;
 mod publish;
 mod quarantine;
@@ -37,6 +38,7 @@ fn usage() -> ExitCode {
   dao eval gen --store DIR   writes evals/set.json (routing cases copied from cards + relations)\n\
   dao eval run --store DIR --registry REG --searcher SKILL_HUB_BIN [--top-k 3 --floor 6 --rel 0.5]\n\
   dao admit --store DIR --digest D   gates: object, scan (CLEAN or approved REVIEW), card, eval; exit 1 if refused\n\
+  dao look PAGE.html [--width N]...   renders in headless Chrome (1280 and 375 by default); style-neutral visual defects, exit 1 if any\n\
   dao promote --store DIR --digest D | rollback --store DIR --name N [--from D] | recover --store DIR   champion pointers via the journal\n\
   dao publish --store DIR --target DIR [--apply] [--rollback]   champions -> <target>/<name>/, versioned in <target>/.dao-publication.json (dry run without --apply; exit 1 on conflicts)\n\
   dao check [SKILL_DIR]   (Rust port of check_skill.py: same JSON and exit codes 0/1/2)\n\
@@ -914,6 +916,7 @@ fn main() -> ExitCode {
         Some("admit") => admit_cmd(&args[1..]),
         Some("publish") => publish_cmd(&args[1..]),
         Some("promote" | "rollback" | "recover") => champion_cmd(&args[0], &args[1..]),
+        Some("look") => return look_cmd(&args[1..]),
         Some("check") if args.len() <= 2 => {
             let r = check::check_skill(args.get(1).map(String::as_str).unwrap_or("."));
             println!("{}", check::to_json(&r));
@@ -925,6 +928,40 @@ fn main() -> ExitCode {
         eprintln!("error: {e}");
         ExitCode::from(2)
     })
+}
+
+/// `dao look PAGE.html [--width N]...`: exit 0 clean, 1 defects, 2 when it cannot render.
+fn look_cmd(args: &[String]) -> ExitCode {
+    let (mut page, mut widths) = (None, Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--width" => match it.next().and_then(|w| w.parse::<u32>().ok()) {
+                Some(w) if (200..=4000).contains(&w) => widths.push(w),
+                _ => return usage(),
+            },
+            _ if page.is_none() && !a.starts_with("--") => page = Some(PathBuf::from(a)),
+            _ => return usage(),
+        }
+    }
+    let Some(page) = page else { return usage() };
+    if widths.is_empty() {
+        widths = look::DEFAULT_WIDTHS.to_vec();
+    }
+    let Some(browser) = look::find_browser() else {
+        eprintln!("error: no Chrome/Chromium found; set DAO_BROWSER");
+        return ExitCode::from(2);
+    };
+    match look::look(&browser, &page, &widths) {
+        Ok(report) => {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            ExitCode::from(if report["status"] == "clean" { 0 } else { 1 })
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 #[cfg(test)]
