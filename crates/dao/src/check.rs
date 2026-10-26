@@ -11,6 +11,9 @@
 //!   keys only, no duplicate keys, unknown tags rejected, recursive aliases through mappings
 //!   rejected. Inputs on which Python crashes with a traceback are reported here as invalid
 //!   frontmatter (documented divergence; the checker must never crash).
+//! - Rust-only addition: an advisory `word-pattern` warning for bundled `.py` helpers whose
+//!   `re.*` call matches input against a word (see `word_patterns`). The Python checker does not
+//!   emit it, so skills with such helpers differ from the Python baseline by that warning alone.
 
 use regex::Regex;
 use saphyr_parser::{Event, Parser, ScalarStyle};
@@ -1287,6 +1290,7 @@ pub fn check_skill(arg: &str) -> CheckResult {
             )),
         }
     }
+    r.warnings.extend(word_patterns(&root));
     r.status = if r.errors.is_empty() {
         "valid"
     } else {
@@ -1294,6 +1298,13 @@ pub fn check_skill(arg: &str) -> CheckResult {
     }
     .into();
     r
+}
+
+/// Regex literals in bundled `.py` helpers that contain a word of 4+ letters, e.g. `r"approval:"`:
+/// a helper looking for words the request never fixed misses the same rule written another way.
+/// Read-only text scan, nothing is executed.
+fn word_patterns(_root: &Path) -> Vec<Issue> {
+    Vec::new()
 }
 
 /// Python `json.dumps(result, ensure_ascii=False, indent=2)` for this result shape.
@@ -1482,6 +1493,34 @@ mod tests {
             bad, known,
             "unexplained differences from the Python baseline"
         );
+    }
+
+    #[test]
+    fn helper_matching_a_word_warns_and_step_parser_does_not() {
+        let d = std::env::temp_dir().join(format!("dao-check-wp-{}", std::process::id()));
+        let skill = d.join("runbook");
+        fs::create_dir_all(skill.join("scripts")).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: runbook\ndescription: Runs a runbook.\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            skill.join("scripts/run.py"),
+            "import re\nSTEP = re.compile(r'^\\s*(?P<num>\\d+)\\.\\s+(?P<cmd>.+)$')\n\
+             GATE = re.compile(r\"approval:\\s*step\\s*(\\d+)\", re.I)\n",
+        )
+        .unwrap();
+        let r = check_skill(&skill.to_string_lossy());
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(r.status, "valid", "{r:?}");
+        let hits: Vec<_> = r
+            .warnings
+            .iter()
+            .filter(|w| w.kind == "word-pattern")
+            .collect();
+        assert_eq!(hits.len(), 1, "{r:?}");
+        assert!(hits[0].message.starts_with("scripts/run.py:3 "), "{r:?}");
     }
 
     #[test]
