@@ -562,6 +562,42 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   unused-line output (text search for unused/unparsed/not used); the writer read authoring.md in all
   6 candidate runs (skill_calls). Small n, descriptive only.
 
+### G. Visual output measured by `dao look` (`run`, landing-page tasks)
+
+`dao look` (#103, #104) renders a page in headless Chrome at 1280 and 375 px and reports
+style-neutral defects: WCAG 2.2 contrast and target size, horizontal scroll, clipped text, line
+length, missing alt, missing resources, font-family and type-scale sprawl, a repeated section
+shape. It scores no taste. Its gate is 14 calibration pages plus a network test on Ubuntu and
+macOS. Here it is the checker: one prompt (a bakery landing page in one offline `index.html`, for
+phone and desktop), pass only when `dao look` reports nothing. Arms: `none`, or one pinned
+third-party skill installed: `anthropics/skills` frontend-design, `vercel-labs/agent-skills`
+web-design-guidelines, or a placebo (`anthropics/skills` pptx, unrelated to pages). The page and
+the full report are kept for each run (`keep.txt`).
+
+Contrast findings per page at 1280 px:
+
+| Arm | MiniMax (runs 40299859798, 40320392545, 40333992145) | Pages with any | Nemotron 3.5 Super VL (run 40320447008) |
+|---|---|---|---|
+| none | 26, 16, 16, 12, 36, 25, 13, 2, 22, 13, 0, 12 (mean 16.1) | 11 of 12 | 4, 2, 1, 1, 6, 0 |
+| placebo (pptx) | 0, 11, 16, 14, 0, 2 (mean 7.2) | 4 of 6 | not run |
+| web-design-guidelines | 1, 0, 0, 0, 0, 0 | 1 of 6 | 1, 8, 1 |
+| frontend-design | 3, 0, 0, 0, 0, 1 | 2 of 6 | 0, 3, 1 |
+
+- No run passed (0 of 36): every page has more than 8 text sizes. The kept pages declare that
+  many (one has about 30 font-size values such as .95, .93, .92 and .88rem), so the finding is
+  real, and no arm or model avoided it.
+- Spot checks of kept pages match the contrast findings, e.g. `#8d7a67` text on `#faf4e7` is about
+  3.7:1 against the 4.5:1 WCAG asks for body text.
+- MiniMax loaded frontend-design in 6 of 6 runs and web-design-guidelines in 0 of 6 (no Skill
+  call and no read of its files), yet both arms show few contrast findings, while the placebo arm
+  stays nearer to `none`. A plausible reading is that the skill's description, which the host
+  lists to the model, is enough to shift attention; the runs cannot separate that from noise.
+- Nemotron 3.5 Super VL wrote each page in 2 to 8 turns, loaded no skill in 12 runs, and shows no
+  difference between arms.
+- MiniMax hit the 30-turn limit in most runs (taking and cropping its own screenshots); the page
+  was written each time.
+- 3 to 12 pages per cell, one prompt, one model each; descriptive only.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.

@@ -83,6 +83,10 @@ jobs:
         run: |
           (cd crates/skill-hub && cargo build --release --locked)
           echo "SKILL_HUB_BIN=$PWD/crates/skill-hub/target/release/skill-hub" >> "$GITHUB_ENV"
+      - name: Build the dao CLI (dao look for page checkers)
+        run: |
+          (cd crates/dao && cargo build --release --locked)
+          echo "$PWD/crates/dao/target/release" >> "$GITHUB_PATH"
       - name: Fetch third-party skills at pinned commits (never committed)
         run: |
           mkdir -p "$RUNNER_TEMP/sources"
@@ -193,3 +197,4 @@ jobs:
             results/*.jsonl
             results/candidates/
             results/created/
+            results/kept/
