@@ -21,6 +21,19 @@ def write_skill(root: Path, name: str, frontmatter: str) -> Path:
 
 
 class CheckSkillTests(unittest.TestCase):
+    def test_helper_matching_a_word_warns_and_step_parser_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = write_skill(Path(tmp), "runbook", "name: runbook\ndescription: Runs a runbook.\n")
+            (skill / "scripts").mkdir()
+            (skill / "scripts" / "run.py").write_text(
+                "import re\nSTEP = re.compile(r'^\\s*(?P<num>\\d+)\\.\\s+(?P<cmd>.+)$')\n"
+                "GATE = re.compile(r'approval:\\s*step\\s*(\\d+)', re.I)\n", encoding="utf-8")
+            result = check_skill(skill)
+            self.assertEqual(result["status"], "valid", result)
+            hits = [w for w in result["warnings"] if w["kind"] == "word-pattern"]
+            self.assertEqual(len(hits), 1, result)
+            self.assertIn("run.py:3", hits[0]["message"])
+
     def test_valid_nested_metadata_optional_fields_and_plain_link(self):
         with tempfile.TemporaryDirectory() as tmp:
             skill = write_skill(Path(tmp), "dao-skill-state", """name: dao-skill-state
