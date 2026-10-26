@@ -622,8 +622,8 @@ same request without the paragraph saying `dao look` is on PATH. Nemotron 3.5 Su
 - Unaided, none of the 6 creation runs looked for an existing checker on PATH (no `which`,
   `dao` or browser call); the dao arm's "search existing capabilities" step searched skills only.
 - Unaided, the outcome follows whether the use run loaded the created skill: every run that
-  loaded it passed, and every failing run (none 4, dao rep 1 twice) shows no Skill call and no
-  read of its files. dao rep 1 wrote the most (a regex `check_page.py` with passing and failing
+  loaded it passed, and every failing run (all 4 in the none arm, both of dao rep 1) shows no Skill call and no
+  read of its files. dao rep 1 wrote the most (a `check_page.py` with passing and failing
   fixtures, 880 s) and was never loaded.
 - MiniMax (run 40347366079) agreed on the named variant (none 4 of 4, skill-creator 2 of 2)
   before a quota limit voided the rest.
