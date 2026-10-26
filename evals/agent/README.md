@@ -583,7 +583,7 @@ Contrast findings per page at 1280 px:
 | web-design-guidelines | 1, 0, 0, 0, 0, 0 | 1 of 6 | 1, 8, 1 |
 | frontend-design | 3, 0, 0, 0, 0, 1 | 2 of 6 | 0, 3, 1 |
 
-- No run passed (0 of 36): every page has more than 8 text sizes. The kept pages declare that
+- No run passed (0 of 42): every page has more than 8 text sizes. The kept pages declare that
   many (one has about 30 font-size values such as .95, .93, .92 and .88rem), so the finding is
   real, and no arm or model avoided it.
 - Spot checks of kept pages match the contrast findings, e.g. `#8d7a67` text on `#faf4e7` is about
