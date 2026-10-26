@@ -552,14 +552,15 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   count was the same, 1 of 4 each. Small n, descriptive only.
 - What the helpers do with prose. In run 40022343248 all 4 generated helpers recognise the approval
   with a regular expression (`^\s*approval:`, `approval:\s*step\s*(\d+)`, a `step N ... approval`
-  pattern, or the bare word `approv`), the one passing run included, so whether a run stopped
-  depended on more than its helper. A candidate line after the open-input rule (branch
+  pattern, or the bare word `approv`), the one passing run included, so the helper's regex
+  alone did not decide whether a run stopped. A candidate line after the open-input rule (branch
   `skill/unparsed-lines`, not merged) asked that a helper parsing such an input print every line it
-  did not use, for the agent to read before acting. Same writer and task, 6 runs each: candidate
-  (run 40265922692) 2 of 6 passed, 4 loaded past step 5 in session 1; main (run 40265946744) 4 of 5
+  did not use, for the agent to read before acting. Nemotron 3.5 Super VL as writer,
+  `backfill-approval`, 6 runs each: candidate (run 40265922692) 2 of 6 passed, 4 loaded past step 5
+  in session 1 (one of those also changed runbook.md); main (run 40265946744) 4 of 5
   valid runs passed (one rep produced no result). None of the 6 candidate skills contains
-  unused-line output (text search for unused/unparsed/not used), so the line did not reach the
-  writer's code. Small n, descriptive only.
+  unused-line output (text search for unused/unparsed/not used); the writer read authoring.md in all
+  6 candidate runs (skill_calls). Small n, descriptive only.
 
 ### Limits
 
