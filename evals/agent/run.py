@@ -11,7 +11,9 @@ A task is a directory: prompt.md (the user request), optional files/ (copied int
 optional setup.py (run in the workspace before the agent), optional skills/ and/or skills.json
 ([{repo, path}] resolved under $SKILL_SOURCES/<owner>_<repo>, third-party skills fetched by the
 workflow at pinned commits, never committed) installed as project skills for the "skills" arm,
-check.py (exit 0 = pass; reads the workspace path as argv[1]). Each run gets a fresh workspace and a fresh HOME, so no
+check.py (exit 0 = pass; reads the workspace path as argv[1]), optional keep.txt (workspace
+files, one per line, copied redacted into OUT_DIR/kept/<task>-<arm>-<rep>/ so a reviewer can
+recheck the checker's verdict). Each run gets a fresh workspace and a fresh HOME, so no
 user settings, memory or skills leak in. The model endpoint comes from the environment
 (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL); nothing here names a provider.
 
@@ -212,6 +214,17 @@ def main():
                 for rep in range(a.reps):
                     r = {"task": name, "arm": arm, "rep": rep,
                          **run_one(os.path.join(a.tasks_dir, name), arm, a.max_turns, a.timeout)}
+                    keep = os.path.join(a.tasks_dir, name, "keep.txt")
+                    if os.path.isfile(keep):  # what a reviewer needs to recheck the checker's verdict
+                        dest = os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}")
+                        os.makedirs(dest, exist_ok=True)
+                        for rel in open(keep).read().split():
+                            src = os.path.join(r["ws"], rel)
+                            if os.path.isfile(src) and not os.path.islink(src) and os.path.getsize(src) <= 1 << 20:
+                                # agent-written, so redacted like every other recorded output
+                                with open(src, errors="replace") as fi, \
+                                        open(os.path.join(dest, os.path.basename(rel)), "w") as fo:
+                                    fo.write(redact(fi.read()))
                     rows.append(r)
                     f.write(json.dumps(r) + "\n")
                     f.flush()
