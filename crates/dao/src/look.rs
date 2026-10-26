@@ -11,6 +11,8 @@
 //! render has a deadline; a page that cannot be rendered, renders at another width, or shows no
 //! measurable text is an environment error (exit 2), never a clean result. The measurement runs
 //! inside the page, so it is only valid for cooperative pages: hostile page script can alter it.
+//! A page that loads fonts or CSS from a CDN always reports missing-resource here, by design: it is
+//! measured without them, so a clean result would not describe the page as published.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -128,10 +130,17 @@ fn instrument(html: &str, dir: &Path, attr: &str) -> String {
         Some(i) => out.insert_str(i, &script),
         None => out.push_str(&script),
     }
-    let start = lower.len()
-        - lower
-            .trim_start_matches(['\u{feff}', ' ', '\t', '\r', '\n'])
-            .len();
+    // skip a BOM, whitespace and comments before the doctype
+    let mut start = 0;
+    loop {
+        let rest = &lower[start..];
+        let t = rest.trim_start_matches(['\u{feff}', ' ', '\t', '\r', '\n']);
+        start += rest.len() - t.len();
+        match t.strip_prefix("<!--").and_then(|c| c.find("-->")) {
+            Some(end) => start += 4 + end + 3,
+            None => break,
+        }
+    }
     let at = if lower[start..].starts_with("<!doctype") {
         lower[start..].find('>').map_or(0, |i| start + i + 1)
     } else {

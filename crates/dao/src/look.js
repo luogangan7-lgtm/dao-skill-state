@@ -41,10 +41,11 @@ addEventListener("load", function () {
   }
   // effective background; null when unknown (image, gradient, unparseable colour, translucency)
   function background(el) {
+    for (var o = el; o; o = o.parentElement) if (parseFloat(getComputedStyle(o).opacity) < 1) return null;
     var layers = [];
     for (var e = el; e; e = e.parentElement) {
       var cs = getComputedStyle(e);
-      if (cs.backgroundImage !== "none" || parseFloat(cs.opacity) < 1) return null;
+      if (cs.backgroundImage !== "none") return null;
       var c = rgba(cs.backgroundColor);
       if (!c) return null;
       if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
@@ -100,16 +101,21 @@ addEventListener("load", function () {
     if (interactive && !exempt) targets.push({ el: el, r: r });
     if (el.tagName === "IMG" && !el.hasAttribute("alt")) add("img-alt", el, "image without alt");
   }
-  // undersized targets fail unless a 24px circle on each stays clear of the others (spacing exception)
+  // WCAG 2.2 2.5.8 spacing exception: an undersized target passes if a 24px circle on its centre
+  // misses every other target's box and every other undersized target's circle
+  function small(t) { return t.r.width < 24 || t.r.height < 24; }
+  function centre(t) { return [t.r.left + t.r.width / 2, t.r.top + t.r.height / 2]; }
   targets.forEach(function (t) {
-    if (t.r.width >= 24 && t.r.height >= 24) return;
-    var x = t.r.left + t.r.width / 2, y = t.r.top + t.r.height / 2;
+    if (!small(t)) return;
+    var c = centre(t);
     var crowded = targets.some(function (o) {
       if (o === t) return false;
-      var ox = o.r.left + o.r.width / 2, oy = o.r.top + o.r.height / 2;
-      return Math.hypot(ox - x, oy - y) < 24;
+      var nx = Math.max(o.r.left, Math.min(c[0], o.r.right)), ny = Math.max(o.r.top, Math.min(c[1], o.r.bottom));
+      if (Math.hypot(nx - c[0], ny - c[1]) < 12) return true;
+      var oc = centre(o);
+      return small(o) && Math.hypot(oc[0] - c[0], oc[1] - c[1]) < 24;
     });
-    if (crowded) add("target-size", t.el, Math.round(t.r.width) + "x" + Math.round(t.r.height) + " below 24x24 and closer than 24px to another target (WCAG 2.2 2.5.8)");
+    if (crowded) add("target-size", t.el, Math.round(t.r.width) + "x" + Math.round(t.r.height) + " below 24x24 without 24px spacing (WCAG 2.2 2.5.8)");
   });
   // recorded from the start of <head> by the listener look.rs inserts with the <base>
   (window.__daoMissing || []).forEach(function (t) {
