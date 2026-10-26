@@ -17,6 +17,7 @@ const CASES: &[(&str, Kinds, Kinds)] = &[
     ("good-table", &[], &[]),
     ("good-landing", &[], &[]),
     ("good-dark", &[], &[]),
+    ("good-wrapped", &[], &[]),
     ("bad-contrast", &["contrast"], &["contrast"]),
     ("bad-overflow", &[], &["h-scroll"]),
     (
