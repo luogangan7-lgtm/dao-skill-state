@@ -133,14 +133,23 @@ addEventListener("load", function () {
     add("h-scroll", culprit || doc, "page is " + doc.scrollWidth + "px wide in a " + W + "px viewport");
   }
 
-  // the same section shape repeated: >= 4 composite siblings with one signature under body or main
-  function shape(e) {
+  // the same section shape repeated: >= 4 siblings under body or main with one signature, read
+  // through single-child wrappers (a container div) and two levels down
+  function blocks(e) {
     var kids = [];
     for (var k = e.firstElementChild; k; k = k.nextElementSibling) {
       var d = getComputedStyle(k).display;
-      if (d !== "inline" && d !== "none") kids.push(k.tagName);
+      if (d !== "inline" && d !== "none") kids.push(k);
     }
-    return kids.length >= 2 ? e.tagName + ":" + kids.join(",") : null;
+    return kids;
+  }
+  function shape(e) {
+    var kids = blocks(e);
+    for (var hops = 0; kids.length === 1 && hops < 3; hops++) kids = blocks(kids[0]);
+    if (kids.length < 2) return null;
+    return e.tagName + ":" + kids.map(function (k) {
+      return k.tagName + "(" + blocks(k).map(function (g) { return g.tagName; }).join(",") + ")";
+    }).join(",");
   }
   [document.body].concat(Array.prototype.slice.call(document.querySelectorAll("main"))).forEach(function (box) {
     if (!box) return;
