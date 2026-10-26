@@ -26,6 +26,7 @@ const CASES: &[(&str, Kinds, Kinds)] = &[
         &["font-families", "type-scale"],
     ),
     ("bad-repetition", &["repetition"], &["repetition"]),
+    ("bad-wrapped-repetition", &["repetition"], &["repetition"]),
     ("bad-alt", &["img-alt"], &["img-alt"]),
     ("bad-clipped", &["clipped"], &["clipped"]),
     ("bad-line-length", &["line-length"], &[]),
