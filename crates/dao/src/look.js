@@ -1,9 +1,9 @@
 // Injected by `dao look` (look.rs) into a copy of the page; runs after load inside headless Chrome.
 // Measures style-neutral defects (EVAL-LAYER L1 rules and L2 metrics), never taste, and writes the
-// result as URI-encoded JSON into <html data-dao-look>, which `--dump-dom` carries back to Rust.
+// result as URI-encoded JSON into an attribute on <html> whose name look.rs chose for this run
+// (__DAO_ATTR__). Only valid for cooperative pages: page script can still alter what is measured.
 addEventListener("load", function () {
-  var W = innerWidth, findings = [], CAP = 5;
-  var count = {};
+  var W = innerWidth, findings = [], CAP = 5, count = {};
   function where(el) {
     var p = [];
     for (; el && el.nodeType === 1 && p.length < 4; el = el.parentElement) {
@@ -18,11 +18,19 @@ addEventListener("load", function () {
     count[kind] = (count[kind] || 0) + 1;
     if (count[kind] <= CAP) findings.push({ kind: kind, where: where(el), detail: detail });
   }
+  // any CSS colour (rgb, oklch, lab, color(), color-mix) to sRGB bytes + alpha; null if unknown
+  var cv = document.createElement("canvas"); cv.width = cv.height = 1;
+  var cx = cv.getContext("2d", { willReadFrequently: true });
   function rgba(s) {
-    var m = /rgba?\(([^)]+)\)/.exec(s);
-    if (!m) return null;
-    var v = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
-    return [v[0], v[1], v[2], v.length > 3 ? v[3] : 1];
+    if (!cx || !s) return null;
+    cx.clearRect(0, 0, 1, 1);
+    cx.fillStyle = "rgba(1,2,3,0.5)";
+    var probe = cx.fillStyle;
+    cx.fillStyle = s;
+    if (cx.fillStyle === probe && s.replace(/\s/g, "") !== "rgba(1,2,3,0.5)") return null;
+    cx.fillRect(0, 0, 1, 1);
+    var d = cx.getImageData(0, 0, 1, 1).data; // unpremultiplied sRGB
+    return [d[0], d[1], d[2], d[3] / 255];
   }
   function lum(c) {
     function f(x) { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); }
@@ -31,21 +39,24 @@ addEventListener("load", function () {
   function blend(top, base) {
     return [0, 1, 2].map(function (k) { return top[k] * top[3] + base[k] * (1 - top[3]); });
   }
-  // effective background; null when an image or gradient is underneath (contrast unknown)
+  // effective background; null when unknown (image, gradient, unparseable colour, translucency)
   function background(el) {
     var layers = [];
     for (var e = el; e; e = e.parentElement) {
       var cs = getComputedStyle(e);
-      if (cs.backgroundImage !== "none") return null;
+      if (cs.backgroundImage !== "none" || parseFloat(cs.opacity) < 1) return null;
       var c = rgba(cs.backgroundColor);
-      if (c && c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+      if (!c) return null;
+      if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
     }
     var base = [255, 255, 255];
     for (var i = layers.length - 1; i >= 0; i--) base = blend(layers[i], base);
     return base;
   }
-  function visible(el, cs, r) {
-    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && parseFloat(cs.opacity) > 0;
+  function shown(el, cs, r) {
+    if (r.width <= 1 || r.height <= 1 || cs.visibility === "hidden") return false;
+    for (var e = el; e; e = e.parentElement) if (parseFloat(getComputedStyle(e).opacity) === 0) return false;
+    return true;
   }
   function ownText(el) {
     var t = "";
@@ -53,13 +64,14 @@ addEventListener("load", function () {
     return t.trim();
   }
 
-  var families = {}, sizes = {}, colors = {};
+  var families = {}, sizes = {}, colors = {}, measured = 0, targets = [];
   var all = document.body ? document.body.getElementsByTagName("*") : [];
   for (var i = 0; i < all.length; i++) {
     var el = all[i], cs = getComputedStyle(el), r = el.getBoundingClientRect();
-    if (!visible(el, cs, r)) continue;
+    if (!shown(el, cs, r)) continue;
     var text = ownText(el);
     if (text) {
+      measured++;
       var fs = parseFloat(cs.fontSize);
       families[cs.fontFamily.split(",")[0].trim().replace(/["']/g, "").toLowerCase()] = 1;
       sizes[Math.round(fs * 2) / 2] = 1;
@@ -74,19 +86,37 @@ addEventListener("load", function () {
       var ox = cs.overflowX;
       if ((ox === "hidden" || ox === "clip") && cs.textOverflow !== "ellipsis" && el.scrollWidth > el.clientWidth + 1)
         add("clipped", el, "text wider than its box is cut off");
-      if (/^(P|LI|DD|BLOCKQUOTE)$/.test(el.tagName) && text.length > 200) {
-        var cpl = r.width / (fs * 0.5);
+      if (/^(P|LI|DD|BLOCKQUOTE)$/.test(el.tagName) && el.textContent.trim().length > 200) {
+        var lh = parseFloat(cs.lineHeight) || fs * 1.2;
+        var lines = Math.max(1, Math.round(r.height / lh));
+        var cpl = el.textContent.trim().length / lines;
         if (cpl > 95) add("line-length", el, "about " + Math.round(cpl) + " characters per line");
       }
     }
     var interactive = el.matches("a[href],button,select,textarea,input:not([type=hidden]),[role=button]");
-    if (interactive && (r.width < 24 || r.height < 24)) {
-      // WCAG 2.5.8 exempts targets inline in a sentence
-      var inSentence = cs.display === "inline" && el.parentElement && ownText(el.parentElement).length > 0;
-      if (!inSentence) add("target-size", el, Math.round(r.width) + "x" + Math.round(r.height) + " below 24x24 (WCAG 2.2 2.5.8)");
+    // exempt (WCAG 2.5.8): disabled, user-agent sized checkbox/radio, inline in a sentence
+    var exempt = el.disabled || el.matches("input[type=checkbox],input[type=radio]") ||
+      (cs.display === "inline" && el.parentElement && ownText(el.parentElement).length > 0);
+    if (interactive && !exempt) targets.push({ el: el, r: r });
+    if (el.tagName === "IMG") {
+      if (!el.hasAttribute("alt")) add("img-alt", el, "image without alt");
+      if (el.complete && el.naturalWidth === 0) add("missing-resource", el, "image did not load: " + el.getAttribute("src"));
     }
-    if (el.tagName === "IMG" && !el.hasAttribute("alt")) add("img-alt", el, "image without alt");
   }
+  // undersized targets fail unless a 24px circle on each stays clear of the others (spacing exception)
+  targets.forEach(function (t) {
+    if (t.r.width >= 24 && t.r.height >= 24) return;
+    var x = t.r.left + t.r.width / 2, y = t.r.top + t.r.height / 2;
+    var crowded = targets.some(function (o) {
+      if (o === t) return false;
+      var ox = o.r.left + o.r.width / 2, oy = o.r.top + o.r.height / 2;
+      return Math.hypot(ox - x, oy - y) < 24;
+    });
+    if (crowded) add("target-size", t.el, Math.round(t.r.width) + "x" + Math.round(t.r.height) + " below 24x24 and closer than 24px to another target (WCAG 2.2 2.5.8)");
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("link[rel~=stylesheet]"), function (l) {
+    if (!l.sheet) add("missing-resource", l, "stylesheet did not load: " + l.getAttribute("href"));
+  });
 
   var doc = document.documentElement;
   if (doc.scrollWidth > W + 1) {
@@ -100,12 +130,14 @@ addEventListener("load", function () {
   }
 
   // the same section shape repeated: >= 4 composite siblings with one signature under body or main
-  var shape = function (e) {
+  function shape(e) {
     var kids = [];
-    for (var k = e.firstElementChild; k; k = k.nextElementSibling)
-      if (getComputedStyle(k).display !== "inline" && getComputedStyle(k).display !== "none") kids.push(k.tagName);
+    for (var k = e.firstElementChild; k; k = k.nextElementSibling) {
+      var d = getComputedStyle(k).display;
+      if (d !== "inline" && d !== "none") kids.push(k.tagName);
+    }
     return kids.length >= 2 ? e.tagName + ":" + kids.join(",") : null;
-  };
+  }
   [document.body].concat(Array.prototype.slice.call(document.querySelectorAll("main"))).forEach(function (box) {
     if (!box) return;
     var seen = {};
@@ -124,9 +156,11 @@ addEventListener("load", function () {
 
   var out = {
     width: W,
-    metrics: { font_families: nf, text_sizes: ns, text_colors: Object.keys(colors).length, page_width: doc.scrollWidth },
+    metrics: { text_elements: measured, font_families: nf, text_sizes: ns, text_colors: Object.keys(colors).length, page_width: doc.scrollWidth },
     counts: count,
     findings: findings
   };
-  doc.setAttribute("data-dao-look", encodeURIComponent(JSON.stringify(out)));
+  // the page runs in a srcdoc iframe of the requested width; the result goes to the outer document
+  var sink = parent !== window ? parent.document.documentElement : doc;
+  sink.setAttribute("__DAO_ATTR__", encodeURIComponent(JSON.stringify(out)));
 });
