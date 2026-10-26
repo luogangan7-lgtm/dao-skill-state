@@ -29,6 +29,7 @@ const CASES: &[(&str, Kinds, Kinds)] = &[
     ("bad-clipped", &["clipped"], &["clipped"]),
     ("bad-line-length", &["line-length"], &[]),
     ("injected-target", &["target-size"], &["target-size"]),
+    ("bad-target-adjacent", &["target-size"], &["target-size"]),
 ];
 
 fn browser_available() -> bool {
