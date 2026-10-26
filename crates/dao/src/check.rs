@@ -1303,8 +1303,71 @@ pub fn check_skill(arg: &str) -> CheckResult {
 /// Regex literals in bundled `.py` helpers that contain a word of 4+ letters, e.g. `r"approval:"`:
 /// a helper looking for words the request never fixed misses the same rule written another way.
 /// Read-only text scan, nothing is executed.
-fn word_patterns(_root: &Path) -> Vec<Issue> {
-    Vec::new()
+fn word_patterns(root: &Path) -> Vec<Issue> {
+    let call = Regex::new(
+        r#"\bre\.(?:compile|search|match|fullmatch|findall|finditer|split|subn?)\(\s*[rRbBuU]{0,2}("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')"#,
+    )
+    .unwrap();
+    let group_names = Regex::new(r"\(\?P(?:<\w+>|=\w+\))").unwrap();
+    let escape = Regex::new(r"\\.").unwrap();
+    let word = Regex::new(r"[A-Za-z]{4,}").unwrap();
+    let mut files = Vec::new();
+    collect_py(root, &mut files);
+    files.sort();
+    let mut found = Vec::new();
+    // ponytail: bounded scan, first 200 helpers up to 1 MiB each; enough for a skill package.
+    for path in files.into_iter().take(200) {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for m in call.captures_iter(&text) {
+            let lit = m.get(1).unwrap();
+            let body = &lit.as_str()[1..lit.as_str().len() - 1];
+            let bare = escape
+                .replace_all(&group_names.replace_all(body, ""), " ")
+                .into_owned();
+            if !word.is_match(&bare) {
+                continue;
+            }
+            let line = text[..lit.start()].matches('\n').count() + 1;
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            found.push(issue(
+                "word-pattern",
+                format!(
+                    "{rel}:{line} matches input text against the words in {}. If the request leaves \
+                     that input's format open, a person may write the same thing differently and this \
+                     helper will miss it: have the agent read the input for it instead of the helper, \
+                     or print what the helper did not match.",
+                    lit.as_str()
+                ),
+            ));
+        }
+    }
+    found
+}
+
+/// Regular `.py` files under `dir`, not following symlinks, each at most 1 MiB.
+fn collect_py(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let Ok(meta) = fs::symlink_metadata(e.path()) else {
+            continue;
+        };
+        if meta.is_dir() {
+            collect_py(&e.path(), out);
+        } else if meta.is_file()
+            && meta.len() <= 1024 * 1024
+            && e.path().extension().is_some_and(|x| x == "py")
+        {
+            out.push(e.path());
+        }
+    }
 }
 
 /// Python `json.dumps(result, ensure_ascii=False, indent=2)` for this result shape.
