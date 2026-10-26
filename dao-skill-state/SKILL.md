@@ -32,10 +32,12 @@ Compound requests keep all requested actions: review-only does not permit edits;
 2. Search available skill names/descriptions and the user's designated source of truth; read only the nearest candidates. Record reuse, merge, or create and why. Route actual marketing, coding, or design work to its owner instead of expanding this meta-skill into a business encyclopedia.
 3. Inspect the target and existing changes. For a new artifact use the requested path, otherwise project `.dao/skills/<name>/`. When the requested path names the new skill's own folder (not a container such as `skills/`), write `SKILL.md` directly in it and name the skill after the folder; if that is not a valid name, keep the folder, choose a valid name, and announce the mismatch. An existing `SKILL.md` there falls under step 4. Announce any fallback. Never put generated children inside this skill's source or installed folder. Keep logs, state, and private evidence outside distributable skill files.
 4. Write the smallest complete artifact when creation or changes are authorized. A draft source directory need not be a Git checkout. For self-maintenance distinguish verified source from installed copy; do not rewrite a discovered installation or add a remote implicitly. Preserve unrelated edits, invocation policy, and a recoverable version before replacement.
-5. Run the local check below with an inspected Python environment containing PyYAML. Missing dependencies mean NOT_RUN, not permission to install them. Also run the target host's available validator when applicable; reconcile checker disagreements with the standard, not by adding meaningless headings. Check new scripts before executing them and use isolated test data.
+5. Run the local check below: `dao check` when the `dao` CLI is on PATH, otherwise the Python checker with an inspected environment containing PyYAML. Missing dependencies mean NOT_RUN, not permission to install them. Also run the target host's available validator when applicable; reconcile checker disagreements with the standard, not by adding meaningless headings. Check new scripts before executing them and use isolated test data.
 6. Exercise a realistic request, an out-of-scope request, and the changed failure path where relevant. Inspect actual artifacts and side effects. For a substantial routing or safety change use an independent forward test if available. A generated test prompt is not a test run.
 
 ```bash
+dao check <target-skill-directory>
+# without the dao CLI:
 python3 <engine-root>/scripts/check_skill.py <target-skill-directory>
 ```
 
