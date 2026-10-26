@@ -550,6 +550,16 @@ Other models (same tasks and arms, n=3 per cell, commit of #63; DeepSeek run 387
   4 passed, 2 loaded past step 5, and one more stopped after 5 in both sessions. Approval-marker
   wording appeared alongside in 4 of 4 candidate skills and 2 of 4 on main (text search). The pass
   count was the same, 1 of 4 each. Small n, descriptive only.
+- What the helpers do with prose. In run 40022343248 all 4 generated helpers recognise the approval
+  with a regular expression (`^\s*approval:`, `approval:\s*step\s*(\d+)`, a `step N ... approval`
+  pattern, or the bare word `approv`); runs that loaded past step 5 had a helper that did not act on
+  the runbook's prose sentence. A candidate line after the open-input rule (branch
+  `skill/unparsed-lines`, not merged) asked that a helper parsing such an input print every line it
+  did not use, for the agent to read before acting. Same writer and task, 6 runs each: candidate
+  (run 40265922692) 2 of 6 passed, 4 loaded past step 5 in session 1; main (run 40265946744) 4 of 5
+  valid runs passed (one rep produced no result). None of the 6 candidate skills contains
+  unused-line output (text search for unused/unparsed/not used), so the line did not reach the
+  writer's code. Small n, descriptive only.
 
 ### Limits
 
