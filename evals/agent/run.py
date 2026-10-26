@@ -193,6 +193,20 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
             "cache_read": u.get("cache_read_input_tokens"), "cache_write": u.get("cache_creation_input_tokens")}
 
 
+def keep_files(task_dir, ws, dest):
+    """Copy the workspace files a task's keep.txt names into dest, redacted, so a reviewer can
+    recheck the checker's verdict (agent-written, so treated like every other recorded output)."""
+    keep = os.path.join(task_dir, "keep.txt")
+    if not os.path.isfile(keep):
+        return
+    os.makedirs(dest, exist_ok=True)
+    for rel in open(keep).read().split():
+        src = os.path.join(ws, rel)
+        if os.path.isfile(src) and not os.path.islink(src) and os.path.getsize(src) <= 1 << 20:
+            with open(src, errors="replace") as fi, open(os.path.join(dest, os.path.basename(rel)), "w") as fo:
+                fo.write(redact(fi.read()))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("tasks_dir")
@@ -214,17 +228,8 @@ def main():
                 for rep in range(a.reps):
                     r = {"task": name, "arm": arm, "rep": rep,
                          **run_one(os.path.join(a.tasks_dir, name), arm, a.max_turns, a.timeout)}
-                    keep = os.path.join(a.tasks_dir, name, "keep.txt")
-                    if os.path.isfile(keep):  # what a reviewer needs to recheck the checker's verdict
-                        dest = os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}")
-                        os.makedirs(dest, exist_ok=True)
-                        for rel in open(keep).read().split():
-                            src = os.path.join(r["ws"], rel)
-                            if os.path.isfile(src) and not os.path.islink(src) and os.path.getsize(src) <= 1 << 20:
-                                # agent-written, so redacted like every other recorded output
-                                with open(src, errors="replace") as fi, \
-                                        open(os.path.join(dest, os.path.basename(rel)), "w") as fo:
-                                    fo.write(redact(fi.read()))
+                    keep_files(os.path.join(a.tasks_dir, name), r["ws"],
+                               os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}"))
                     rows.append(r)
                     f.write(json.dumps(r) + "\n")
                     f.flush()

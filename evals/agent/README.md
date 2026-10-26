@@ -601,6 +601,35 @@ Contrast findings per page at 1280 px:
   was written each time.
 - 3 to 12 pages per cell, one prompt, one model each; descriptive only.
 
+### H. Creating a page-quality skill (`create`, judged by `dao look`)
+
+The request (`create-tasks/page-quality`) describes the failures from G: faint grey text, dozens
+of font sizes, phone layouts that break. Each creator arm writes a skill twice; each skill is
+then used on an unseen page (`usage/clinic-page`, a dental clinic) through both the skill list
+and the hook, and `dao look` judges the page at 1280 and 375 px. `page-quality-unaided` is the
+same request without the paragraph saying `dao look` is on PATH. Nemotron 3.5 Super VL, runs
+40372482949 (named) and 40372541998 (unaided).
+
+| Creator arm | `dao look` named: use runs passing | Unaided: use runs passing |
+|---|---|---|
+| baseline (no skill) | 0 of 1 (contrast 4, type scale) | 0 of 1 (contrast 8, type scale, h-scroll at 375) |
+| none | 3 of 4 | 0 of 4 |
+| skill-creator | 4 of 4 | 4 of 4 |
+| dao | 4 of 4 | 2 of 4 |
+
+- Naming `dao look` hands over the answer: almost every passing use run ran it, whoever wrote
+  the skill. The named variant does not compare creators.
+- Unaided, none of the 6 creation runs looked for an existing checker on PATH (no `which`,
+  `dao` or browser call); the dao arm's "search existing capabilities" step searched skills only.
+- Unaided, the outcome follows whether the use run loaded the created skill: every run that
+  loaded it passed, and every failing run (all 4 in the none arm, both of dao rep 1) shows no Skill call and no
+  read of its files. dao rep 1 wrote the most (a `check_page.py` with passing and failing
+  fixtures, 880 s) and was never loaded.
+- MiniMax (run 40347366079) agreed on the named variant (none 4 of 4, skill-creator 2 of 2)
+  before a quota limit voided the rest.
+- 2 skills per cell, one model; descriptive only. Created skills are kept from these runs on
+  (`kept/<task>-<arm>-<rep>-skill/`), so the next run can show why a description did not trigger.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.

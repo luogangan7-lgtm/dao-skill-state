@@ -117,6 +117,7 @@ def main():
         usage = sorted(os.listdir(os.path.join(root, name, "usage")))
         for u in usage:  # baseline: the rules are not guessable
             r = run.run_one(os.path.join(root, name, "usage", u), "none", a.max_turns, a.timeout)
+            run.keep_files(os.path.join(root, name, "usage", u), r["ws"], os.path.join(a.out_dir, "kept", f"{name}-baseline-{u}"))
             emit({"task": name, "phase": "baseline", "usage": u, **r})
         for arm in a.arms.split(","):
             for rep in range(a.reps):
@@ -131,6 +132,16 @@ def main():
                 created = os.path.join(c.get("ws", ""), "new-skill")
                 valid = bool(c["pass"]) and structure_ok(created)
                 emit({"task": name, "arm": arm, "rep": rep, "phase": "create", "valid": valid, **c})
+                # keep the created skill, redacted, so a reviewer can see why a use run did or did not load it
+                for d, _, fs in os.walk(created):
+                    for f in fs:
+                        src = os.path.join(d, f)
+                        if os.path.islink(src) or os.path.getsize(src) > 1 << 20:
+                            continue
+                        dst = os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-skill", os.path.relpath(src, created))
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        with open(src, errors="replace") as fi, open(dst, "w") as fo:
+                            fo.write(run.redact(fi.read()))
                 if not c["pass"]:
                     continue
                 # phase 2: use the created skill on every usage task
@@ -140,6 +151,7 @@ def main():
                     shutil.copytree(created, os.path.join(udir, "skills", "created-skill"))
                     for use_arm in a.use_arms.split(","):
                         r = run.run_one(udir, use_arm, a.max_turns, a.timeout)
+                        run.keep_files(udir, r["ws"], os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-{u}-{use_arm}"))
                         emit({"task": name, "arm": arm, "rep": rep, "phase": "use", "usage": u,
                               "use_arm": use_arm, **r})
     print("\n| task | creator arm | created | valid | use: skills pass | use: hook pass | baseline pass |")
