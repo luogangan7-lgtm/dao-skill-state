@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only Agent Skill frontmatter checker; not a security or behavior scan."""
+"""Read-only Agent Skill frontmatter checker; not a security or behavior scan.
+
+Also warns, without executing anything, when a bundled Python helper matches input text against
+a word (a regular expression such as r"approval:"): a helper that looks for words the request
+never fixed misses the same rule written another way."""
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -76,6 +81,35 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
+_RE_CALLS = {"compile", "search", "match", "fullmatch", "findall", "finditer", "split", "sub", "subn"}
+_GROUP_NAMES = re.compile(r"\(\?P(?:<\w+>|=\w+\))")
+_WORD = re.compile(r"(?<!\\)[A-Za-z]{4,}")
+
+
+def _word_patterns(root: Path) -> list[dict[str, str]]:
+    """Regex literals in bundled .py helpers that contain a word of 4+ letters."""
+    found = []
+    # ponytail: bounded scan, first 200 helpers up to 1 MiB each; enough for a skill package.
+    for path in sorted(root.rglob("*.py"))[:200]:
+        try:
+            if path.stat().st_size > 1024 * 1024:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _RE_CALLS
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "re" and node.args):
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and _WORD.search(_GROUP_NAMES.sub("", arg.value)):
+                found.append(_issue("word-pattern", f"{path.relative_to(root)}:{node.lineno} matches input text against "
+                                    f"the words in {arg.value!r}. If the request leaves that input's format open, a person "
+                                    "may write the same thing differently and this helper will miss it: have the agent "
+                                    "read the input for it instead of the helper, or print what the helper did not match."))
+    return found
+
+
 def check_skill(skill_dir: str | Path) -> dict[str, Any]:
     root = Path(skill_dir)
     result: dict[str, Any] = {"path": str(root), "errors": [], "warnings": []}
@@ -139,6 +173,7 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
         elif any(not isinstance(key, str) or not isinstance(value, str) for key, value in metadata.items()):
             result["errors"].append(_issue("metadata", "metadata keys and values must all be strings"))
 
+    result["warnings"].extend(_word_patterns(root))
     result["status"] = "valid" if not result["errors"] else "invalid"
     return result
 
