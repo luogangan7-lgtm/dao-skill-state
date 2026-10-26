@@ -220,7 +220,7 @@ def main():
                         os.makedirs(dest, exist_ok=True)
                         for rel in open(keep).read().split():
                             src = os.path.join(r["ws"], rel)
-                            if os.path.isfile(src) and os.path.getsize(src) <= 1 << 20:
+                            if os.path.isfile(src) and not os.path.islink(src) and os.path.getsize(src) <= 1 << 20:
                                 # agent-written, so redacted like every other recorded output
                                 with open(src, errors="replace") as fi, \
                                         open(os.path.join(dest, os.path.basename(rel)), "w") as fo:

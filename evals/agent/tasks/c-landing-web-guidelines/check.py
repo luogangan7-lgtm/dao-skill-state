@@ -8,11 +8,14 @@ import sys
 page = os.path.join(sys.argv[1], "index.html")
 if not os.path.isfile(page):
     sys.exit("no index.html")
+report = os.path.join(sys.argv[1], "look.json")
+if os.path.lexists(report):  # never keep a report the agent left behind
+    os.remove(report)
 p = subprocess.run(["dao", "look", page], capture_output=True, text=True, timeout=110)
 if p.returncode == 2 or not p.stdout.strip():
     sys.exit("look could not render: " + p.stderr.strip()[-200:])
 r = json.loads(p.stdout)
-with open(os.path.join(sys.argv[1], "look.json"), "w") as f:  # kept for review (keep.txt)
+with open(report, "w") as f:  # kept for review (keep.txt)
     f.write(p.stdout)
 print(" | ".join(f"{v['width']}: " + (",".join(f"{k}={n}" for k, n in sorted(v["counts"].items())) or "clean")
                  for v in r["views"]))

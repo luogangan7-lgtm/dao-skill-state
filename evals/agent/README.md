@@ -586,15 +586,18 @@ Contrast findings per page at 1280 px:
 - No run passed (0 of 42): every page has more than 8 text sizes. The kept pages declare that
   many (one has about 30 font-size values such as .95, .93, .92 and .88rem), so the finding is
   real, and no arm or model avoided it.
-- Spot checks of kept pages match the contrast findings, e.g. `#8d7a67` text on `#faf4e7` is about
-  3.7:1 against the 4.5:1 WCAG asks for body text.
+- Spot checks of kept pages are consistent with the contrast findings (light secondary text
+  reported at 3.4 to 4.25:1); one page also uses `#8d7a67` text on `#faf4e7`, about 3.7:1, against
+  the 4.5:1 WCAG asks for body text. Run 40299859798 kept no pages, so its rows rest on the
+  checker's tally only.
 - MiniMax loaded frontend-design in 6 of 6 runs and web-design-guidelines in 0 of 6 (no Skill
   call and no read of its files), yet both arms show few contrast findings, while the placebo arm
-  stays nearer to `none`. A plausible reading is that the skill's description, which the host
+  stays nearer to `none` (the arms ran in separate runs, the placebo in a third, and its mean is
+  pulled down by two pages with none). A plausible reading is that the skill's description, which the host
   lists to the model, is enough to shift attention; the runs cannot separate that from noise.
 - Nemotron 3.5 Super VL wrote each page in 2 to 8 turns, loaded no skill in 12 runs, and shows no
   difference between arms.
-- MiniMax hit the 30-turn limit in most runs (taking and cropping its own screenshots); the page
+- MiniMax hit the 30-turn limit in 27 of 30 runs (taking and cropping its own screenshots); the page
   was written each time.
 - 3 to 12 pages per cell, one prompt, one model each; descriptive only.
 
