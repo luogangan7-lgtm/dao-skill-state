@@ -12,6 +12,8 @@ p = subprocess.run(["dao", "look", page], capture_output=True, text=True, timeou
 if p.returncode == 2 or not p.stdout.strip():
     sys.exit("look could not render: " + p.stderr.strip()[-200:])
 r = json.loads(p.stdout)
+with open(os.path.join(sys.argv[1], "look.json"), "w") as f:  # kept for review (keep.txt)
+    f.write(p.stdout)
 print(" | ".join(f"{v['width']}: " + (",".join(f"{k}={n}" for k, n in sorted(v["counts"].items())) or "clean")
                  for v in r["views"]))
 sys.exit(0 if r["status"] == "clean" else 1)

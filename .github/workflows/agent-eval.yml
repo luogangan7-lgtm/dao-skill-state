@@ -197,3 +197,4 @@ jobs:
             results/*.jsonl
             results/candidates/
             results/created/
+            results/kept/

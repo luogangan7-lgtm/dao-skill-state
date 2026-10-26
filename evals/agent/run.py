@@ -212,6 +212,14 @@ def main():
                 for rep in range(a.reps):
                     r = {"task": name, "arm": arm, "rep": rep,
                          **run_one(os.path.join(a.tasks_dir, name), arm, a.max_turns, a.timeout)}
+                    keep = os.path.join(a.tasks_dir, name, "keep.txt")
+                    if os.path.isfile(keep):  # what a reviewer needs to recheck the checker's verdict
+                        dest = os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}")
+                        os.makedirs(dest, exist_ok=True)
+                        for rel in open(keep).read().split():
+                            src = os.path.join(r["ws"], rel)
+                            if os.path.isfile(src) and os.path.getsize(src) <= 1 << 20:
+                                shutil.copy(src, dest)
                     rows.append(r)
                     f.write(json.dumps(r) + "\n")
                     f.flush()
