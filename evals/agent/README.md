@@ -586,8 +586,8 @@ Contrast findings per page at 1280 px:
 - No run passed (0 of 42): every page has more than 8 text sizes. The kept pages declare that
   many (one has about 30 font-size values such as .95, .93, .92 and .88rem), so the finding is
   real, and no arm or model avoided it.
-- Spot checks of kept pages are consistent with the contrast findings (light secondary text
-  reported at 3.4 to 4.25:1); one page also uses `#8d7a67` text on `#faf4e7`, about 3.7:1, against
+- Spot checks of kept pages are consistent with the contrast findings (kept reports list
+  ratios from 1.2 to 4.25:1, mostly light secondary text); one page also uses `#8d7a67` text on `#faf4e7`, about 3.7:1, against
   the 4.5:1 WCAG asks for body text. Run 40299859798 kept no pages, so its rows rest on the
   checker's tally only.
 - MiniMax loaded frontend-design in 6 of 6 runs and web-design-guidelines in 0 of 6 (no Skill
