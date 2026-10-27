@@ -1345,6 +1345,42 @@ mod tests {
     }
 
     #[test]
+    fn quoted_ratios_without_a_script_warn() {
+        let d = std::env::temp_dir().join(format!("dao-check-ratio-{}", std::process::id()));
+        let dir = d.join("pages");
+        fs::create_dir_all(dir.join("references")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pages\ndescription: short\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("references/contrast.md"),
+            "#111827 16.7:1, #4b5563 10.9:1, #6b7280 7.2:1, minimum 4.5:1\n",
+        )
+        .unwrap();
+        let hit = |p: &Path| {
+            check_skill(&p.to_string_lossy())
+                .warnings
+                .iter()
+                .any(|w| w.kind == "unchecked-values" && w.message.contains("scripts/"))
+        };
+        assert!(hit(&dir));
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(dir.join("scripts/contrast.py"), "print()\n").unwrap();
+        assert!(!hit(&dir));
+        let rules = d.join("rules");
+        fs::create_dir_all(&rules).unwrap();
+        fs::write(
+            rules.join("SKILL.md"),
+            "---\nname: rules\ndescription: short\n---\nBody text 4.5:1, large text 3:1, AAA 7:1.\n",
+        )
+        .unwrap();
+        assert!(!hit(&rules));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn yaml_1_1_implicit_types_like_pyyaml() {
         let res = Resolvers::new();
         for (v, t) in [

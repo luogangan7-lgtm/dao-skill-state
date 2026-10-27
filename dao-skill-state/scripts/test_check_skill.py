@@ -55,6 +55,22 @@ metadata:
                 ok = write_skill(Path(tmp), f"t{len(text)}", f"name: t{len(text)}\ndescription: {text}\n")
                 self.assertFalse([x for x in check_skill(ok)["warnings"] if x["kind"] == "trigger"], text)
 
+    def test_quoted_ratios_without_a_script_warn(self):
+        # a skill quoting a wrong contrast table failed 4 of 4 use runs; one shipping a script passed (eval H, run 40471493176)
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = write_skill(Path(tmp), "pages", "name: pages\ndescription: short\n")
+            (skill / "references").mkdir()
+            (skill / "references" / "contrast.md").write_text("#111827 16.7:1, #4b5563 10.9:1, #6b7280 7.2:1, minimum 4.5:1\n", encoding="utf-8")
+            result = check_skill(skill)
+            self.assertEqual(result["status"], "valid", result)
+            self.assertIn("scripts/", next(x["message"] for x in result["warnings"] if x["kind"] == "unchecked-values"))
+            (skill / "scripts").mkdir()
+            (skill / "scripts" / "contrast.py").write_text("print()\n", encoding="utf-8")
+            self.assertFalse([x for x in check_skill(skill)["warnings"] if x["kind"] == "unchecked-values"])
+            thresholds = write_skill(Path(tmp), "rules", "name: rules\ndescription: short\n")
+            (thresholds / "SKILL.md").write_text("---\nname: rules\ndescription: short\n---\nBody text 4.5:1, large text 3:1, AAA 7:1.\n", encoding="utf-8")
+            self.assertFalse([x for x in check_skill(thresholds)["warnings"] if x["kind"] == "unchecked-values"])
+
     def test_missing_name_and_directory_mismatch_are_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             skill = write_skill(Path(tmp), "wrong-dir", "description: short\n")
