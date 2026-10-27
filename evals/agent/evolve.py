@@ -109,6 +109,7 @@ def main():
                 emit({"task": name, "phase": "base", "case": case, "use_arm": use_arm, **r})
             for arm in a.arms.split(","):
                 for rep in range(a.reps):
+                    run.sweep()
                     tdir = tempfile.mkdtemp(prefix="evolve-")
                     old = "\n".join("- " + open(os.path.join(troot, "usage", c, "prompt.md")).read().strip()
                                     for c in sorted(os.listdir(os.path.join(troot, "usage"))) if c.startswith("old-"))

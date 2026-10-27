@@ -201,6 +201,7 @@ def main():
             if hook and not os.path.exists(os.path.join(troot, "distractors.json")):
                 continue  # routing needs something to route between
             for rep in range(a.reps):
+                run.sweep()
                 made, mk = None, None
                 if arm.startswith("make:"):
                     tag = f"{name}-{arm[5:]}-{rep}"

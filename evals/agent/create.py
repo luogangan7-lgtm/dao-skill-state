@@ -135,6 +135,7 @@ def main():
             emit({"task": name, "phase": "baseline", "usage": u, **r})
         for arm in a.arms.split(","):
             for rep in range(a.reps):
+                run.sweep()
                 # phase 1: create, in a throwaway task dir holding the request and the meta-skill
                 tdir = tempfile.mkdtemp(prefix="create-")
                 open(os.path.join(tdir, "prompt.md"), "w").write(invoke(
