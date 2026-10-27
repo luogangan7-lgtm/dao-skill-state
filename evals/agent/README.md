@@ -754,17 +754,20 @@ use runs per arm, one baseline.
 | dao | 10 of 10, 7 of 10 | 10 of 10, 7 of 10 | 14 of 20 (0.48–0.85) |
 | skill-creator | 10 of 10, 7 of 10 | 10 of 10, 7 of 10 | 14 of 20 (0.48–0.85) |
 
-- The two creators tie. Every earlier follow-up result (3 to 5 of 6 per arm) lies inside this
-  interval, so the differences reported above between creators and between checker changes are
-  consistent with noise.
+- The two creators tie. The dao and skill-creator rows of the follow-ups above (3 to 5 of 6)
+  are within what this rate predicts for 6 runs, so their differences, between creators and
+  between checker changes, are consistent with noise. The interval treats the 20 use runs as
+  independent; they come from 10 skills (dao per-skill passes 2,2,0,1,1,2,0,2,2,2), so the true
+  interval is wider. The `none` arm (0 or 1 of 6 earlier) was not rerun.
 - Loading no longer separates them: all 40 use runs loaded the skill.
-- The warnings rarely fire. Across 10 dao creations `unchecked-values` appeared once (dao-7,
-  then cleared) and `unnamed-script` never. `check_skill` errors were followed by a clean
-  re-check in 4 of the 5 creations whose first recorded check was invalid.
-- Failures are still mostly contrast (10 of 12), usually 1 to 3 elements, and running a
-  shipped script did not prevent them: dao use runs with a `.py` command passed 10 of 15, those
-  without passed 4 of 5. A script checks the colour pairs the agent chooses to give it, not the
-  rendered page.
+- The warnings rarely fire. Across 10 dao creations `unchecked-values` appeared once (dao-7; two
+  unparsed tool errors followed, then a clean check) and `unnamed-script` never. `check_skill`
+  errors were followed by a clean re-check in 4 of the 5 creations whose first recorded check
+  was invalid.
+- Failures are still mostly contrast (10 of 12), from 1 to 10 elements. Whether a shipped script
+  helps is inconclusive: dao use runs with any `.py` or `scripts/` command (which may not be the
+  skill's script) passed 10 of 15, the other 5 passed 4. One possible reason, not tested here,
+  is that a script checks only the colour pairs the agent gives it, not the rendered page.
 - The baseline failed (contrast, type scale). One model; 10 skills per arm.
 
 ### Limits
