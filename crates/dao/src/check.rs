@@ -1318,6 +1318,26 @@ mod tests {
     }
 
     #[test]
+    fn description_without_a_trigger_warns() {
+        let d = std::env::temp_dir().join(format!("dao-check-trig-{}", std::process::id()));
+        for (text, warns) in [
+            ("Write and review web pages so they pass review with readable contrast.", true),
+            ("Write and review web pages with readable contrast. Use when an agent changes a page.", false),
+            ("检查网页的对比度、字号和手机布局，在修改任何网页时使用这个技能。", false),
+            ("short", false),
+        ] {
+            let dir = d.join("pages");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), format!("---\nname: pages\ndescription: {text}\n---\n")).unwrap();
+            let r = check_skill(&dir.to_string_lossy());
+            let hit = r.warnings.iter().any(|w| w.kind == "trigger" && w.message.contains("when to use it"));
+            assert_eq!(hit, warns, "{text}");
+            assert_eq!(r.status, "valid");
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn yaml_1_1_implicit_types_like_pyyaml() {
         let res = Resolvers::new();
         for (v, t) in [
