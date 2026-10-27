@@ -677,6 +677,28 @@ dao and skill-creator skills kept from 40465464046, 4 times each, through the sk
 - No kept skill from either run mentions `dao look` (grep of `kept/*-skill` and `replay/`). One
   baseline per run, both failed. One model; descriptive only.
 
+Third follow-up: `check_skill` warns `unchecked-values` when a skill quotes 4 or more distinct `N:1`
+ratios but has no file in `scripts/` (#112). Run 40486956565 (branch head 62eef6f, merged unchanged
+as 81b2460), unaided, 3 skills per arm.
+
+| Creator arm | Final skill would get the warning | Skill arm: loaded, passing | Hook arm: loaded, passing |
+|---|---|---|---|
+| dao | 0 of 3 (2 ship a contrast script; 1 quotes one ratio) | 2 of 3, 3 of 3 | 3 of 3, 1 of 3 |
+| skill-creator | 2 of 3 | 3 of 3, 3 of 3 | 3 of 3, 1 of 3 |
+| none | 2 of 3 | 1 of 3, 1 of 3 | 0 of 3, 0 of 3 |
+
+- No measured effect. dao skills already shipped scripts before the warning (3 of 3 in
+  40471506098), and the run logs record commands but not their output, so whether the warning
+  fired during a dao creation, and whether a script was added because of it, cannot be seen.
+- Scripts help only when run. dao use runs ran the skill's script 3 times: 2 passed, and the
+  third (dao-1, hook) stopped after "All contrast checks pass" without writing `index.html`.
+  dao-2 through the hook computed contrast inline instead of running its script and failed
+  (contrast 1). dao-1 through the skill list made no Skill call but found and ran the script
+  itself, so "loaded" undercounts it.
+- dao-2's creation ran `find /` and saw paths outside its workspace. #110 does not stop that.
+- Next: record `check_skill` output in the create rows, so a warning and the writer's response
+  are visible. One baseline, failed. One model; descriptive only.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
