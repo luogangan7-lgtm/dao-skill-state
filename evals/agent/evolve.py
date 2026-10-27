@@ -104,11 +104,13 @@ def main():
     for name in names:
         troot = os.path.join(root, name)
         for use_arm in a.use_arms.split(","):
+            run.sweep()
             base = replay(troot, os.path.join(troot, "skill"), use_arm, a.max_turns, a.timeout)
             for case, r in base.items():
                 emit({"task": name, "phase": "base", "case": case, "use_arm": use_arm, **r})
             for arm in a.arms.split(","):
                 for rep in range(a.reps):
+                    run.sweep()
                     tdir = tempfile.mkdtemp(prefix="evolve-")
                     old = "\n".join("- " + open(os.path.join(troot, "usage", c, "prompt.md")).read().strip()
                                     for c in sorted(os.listdir(os.path.join(troot, "usage"))) if c.startswith("old-"))

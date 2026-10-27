@@ -33,6 +33,18 @@ import tempfile
 import time
 
 
+# every scratch dir (workspaces, HOMEs, task dirs) lives under one root that sweep() empties between
+# repetitions: arms run one after another on one runner, and a later run could otherwise read an earlier
+# arm's leftovers (run 40445025600: a skill-creator creation listed dao's task dir under /tmp)
+tempfile.tempdir = tempfile.mkdtemp(prefix="agent-eval-")
+
+
+def sweep():
+    """Delete every scratch dir made so far; call at the start of each independent repetition."""
+    for n in os.listdir(tempfile.tempdir):
+        shutil.rmtree(os.path.join(tempfile.tempdir, n), ignore_errors=True)
+
+
 KEEP_ENV = ("PATH", "LANG", "LC_ALL", "TMPDIR", "NODE_PATH")  # NODE_PATH: global npm libraries
 
 
@@ -41,6 +53,7 @@ def model_env(home):
     env = {k: v for k, v in os.environ.items()
            if k in KEEP_ENV or k.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "DISABLE_"))}
     env["HOME"] = home
+    env["TMPDIR"] = tempfile.tempdir  # the agent's own scratch files are swept with ours
     return env
 
 
@@ -226,6 +239,7 @@ def main():
         for name in names:
             for arm in a.arms.split(","):
                 for rep in range(a.reps):
+                    sweep()
                     r = {"task": name, "arm": arm, "rep": rep,
                          **run_one(os.path.join(a.tasks_dir, name), arm, a.max_turns, a.timeout)}
                     keep_files(os.path.join(a.tasks_dir, name), r["ws"],
