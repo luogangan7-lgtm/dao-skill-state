@@ -1135,6 +1135,43 @@ fn mismatch_message(name: &str, folder: &str) -> String {
     }
 }
 
+/// Regular, non-symlink files directly in `folder`; empty when it is missing, a link or unreadable.
+fn regular_files(folder: &Path) -> Vec<PathBuf> {
+    match fs::symlink_metadata(folder) {
+        Ok(m) if m.is_dir() => {}
+        _ => return Vec::new(),
+    }
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
+        .collect()
+}
+
+/// 4+ distinct ratios in SKILL.md and references/*.md, and no file in scripts/: agents copied a
+/// skill's wrong contrast table while a skill with a script passed (eval H, run 40471493176).
+/// Same rule as `_quotes_unchecked_values` in check_skill.py.
+fn quotes_unchecked_values(root: &Path, text: &str) -> bool {
+    let ratio = Regex::new(r"(?-u:\b)[0-9]+(?:\.[0-9]+)?:1(?-u:\b)").unwrap();
+    let mut texts = vec![text.to_string()];
+    for f in regular_files(&root.join("references")) {
+        let small = fs::metadata(&f).is_ok_and(|m| m.len() <= 1024 * 1024);
+        if f.extension().is_some_and(|x| x == "md") && small {
+            if let Ok(Ok(t)) = fs::read(&f).map(String::from_utf8) {
+                texts.push(t);
+            }
+        }
+    }
+    let found: HashSet<&str> = texts
+        .iter()
+        .flat_map(|t| ratio.find_iter(t).map(|m| m.as_str()))
+        .collect();
+    found.len() >= 4 && regular_files(&root.join("scripts")).is_empty()
+}
+
 pub fn check_skill(arg: &str) -> CheckResult {
     let path = py_path_str(arg);
     let mut r = CheckResult {
@@ -1294,6 +1331,9 @@ pub fn check_skill(arg: &str) -> CheckResult {
             )),
         }
     }
+    if quotes_unchecked_values(&root, &text) {
+        r.warnings.push(issue("unchecked-values", "the skill quotes several ratios (N:1) but has no file in scripts/; agents copy quoted values even when they are wrong, so add a script under scripts/ that computes them and say when to run it"));
+    }
     r.status = if r.errors.is_empty() {
         "valid"
     } else {
@@ -1341,6 +1381,42 @@ mod tests {
             assert_eq!(hit, warns, "{text}");
             assert_eq!(r.status, "valid");
         }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn quoted_ratios_without_a_script_warn() {
+        let d = std::env::temp_dir().join(format!("dao-check-ratio-{}", std::process::id()));
+        let dir = d.join("pages");
+        fs::create_dir_all(dir.join("references")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pages\ndescription: short\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("references/contrast.md"),
+            "#111827 16.7:1, #4b5563 10.9:1, #6b7280 7.2:1, minimum 4.5:1\n",
+        )
+        .unwrap();
+        let hit = |p: &Path| {
+            check_skill(&p.to_string_lossy())
+                .warnings
+                .iter()
+                .any(|w| w.kind == "unchecked-values" && w.message.contains("scripts/"))
+        };
+        assert!(hit(&dir));
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(dir.join("scripts/contrast.py"), "print()\n").unwrap();
+        assert!(!hit(&dir));
+        let rules = d.join("rules");
+        fs::create_dir_all(&rules).unwrap();
+        fs::write(
+            rules.join("SKILL.md"),
+            "---\nname: rules\ndescription: short\n---\nBody text 4.5:1, large text 3:1, AAA 7:1.\n",
+        )
+        .unwrap();
+        assert!(!hit(&rules));
         let _ = fs::remove_dir_all(&d);
     }
 
