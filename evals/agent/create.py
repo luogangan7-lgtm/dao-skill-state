@@ -114,7 +114,8 @@ def main():
         sys.exit(f"unknown creator arms: {sorted(bad)} (use none, skill-creator, dao)")
     root = os.path.abspath(a.tasks_dir)
     names = [t for t in a.tasks.split(",") if t] or sorted(
-        d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "request.md")))
+        d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "request.md"))
+        or os.path.isdir(os.path.join(root, d, "replay")))
     os.makedirs(a.out_dir, exist_ok=True)
     out = open(os.path.join(a.out_dir, "create.jsonl"), "a")
     rows = []
@@ -134,6 +135,27 @@ def main():
             r = run.run_one(os.path.join(root, name, "usage", u), "none", a.max_turns, a.timeout)
             run.keep_files(os.path.join(root, name, "usage", u), r["ws"], os.path.join(a.out_dir, "kept", f"{name}-baseline-{u}"))
             emit({"task": name, "phase": "baseline", "usage": u, **r})
+
+        def use(arm, rep, created, use_arms):
+            """Phase 2: install the created skill and run every usage task with it."""
+            for u in usage:
+                udir = tempfile.mkdtemp(prefix="use-")
+                shutil.copytree(os.path.join(root, name, "usage", u), udir, dirs_exist_ok=True)
+                shutil.copytree(created, os.path.join(udir, "skills", os.path.basename(created)),  # links stay out
+                                ignore=lambda d, names: [n for n in names if os.path.islink(os.path.join(d, n))])
+                for use_arm in use_arms:
+                    r = run.run_one(udir, use_arm, a.max_turns, a.timeout)
+                    run.keep_files(udir, r["ws"], os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-{u}-{use_arm}"))
+                    emit({"task": name, "arm": arm, "rep": rep, "phase": "use", "usage": u, "use_arm": use_arm, **r})
+
+        replay = os.path.join(root, name, "replay")
+        if os.path.isdir(replay):  # skills saved from an earlier run: use phase only, loaded from the skill list
+            for label in sorted(os.listdir(replay)):
+                (skill,) = os.listdir(os.path.join(replay, label))
+                for rep in range(a.reps):
+                    run.sweep()
+                    use(label, rep, os.path.join(replay, label, skill), ["skills"])
+            continue
         for arm in a.arms.split(","):
             for rep in range(a.reps):
                 run.sweep()
@@ -160,17 +182,7 @@ def main():
                             fo.write(run.redact(fi.read()))
                 if not c["pass"] or created is None:
                     continue
-                # phase 2: use the created skill on every usage task
-                for u in usage:
-                    udir = tempfile.mkdtemp(prefix="use-")
-                    shutil.copytree(os.path.join(root, name, "usage", u), udir, dirs_exist_ok=True)
-                    shutil.copytree(created, os.path.join(udir, "skills", os.path.basename(created)),  # links stay out
-                                    ignore=lambda d, names: [n for n in names if os.path.islink(os.path.join(d, n))])
-                    for use_arm in a.use_arms.split(","):
-                        r = run.run_one(udir, use_arm, a.max_turns, a.timeout)
-                        run.keep_files(udir, r["ws"], os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-{u}-{use_arm}"))
-                        emit({"task": name, "arm": arm, "rep": rep, "phase": "use", "usage": u,
-                              "use_arm": use_arm, **r})
+                use(arm, rep, created, a.use_arms.split(","))
     print("\n| task | creator arm | created | valid | use: skills pass | use: hook pass | baseline pass |")
     print("|---|---|---|---|---|---|---|")
     for name in names:
