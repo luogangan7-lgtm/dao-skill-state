@@ -41,6 +41,8 @@ _PORTABLE_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # words that say when a skill applies; descriptions under 8 words are too short to judge
 _TRIGGER = re.compile(r"\bwhen(ever)?\b|\buse[ds]?\b|\btrigger|\binvoke|时|用于|使用", re.I)
 _ALLOWED_TOP = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
+# quoted ratios such as 7.2:1; ASCII so crates/dao/src/check.rs matches the same text
+_RATIO = re.compile(r"\b[0-9]+(?:\.[0-9]+)?:1\b", re.A)
 
 
 def _issue(kind: str, message: str) -> dict[str, str]:
@@ -58,6 +60,30 @@ def _mismatch_message(name: str, folder: str) -> str:
                 "report any mismatch")
     return (f"name '{name}' must match the skill directory name '{folder}', which is not a valid skill "
             "name: keep a folder the user asked for, keep a valid name and report the mismatch")
+
+
+def _regular_files(folder: Path) -> list[Path]:
+    """Regular, non-symlink files directly in folder; [] when it is missing, a link or unreadable."""
+    try:
+        if folder.is_symlink() or not folder.is_dir():
+            return []
+        return [f for f in folder.iterdir() if f.is_file() and not f.is_symlink()]
+    except OSError:
+        return []
+
+
+def _quotes_unchecked_values(root: Path, text: str) -> bool:
+    """4+ distinct ratios in SKILL.md and references/*.md, and no file in scripts/: agents copied a
+    skill's wrong contrast table while a skill with a script passed (eval H, run 40471493176)."""
+    texts = [text]
+    for f in _regular_files(root / "references"):
+        try:
+            if f.suffix == ".md" and f.stat().st_size <= 1024 * 1024:
+                texts.append(f.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            pass
+    found = {m for t in texts for m in _RATIO.findall(t)}
+    return len(found) >= 4 and not _regular_files(root / "scripts")
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -142,6 +168,9 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
             result["errors"].append(_issue("metadata", "metadata must be a string:string mapping"))
         elif any(not isinstance(key, str) or not isinstance(value, str) for key, value in metadata.items()):
             result["errors"].append(_issue("metadata", "metadata keys and values must all be strings"))
+
+    if _quotes_unchecked_values(root, text):
+        result["warnings"].append(_issue("unchecked-values", "the skill quotes several ratios (N:1) but has no file in scripts/; agents copy quoted values even when they are wrong, so add a script under scripts/ that computes them and say when to run it"))
 
     result["status"] = "valid" if not result["errors"] else "invalid"
     return result
