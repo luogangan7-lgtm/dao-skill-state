@@ -36,7 +36,7 @@ OUTPUT_RULE = ("\n\nWrite the skill into its own folder under ./out/, named afte
 CHECK_CREATED = '''import os, sys
 out = os.path.join(sys.argv[1], "out")
 dirs = os.listdir(out) if os.path.isdir(out) else []
-sys.exit(0 if len(dirs) == 1 and not os.path.islink(os.path.join(out, dirs[0]))
+sys.exit(0 if not os.path.islink(out) and len(dirs) == 1 and not os.path.islink(os.path.join(out, dirs[0]))
          and os.path.isfile(os.path.join(out, dirs[0], "SKILL.md")) else 1)
 '''
 
@@ -61,6 +61,14 @@ def meta_skill(arm, dest):
     elif arm == "dao":
         shutil.copytree(os.path.join(REPO, "dao-skill-state"), os.path.join(dest, "skills", "dao-skill-state"),
                         ignore=shutil.ignore_patterns("tests", "__pycache__"))
+
+
+def created_dir(ws):
+    """The one skill folder the creator wrote under ws/out/ (what CHECK_CREATED accepted), or None."""
+    out = os.path.join(ws, "out")
+    dirs = os.listdir(out) if os.path.isdir(out) and not os.path.islink(out) else []
+    d = os.path.join(out, dirs[0]) if len(dirs) == 1 else None
+    return d if d and os.path.isdir(d) and not os.path.islink(d) else None
 
 
 def structure_ok(skill_dir):
@@ -135,13 +143,11 @@ def main():
                 meta_skill(arm, tdir)
                 c = run.run_one(tdir, ("hook" if a.meta == "hook" else "skills") if arm != "none" else "none",
                                 a.max_turns, a.timeout)
-                out = os.path.join(c.get("ws", ""), "out")
-                dirs = os.listdir(out) if os.path.isdir(out) else []
-                created = os.path.join(out, dirs[0]) if len(dirs) == 1 else out  # pass implies exactly one
-                valid = bool(c["pass"]) and structure_ok(created)
+                created = created_dir(c.get("ws", ""))
+                valid = bool(c["pass"]) and created is not None and structure_ok(created)
                 emit({"task": name, "arm": arm, "rep": rep, "phase": "create", "valid": valid, **c})
                 # keep the created skill, redacted, so a reviewer can see why a use run did or did not load it
-                for d, _, fs in os.walk(created):
+                for d, _, fs in os.walk(created) if created else ():
                     for f in fs:
                         src = os.path.join(d, f)
                         if os.path.islink(src) or os.path.getsize(src) > 1 << 20:
@@ -150,13 +156,14 @@ def main():
                         os.makedirs(os.path.dirname(dst), exist_ok=True)
                         with open(src, errors="replace") as fi, open(dst, "w") as fo:
                             fo.write(run.redact(fi.read()))
-                if not c["pass"]:
+                if not c["pass"] or created is None:
                     continue
                 # phase 2: use the created skill on every usage task
                 for u in usage:
                     udir = tempfile.mkdtemp(prefix="use-")
                     shutil.copytree(os.path.join(root, name, "usage", u), udir, dirs_exist_ok=True)
-                    shutil.copytree(created, os.path.join(udir, "skills", os.path.basename(created)))
+                    shutil.copytree(created, os.path.join(udir, "skills", os.path.basename(created)),  # links stay out
+                                    ignore=lambda d, names: [n for n in names if os.path.islink(os.path.join(d, n))])
                     for use_arm in a.use_arms.split(","):
                         r = run.run_one(udir, use_arm, a.max_turns, a.timeout)
                         run.keep_files(udir, r["ws"], os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-{u}-{use_arm}"))
