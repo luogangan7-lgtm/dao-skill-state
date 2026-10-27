@@ -701,6 +701,28 @@ as 81b2460), unaided, 3 skills per arm.
 - Next: record `check_skill` output in the create rows, so a warning and the writer's response
   are visible. One baseline, failed. One model; descriptive only.
 
+Fourth follow-up: result rows now keep what `check_skill` printed (`checks`, #115). Run
+40496212294 (branch head e4b3187, merged unchanged as e9f3e03), unaided, arms dao and
+skill-creator, 3 skills each.
+
+| dao rep | `check_skill` results in order | Final skill | Use: skill list / hook |
+|---|---|---|---|
+| 0 | valid + `unchecked-values`, then valid | `scripts/contrast.py`, not named in SKILL.md | pass / pass |
+| 1 | valid | `scripts/check-contrast.py`, 2 ratios | fail / fail (no Skill call in either) |
+| 2 | invalid (frontmatter), valid + `unchecked-values`, then valid | `scripts/contrast.py`, named once as "if present" | pass / fail (no Skill call) |
+
+skill-creator, which does not run `check_skill`: skill list 3 of 3 loaded and passing, hook
+3 of 3 loaded and 2 of 3 passing. One baseline, failed.
+
+- The warning reached the writer and changed the skill. Both dao writers that got
+  `unchecked-values` then ran a new `scripts/contrast.py` and re-ran `check_skill` clean. This is
+  the first checker change in section H with a visible writer response; n is 2.
+- The added scripts were not used. No dao use run ran a script from the skill (0 of 6). dao-0's
+  SKILL.md never names its script, and dao-2's names it only as optional. dao-0 passed without
+  running it; the three failures had no Skill call at all.
+- The writer added a script to clear the warning without wiring it into the skill. A check that
+  every file in `scripts/` is named in SKILL.md would target that.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
