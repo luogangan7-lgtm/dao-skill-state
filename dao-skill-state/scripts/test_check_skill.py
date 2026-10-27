@@ -76,11 +76,13 @@ metadata:
         with tempfile.TemporaryDirectory() as tmp:
             skill = write_skill(Path(tmp), "pages", "name: pages\ndescription: short\n")
             (skill / "scripts").mkdir()
-            (skill / "scripts" / "contrast.py").write_text("print()\n", encoding="utf-8")
+            for name in ("contrast.py", "b_tool.sh", ".DS_Store", "__init__.py"):
+                (skill / "scripts" / name).write_text("print()\n", encoding="utf-8")
             result = check_skill(skill)
             self.assertEqual(result["status"], "valid", result)
-            self.assertIn("contrast.py", next(x["message"] for x in result["warnings"] if x["kind"] == "unnamed-script"))
-            (skill / "SKILL.md").write_text("---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\n", encoding="utf-8")
+            message = next(x["message"] for x in result["warnings"] if x["kind"] == "unnamed-script")
+            self.assertTrue(message.startswith("files in scripts/ that SKILL.md never names: b_tool.sh, contrast.py;"), message)
+            (skill / "SKILL.md").write_bytes(b"---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\r\nRun `scripts/b_tool.sh` last.\n")
             self.assertFalse([x for x in check_skill(skill)["warnings"] if x["kind"] == "unnamed-script"])
 
     def test_missing_name_and_directory_mismatch_are_errors(self):

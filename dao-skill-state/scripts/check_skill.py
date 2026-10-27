@@ -95,7 +95,7 @@ def _unnamed_scripts(root: Path, text: str) -> list[str]:
             f.name.encode("utf-8")  # undecodable names are skipped, as in check.rs
         except UnicodeEncodeError:
             continue
-        if f.name not in text:
+        if not f.name.startswith(".") and f.name != "__init__.py" and f.name not in text:  # .DS_Store, package markers
             names.append(f.name)
     return sorted(names)
 

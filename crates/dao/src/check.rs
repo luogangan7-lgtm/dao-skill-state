@@ -1179,7 +1179,7 @@ fn unnamed_scripts(root: &Path, text: &str) -> Vec<String> {
     let mut names: Vec<String> = regular_files(&root.join("scripts"))
         .iter()
         .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
-        .filter(|n| !text.contains(n.as_str()))
+        .filter(|n| !n.starts_with('.') && n != "__init__.py" && !text.contains(n.as_str())) // .DS_Store, package markers
         .collect();
     names.sort();
     names
@@ -1447,20 +1447,35 @@ mod tests {
             "---\nname: pages\ndescription: short\n---\n",
         )
         .unwrap();
-        fs::write(dir.join("scripts/contrast.py"), "print()\n").unwrap();
+        for f in ["contrast.py", "b_tool.sh", ".DS_Store", "__init__.py"] {
+            fs::write(dir.join("scripts").join(f), "print()\n").unwrap();
+        }
         let hit = |p: &Path| {
             check_skill(&p.to_string_lossy())
                 .warnings
                 .iter()
                 .any(|w| w.kind == "unnamed-script" && w.message.contains("contrast.py"))
         };
+        let r = check_skill(&dir.to_string_lossy());
+        let w = r
+            .warnings
+            .iter()
+            .find(|w| w.kind == "unnamed-script")
+            .unwrap();
+        assert!(w
+            .message
+            .starts_with("files in scripts/ that SKILL.md never names: b_tool.sh, contrast.py;"));
         assert!(hit(&dir));
         fs::write(
             dir.join("SKILL.md"),
-            "---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\n",
+            "---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\r\nRun `scripts/b_tool.sh` last.\n",
         )
         .unwrap();
         assert!(!hit(&dir));
+        assert!(!check_skill(&dir.to_string_lossy())
+            .warnings
+            .iter()
+            .any(|w| w.kind == "unnamed-script"));
         let _ = fs::remove_dir_all(&d);
     }
 
