@@ -650,6 +650,30 @@ Follow-up, unaided, 3 skills per arm.
   3 times while skill-creator's loaded 3 of 3, so the description fix alone does not explain
   loading. One baseline per run; descriptive only.
 
+Second follow-up, after arms stopped sharing scratch dirs (#110). Run 40471506098 repeats the
+unaided task; run 40471493176 (`create-tasks/page-quality-replay`) skips creation and uses the 6
+dao and skill-creator skills kept from 40465464046, 4 times each, through the skill list only.
+
+| Run | Creator arm | Skill arm: loaded, passing | Hook arm: loaded, passing |
+|---|---|---|---|
+| repeat (40471506098) | dao | 3 of 3, 2 of 3 | 3 of 3, 3 of 3 |
+| | skill-creator | 2 of 3, 2 of 3 | 3 of 3, 3 of 3 |
+| | none | 0 of 3, 0 of 3 | 0 of 3, 0 of 3 |
+| replay (40471493176) | dao-0 `readable-pages` | 4 of 4, 4 of 4 | |
+| | dao-1 `web-page` | 4 of 4, 0 of 4 | |
+| | dao-2 `web-page-standard` | 4 of 4, 3 of 4 | |
+| | skill-creator-0, 1, 2 | 12 of 12, 10 of 12 | |
+
+- The same dao skills that loaded 1 of 3 times through the list in 40465464046 loaded 12 of 12
+  times in the replay. Their descriptions did not stop the host choosing them; the earlier gap
+  came from chance or from the shared scratch dirs, which this design cannot separate.
+- Once loaded, the skill's content decides the result. dao-1 failed 4 of 4 on contrast in the
+  same places: its table claims `#6b7280` is ~7.2:1 on white (actually 4.83) and allows
+  `#f5f5f5` backgrounds (4.43), and the agent copied both. dao-0 ships a contrast script and
+  all 4 use runs called it; it passed 4 of 4. A skill that checks contrast passed; a skill that
+  quotes ratios failed.
+- Still no created skill calls `dao look`. Baselines failed in both runs. One model; descriptive only.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
