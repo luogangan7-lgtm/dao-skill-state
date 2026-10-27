@@ -1172,6 +1172,19 @@ fn quotes_unchecked_values(root: &Path, text: &str) -> bool {
     found.len() >= 4 && regular_files(&root.join("scripts")).is_empty()
 }
 
+/// Files in scripts/ that SKILL.md never names: writers added a script to clear unchecked-values
+/// without naming it, and no use run ran it (eval H, run 40496212294).
+/// Same rule as `_unnamed_scripts` in check_skill.py; non-UTF-8 names are skipped in both.
+fn unnamed_scripts(root: &Path, text: &str) -> Vec<String> {
+    let mut names: Vec<String> = regular_files(&root.join("scripts"))
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+        .filter(|n| !n.starts_with('.') && n != "__init__.py" && !text.contains(n.as_str())) // .DS_Store, package markers
+        .collect();
+    names.sort();
+    names
+}
+
 pub fn check_skill(arg: &str) -> CheckResult {
     let path = py_path_str(arg);
     let mut r = CheckResult {
@@ -1334,6 +1347,10 @@ pub fn check_skill(arg: &str) -> CheckResult {
     if quotes_unchecked_values(&root, &text) {
         r.warnings.push(issue("unchecked-values", "the skill quotes several ratios (N:1) but has no file in scripts/; agents copy quoted values even when they are wrong, so add a script under scripts/ that computes them and say when to run it"));
     }
+    let unnamed = unnamed_scripts(&root, &text);
+    if !unnamed.is_empty() {
+        r.warnings.push(issue("unnamed-script", format!("files in scripts/ that SKILL.md never names: {}; an agent using the skill runs what SKILL.md tells it to, so name each script and say when to run it", unnamed.join(", "))));
+    }
     r.status = if r.errors.is_empty() {
         "valid"
     } else {
@@ -1417,6 +1434,48 @@ mod tests {
         )
         .unwrap();
         assert!(!hit(&rules));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn script_not_named_in_skill_md_warns() {
+        let d = std::env::temp_dir().join(format!("dao-check-script-{}", std::process::id()));
+        let dir = d.join("pages");
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pages\ndescription: short\n---\n",
+        )
+        .unwrap();
+        for f in ["contrast.py", "b_tool.sh", ".DS_Store", "__init__.py"] {
+            fs::write(dir.join("scripts").join(f), "print()\n").unwrap();
+        }
+        let hit = |p: &Path| {
+            check_skill(&p.to_string_lossy())
+                .warnings
+                .iter()
+                .any(|w| w.kind == "unnamed-script" && w.message.contains("contrast.py"))
+        };
+        let r = check_skill(&dir.to_string_lossy());
+        let w = r
+            .warnings
+            .iter()
+            .find(|w| w.kind == "unnamed-script")
+            .unwrap();
+        assert!(w
+            .message
+            .starts_with("files in scripts/ that SKILL.md never names: b_tool.sh, contrast.py;"));
+        assert!(hit(&dir));
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\r\nRun `scripts/b_tool.sh` last.\n",
+        )
+        .unwrap();
+        assert!(!hit(&dir));
+        assert!(!check_skill(&dir.to_string_lossy())
+            .warnings
+            .iter()
+            .any(|w| w.kind == "unnamed-script"));
         let _ = fs::remove_dir_all(&d);
     }
 

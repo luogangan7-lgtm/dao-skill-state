@@ -86,6 +86,20 @@ def _quotes_unchecked_values(root: Path, text: str) -> bool:
     return len(found) >= 4 and not _regular_files(root / "scripts")
 
 
+def _unnamed_scripts(root: Path, text: str) -> list[str]:
+    """Files in scripts/ that SKILL.md never names: writers added a script to clear unchecked-values
+    without naming it, and no use run ran it (eval H, run 40496212294)."""
+    names = []
+    for f in _regular_files(root / "scripts"):
+        try:
+            f.name.encode("utf-8")  # undecodable names are skipped, as in check.rs
+        except UnicodeEncodeError:
+            continue
+        if not f.name.startswith(".") and f.name != "__init__.py" and f.name not in text:  # .DS_Store, package markers
+            names.append(f.name)
+    return sorted(names)
+
+
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
     lines = text.splitlines()
     if not lines or lines[0] != "---":
@@ -171,6 +185,10 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
 
     if _quotes_unchecked_values(root, text):
         result["warnings"].append(_issue("unchecked-values", "the skill quotes several ratios (N:1) but has no file in scripts/; agents copy quoted values even when they are wrong, so add a script under scripts/ that computes them and say when to run it"))
+
+    unnamed = _unnamed_scripts(root, text)
+    if unnamed:
+        result["warnings"].append(_issue("unnamed-script", f"files in scripts/ that SKILL.md never names: {', '.join(unnamed)}; an agent using the skill runs what SKILL.md tells it to, so name each script and say when to run it"))
 
     result["status"] = "valid" if not result["errors"] else "invalid"
     return result

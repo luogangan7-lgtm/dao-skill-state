@@ -71,6 +71,20 @@ metadata:
             (thresholds / "SKILL.md").write_text("---\nname: rules\ndescription: short\n---\nBody text 4.5:1, large text 3:1, AAA 7:1.\n", encoding="utf-8")
             self.assertFalse([x for x in check_skill(thresholds)["warnings"] if x["kind"] == "unchecked-values"])
 
+    def test_script_not_named_in_skill_md_warns(self):
+        # writers added scripts/contrast.py to clear unchecked-values but never named it; no use run ran it (eval H, run 40496212294)
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = write_skill(Path(tmp), "pages", "name: pages\ndescription: short\n")
+            (skill / "scripts").mkdir()
+            for name in ("contrast.py", "b_tool.sh", ".DS_Store", "__init__.py"):
+                (skill / "scripts" / name).write_text("print()\n", encoding="utf-8")
+            result = check_skill(skill)
+            self.assertEqual(result["status"], "valid", result)
+            message = next(x["message"] for x in result["warnings"] if x["kind"] == "unnamed-script")
+            self.assertTrue(message.startswith("files in scripts/ that SKILL.md never names: b_tool.sh, contrast.py;"), message)
+            (skill / "SKILL.md").write_bytes(b"---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\r\nRun `scripts/b_tool.sh` last.\n")
+            self.assertFalse([x for x in check_skill(skill)["warnings"] if x["kind"] == "unnamed-script"])
+
     def test_missing_name_and_directory_mismatch_are_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             skill = write_skill(Path(tmp), "wrong-dir", "description: short\n")
