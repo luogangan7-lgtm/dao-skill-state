@@ -630,6 +630,26 @@ same request without the paragraph saying `dao look` is on PATH. Nemotron 3.5 Su
 - 2 skills per cell, one model; descriptive only. Created skills are kept from these runs on
   (`kept/<task>-<arm>-<rep>-skill/`), so the next run can show why a description did not trigger.
 
+Follow-up, unaided, 3 skills per arm.
+
+| Change (run) | Creator arm | dao skills named / description says when to use | Skill arm: loaded, passing | Hook arm: loaded, passing |
+|---|---|---|---|---|
+| dao step 2 also names installed tools (40445025600, not merged) | dao | `new-skill` 3 of 3 / 0 of 3 | 2 of 3, 2 of 3 | 3 of 3, 2 of 3 |
+| | skill-creator | | 3 of 3, 2 of 3 | 3 of 3, 2 of 3 |
+| `trigger` warning (#107) and creator-named folder `./out/<name>/` (#108) (40465464046) | dao | own names 3 of 3 / 3 of 3 | 1 of 3, 0 of 3 | 3 of 3, 3 of 3 |
+| | skill-creator | | 3 of 3, 2 of 3 | 3 of 3, 2 of 3 |
+| | none | | 1 of 3, 0 of 3 | 1 of 3, 1 of 3 |
+
+- Naming installed tools in step 2 did not work: no dao creation looked for one, and no
+  created skill calls `dao look`. The change was not merged.
+- Under a fixed `./new-skill/` folder, dao's lint (name must equal folder) made every dao
+  skill `new-skill`. Since #108, dao skills have their own names and every description opens with
+  "Use when …". dao-0 wrote that before its first `check_skill` run, so the gain cannot be
+  credited to the warning alone.
+- Hook-loaded dao skills passed 3 of 3. Through the skill list, dao skills still loaded only 1 of
+  3 times while skill-creator's loaded 3 of 3, so the description fix alone does not explain
+  loading. One baseline per run; descriptive only.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
