@@ -38,6 +38,8 @@ def _mapping(loader: StrictLoader, node: yaml.MappingNode, deep: bool = False):
 
 StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
 _PORTABLE_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# words that say when a skill applies; descriptions under 8 words are too short to judge
+_TRIGGER = re.compile(r"\bwhen(ever)?\b|\buse[ds]?\b|\btrigger|\binvoke|时|用于|使用", re.I)
 _ALLOWED_TOP = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
 
 
@@ -123,6 +125,8 @@ def check_skill(skill_dir: str | Path) -> dict[str, Any]:
     description = frontmatter.get("description")
     if not isinstance(description, str) or not description.strip() or not 1 <= len(description) <= 1024:
         result["errors"].append(_issue("description", "description must be a string of 1..1024 characters"))
+    elif len(description.split()) >= 8 and not _TRIGGER.search(description):
+        result["warnings"].append(_issue("trigger", "description says what the skill does but not when to use it; hosts choose skills from the description alone, so name the requests or situations that should load it (for example \"Use when ...\")"))
 
     for field, limit in (("license", None), ("compatibility", 500), ("allowed-tools", None)):
         if field not in frontmatter:

@@ -43,6 +43,18 @@ metadata:
             self.assertEqual(result["status"], "valid", result)
             self.assertTrue(any(item["kind"] == "portability" for item in result["warnings"]))
 
+    def test_description_without_a_trigger_warns(self):
+        # created skills whose description never said when to use them were not loaded (eval H, run 40445025600)
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = write_skill(Path(tmp), "pages", "name: pages\ndescription: Write and review web pages so they pass review with readable contrast.\n")
+            result = check_skill(bare)
+            self.assertEqual(result["status"], "valid", result)
+            self.assertIn("when to use it", next(x["message"] for x in result["warnings"] if x["kind"] == "trigger"))
+            for text in ("Write and review web pages with readable contrast. Use when an agent changes a page.",
+                         "检查网页的对比度、字号和手机布局，在修改任何网页时使用这个技能。", "short"):
+                ok = write_skill(Path(tmp), f"t{len(text)}", f"name: t{len(text)}\ndescription: {text}\n")
+                self.assertFalse([x for x in check_skill(ok)["warnings"] if x["kind"] == "trigger"], text)
+
     def test_missing_name_and_directory_mismatch_are_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             skill = write_skill(Path(tmp), "wrong-dir", "description: short\n")

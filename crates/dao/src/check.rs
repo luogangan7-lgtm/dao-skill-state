@@ -1249,6 +1249,13 @@ pub fn check_skill(arg: &str) -> CheckResult {
     }
     match get("description") {
         Some(Val::Str(d)) if !py_strip(d).is_empty() && (1..=1024).contains(&d.chars().count()) => {
+            // words that say when a skill applies; descriptions under 8 words are too short to judge
+            let trigger =
+                Regex::new(r"(?i)\bwhen(ever)?\b|\buse[ds]?\b|\btrigger|\binvoke|时|用于|使用")
+                    .unwrap();
+            if d.split(py_space).filter(|w| !w.is_empty()).count() >= 8 && !trigger.is_match(d) {
+                r.warnings.push(issue("trigger", "description says what the skill does but not when to use it; hosts choose skills from the description alone, so name the requests or situations that should load it (for example \"Use when ...\")"));
+            }
         }
         _ => r.errors.push(issue(
             "description",
@@ -1315,6 +1322,26 @@ mod tests {
 
     fn fm(src: &str) -> Result<Option<Val>, Fail> {
         load(src)
+    }
+
+    #[test]
+    fn description_without_a_trigger_warns() {
+        let d = std::env::temp_dir().join(format!("dao-check-trig-{}", std::process::id()));
+        for (text, warns) in [
+            ("Write and review web pages so they pass review with readable contrast.", true),
+            ("Write and review web pages with readable contrast. Use when an agent changes a page.", false),
+            ("检查网页的对比度、字号和手机布局，在修改任何网页时使用这个技能。", false),
+            ("short", false),
+        ] {
+            let dir = d.join("pages");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), format!("---\nname: pages\ndescription: {text}\n---\n")).unwrap();
+            let r = check_skill(&dir.to_string_lossy());
+            let hit = r.warnings.iter().any(|w| w.kind == "trigger" && w.message.contains("when to use it"));
+            assert_eq!(hit, warns, "{text}");
+            assert_eq!(r.status, "valid");
+        }
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
