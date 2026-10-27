@@ -690,12 +690,14 @@ as 81b2460), unaided, 3 skills per arm.
 - No measured effect. dao skills already shipped scripts before the warning (3 of 3 in
   40471506098), and the run logs record commands but not their output, so whether the warning
   fired during a dao creation, and whether a script was added because of it, cannot be seen.
-- Scripts help only when run. dao use runs ran the skill's script 3 times: 2 passed, and the
-  third (dao-1, hook) stopped after "All contrast checks pass" without writing `index.html`.
-  dao-2 through the hook computed contrast inline instead of running its script and failed
-  (contrast 1). dao-1 through the skill list made no Skill call but found and ran the script
+- A shipped script was not enough on its own. dao use runs ran the skill's script in 3 runs: 2
+  passed, and the third (dao-1, hook) stopped after "All contrast checks pass" without writing
+  `index.html`. dao-2 through the hook computed contrast inline instead of running its script
+  and failed (contrast 1). dao-0 passed both use runs with no script. dao-1 through the skill list made no Skill call but found and ran the script
   itself, so "loaded" undercounts it.
-- dao-2's creation ran `find /` and saw paths outside its workspace. #110 does not stop that.
+- dao-2's creation ran a root-wide `find / -name "*.md" -path "*dao-skill-state*"`; what it
+  returned is not recorded. #110 clears scratch dirs between repetitions; it does not limit what
+  an agent can list.
 - Next: record `check_skill` output in the create rows, so a warning and the writer's response
   are visible. One baseline, failed. One model; descriptive only.
 
