@@ -1249,6 +1249,13 @@ pub fn check_skill(arg: &str) -> CheckResult {
     }
     match get("description") {
         Some(Val::Str(d)) if !py_strip(d).is_empty() && (1..=1024).contains(&d.chars().count()) => {
+            // words that say when a skill applies; descriptions under 8 words are too short to judge
+            let trigger =
+                Regex::new(r"(?i)\bwhen(ever)?\b|\buse[ds]?\b|\btrigger|\binvoke|时|用于|使用")
+                    .unwrap();
+            if d.split(py_space).filter(|w| !w.is_empty()).count() >= 8 && !trigger.is_match(d) {
+                r.warnings.push(issue("trigger", "description says what the skill does but not when to use it; hosts choose skills from the description alone, so name the requests or situations that should load it (for example \"Use when ...\")"));
+            }
         }
         _ => r.errors.push(issue(
             "description",
