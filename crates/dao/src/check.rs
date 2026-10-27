@@ -1421,6 +1421,33 @@ mod tests {
     }
 
     #[test]
+    fn script_not_named_in_skill_md_warns() {
+        let d = std::env::temp_dir().join(format!("dao-check-script-{}", std::process::id()));
+        let dir = d.join("pages");
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pages\ndescription: short\n---\n",
+        )
+        .unwrap();
+        fs::write(dir.join("scripts/contrast.py"), "print()\n").unwrap();
+        let hit = |p: &Path| {
+            check_skill(&p.to_string_lossy())
+                .warnings
+                .iter()
+                .any(|w| w.kind == "unnamed-script" && w.message.contains("contrast.py"))
+        };
+        assert!(hit(&dir));
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pages\ndescription: short\n---\nRun `python3 scripts/contrast.py FG BG` before writing colours.\n",
+        )
+        .unwrap();
+        assert!(!hit(&dir));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn yaml_1_1_implicit_types_like_pyyaml() {
         let res = Resolvers::new();
         for (v, t) in [
