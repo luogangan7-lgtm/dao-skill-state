@@ -151,7 +151,11 @@ def main():
         replay = os.path.join(root, name, "replay")
         if os.path.isdir(replay):  # skills saved from an earlier run: use phase only, loaded from the skill list
             for label in sorted(os.listdir(replay)):
-                (skill,) = os.listdir(os.path.join(replay, label))
+                skills = [d for d in os.listdir(os.path.join(replay, label))
+                          if os.path.isfile(os.path.join(replay, label, d, "SKILL.md"))]
+                if len(skills) != 1:
+                    sys.exit(f"{replay}/{label}: expected one skill folder holding SKILL.md, found {skills}")
+                skill = skills[0]
                 for rep in range(a.reps):
                     run.sweep()
                     use(label, rep, os.path.join(replay, label, skill), ["skills"])
@@ -187,7 +191,7 @@ def main():
     print("|---|---|---|---|---|---|---|")
     for name in names:
         base = [r for r in rows if r["task"] == name and r["phase"] == "baseline"]
-        for arm in a.arms.split(","):
+        for arm in dict.fromkeys(r["arm"] for r in rows if r["task"] == name and "arm" in r):  # replay: labels
             cr = [r for r in rows if r["task"] == name and r.get("arm") == arm and r["phase"] == "create"]
             us = {ua: [r for r in rows if r["task"] == name and r.get("arm") == arm and r["phase"] == "use"
                        and r["use_arm"] == ua] for ua in a.use_arms.split(",")}

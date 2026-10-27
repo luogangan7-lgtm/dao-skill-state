@@ -667,12 +667,15 @@ dao and skill-creator skills kept from 40465464046, 4 times each, through the sk
 - The same dao skills that loaded 1 of 3 times through the list in 40465464046 loaded 12 of 12
   times in the replay. Their descriptions did not stop the host choosing them; the earlier gap
   came from chance or from the shared scratch dirs, which this design cannot separate.
-- Once loaded, the skill's content decides the result. dao-1 failed 4 of 4 on contrast in the
-  same places: its table claims `#6b7280` is ~7.2:1 on white (actually 4.83) and allows
-  `#f5f5f5` backgrounds (4.43), and the agent copied both. dao-0 ships a contrast script and
-  all 4 use runs called it; it passed 4 of 4. A skill that checks contrast passed; a skill that
-  quotes ratios failed.
-- Still no created skill calls `dao look`. Baselines failed in both runs. One model; descriptive only.
+- Once loaded, results split by skill. dao-1 failed all 4 use runs on contrast alone (`look.json`:
+  text at 4.39 to 4.44, plus one button at 1.00). Its table says `#6b7280` is ~7.2:1 on white
+  (4.83 by the WCAG formula) and allows backgrounds down to `#f5f5f5` (4.43 with `#6b7280`). All
+  4 pages use `#6b7280`, and 2 of them also use `#f5f5f5`.
+  dao-0 ships `scripts/contrast-check.py`, every one of its 4 use runs ran it (`bash` field), and
+  all 4 passed. In this one pair, the skill that computes contrast passed and the one that quotes
+  ratios failed; dao-2 (3 of 4) and skill-creator (10 of 12) are not explained by it.
+- No kept skill from either run mentions `dao look` (grep of `kept/*-skill` and `replay/`). One
+  baseline per run, both failed. One model; descriptive only.
 
 ### Limits
 
