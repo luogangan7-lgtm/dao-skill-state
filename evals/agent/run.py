@@ -116,6 +116,18 @@ def guard_quota(r):
     return r
 
 
+def check_report(cmd, content):
+    """check_skill's verdict as kinds, or the start of whatever else the command printed."""
+    text = content if isinstance(content, str) else "".join(
+        c.get("text", "") for c in content or [] if isinstance(c, dict))
+    try:
+        rep, _ = json.JSONDecoder().raw_decode(text, text.index("{"))
+        return {"cmd": cmd, "status": rep["status"], "errors": [e["kind"] for e in rep["errors"]],
+                "warnings": [w["kind"] for w in rep["warnings"]]}
+    except (ValueError, KeyError, TypeError):
+        return {"cmd": cmd, "out": redact(text)[:300]}
+
+
 def run_one(task_dir, arm, max_turns, timeout_s):
     return guard_quota(_run_one(task_dir, arm, max_turns, timeout_s))
 
@@ -149,6 +161,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
     wall = time.time() - t0
     res, tools, skill_calls, bash = {}, {}, [], []
     cmd_of, bash_errors = {}, []  # tool_use id -> command; failed Bash calls and what they said
+    checks = []  # what check_skill told the writer: a warning is only measurable if it was seen
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -158,6 +171,9 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
             res = ev
         elif ev.get("type") == "user":
             for item in (ev.get("message") or {}).get("content") or []:
+                if (isinstance(item, dict) and item.get("type") == "tool_result" and len(checks) < 20
+                        and "check_skill" in cmd_of.get(item.get("tool_use_id"), "")):
+                    checks.append(check_report(redact(cmd_of[item["tool_use_id"]])[:120], item.get("content")))
                 if (isinstance(item, dict) and item.get("type") == "tool_result" and item.get("is_error")
                         and item.get("tool_use_id") in cmd_of and len(bash_errors) < 20):
                     out_text = item.get("content")
@@ -192,7 +208,7 @@ def _run_one(task_dir, arm, max_turns, timeout_s):
     u = res.get("usage") or {}
     return {"pass": passed, "check": redact(note), "hook": hook, "ws": ws,
             "rc": rc, "is_error": res.get("is_error"), "turns": res.get("num_turns"),
-            "skill_calls": skill_calls, "tools": tools, "bash": bash, "bash_errors": bash_errors,
+            "skill_calls": skill_calls, "tools": tools, "bash": bash, "bash_errors": bash_errors, "checks": checks,
             # on an API error (quota window, rate limit) keep what the host said, redacted
             # the host's last message: why a run stopped (asked a question, wrote elsewhere, gave up)
             "final": redact(str(res.get("result") or ""))[-600:],
