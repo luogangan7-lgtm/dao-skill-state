@@ -724,6 +724,27 @@ skill-creator, with no `check_skill` output recorded: skill list 3 of 3 loaded a
 - A check that every file in `scripts/` is named in SKILL.md would target dao-0's case; dao-2's
   optional mention would pass it.
 
+Fifth follow-up: `check_skill` also warns `unnamed-script` for a file in `scripts/` that SKILL.md
+never names (#118). Run 40504938334 used branch head a268b94; the merged version (941e366) also
+skips dotfiles and `__init__.py`. Unaided, arms dao and skill-creator, 3 skills each.
+
+| dao rep | `check_skill` results in order | Final skill | Use: skill list / hook |
+|---|---|---|---|
+| 0 | none recorded (validated its frontmatter with an inline `yaml` call) | `scripts/contrast-check.py`, named with when to run it | pass, script run / pass, script run |
+| 1 | invalid (frontmatter), then 4 times valid with no warnings | `scripts/contrast-check.py`, named | fail (contrast 1) / pass; script not run |
+| 2 | valid, no warnings | `scripts/check-contrast.py`, named | pass, script run / pass, script run |
+
+skill-creator: skill list 3 of 3 loaded and 2 of 3 passing, hook 3 of 3 loaded and passing; one
+of its 3 skills ships a script, named as optional. One baseline, failed.
+
+- `unnamed-script` never fired. Every dao skill named its script before any recorded check, so
+  this run cannot show whether the warning changes a writer.
+- Use runs ran a dao skill's script 4 times out of 6, and all 4 passed. In the previous run they
+  ran it 0 of 6 times. The writers changed between runs without the new warning firing, so the
+  difference cannot be credited to #118.
+- Over the last four follow-ups the dao arm passed 5, 4, 3 and 5 of 6 use runs, and skill-creator
+  5, 4, 5 and 5. At 3 skills per arm the run-to-run spread is as large as any change measured here.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
