@@ -650,6 +650,33 @@ Follow-up, unaided, 3 skills per arm.
   3 times while skill-creator's loaded 3 of 3, so the description fix alone does not explain
   loading. One baseline per run; descriptive only.
 
+Second follow-up, after arms stopped sharing scratch dirs (#110). Run 40471506098 repeats the
+unaided task; run 40471493176 (`create-tasks/page-quality-replay`) skips creation and uses the 6
+dao and skill-creator skills kept from 40465464046, 4 times each, through the skill list only.
+
+| Run | Creator arm | Skill arm: loaded, passing | Hook arm: loaded, passing |
+|---|---|---|---|
+| repeat (40471506098) | dao | 3 of 3, 2 of 3 | 3 of 3, 3 of 3 |
+| | skill-creator | 2 of 3, 2 of 3 | 3 of 3, 3 of 3 |
+| | none | 0 of 3, 0 of 3 | 0 of 3, 0 of 3 |
+| replay (40471493176) | dao-0 `readable-pages` | 4 of 4, 4 of 4 | |
+| | dao-1 `web-page` | 4 of 4, 0 of 4 | |
+| | dao-2 `web-page-standard` | 4 of 4, 3 of 4 | |
+| | skill-creator-0, 1, 2 | 12 of 12, 10 of 12 | |
+
+- The same dao skills that loaded 1 of 3 times through the list in 40465464046 loaded 12 of 12
+  times in the replay. Their descriptions did not stop the host choosing them; the earlier gap
+  came from chance or from the shared scratch dirs, which this design cannot separate.
+- Once loaded, results split by skill. dao-1 failed all 4 use runs on contrast alone (`look.json`:
+  text at 4.39 to 4.44, plus one button at 1.00). Its table says `#6b7280` is ~7.2:1 on white
+  (4.83 by the WCAG formula) and allows backgrounds down to `#f5f5f5` (4.43 with `#6b7280`). All
+  4 pages use `#6b7280`, and 2 of them also use `#f5f5f5`.
+  dao-0 ships `scripts/contrast-check.py`, every one of its 4 use runs ran it (`bash` field), and
+  all 4 passed. In this one pair, the skill that computes contrast passed and the one that quotes
+  ratios failed; dao-2 (3 of 4) and skill-creator (10 of 12) are not explained by it.
+- No kept skill from either run mentions `dao look` (grep of `kept/*-skill` and `replay/`). One
+  baseline per run, both failed. One model; descriptive only.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.

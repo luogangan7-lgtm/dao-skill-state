@@ -1,0 +1,38 @@
+/* page-tokens.css — copy-paste starting point for the web-page-standard skill.
+ *
+ * Edit values to match the project's brand, but keep the scale small and all
+ * text colors at WCAG AA or higher contrast against the background they sit on.
+ */
+
+/* ---------- Type scale (named sizes only) ---------- */
+.text-xs  { font-size: 0.75rem;  line-height: 1.25; }
+.text-sm  { font-size: 0.875rem; line-height: 1.25; }
+.text-base { font-size: 1rem;     line-height: 1.5; }
+.text-lg  { font-size: 1.125rem; line-height: 1.375; }
+.text-xl  { font-size: 1.25rem;  line-height: 1.375; font-weight: 600; }
+.text-2xl { font-size: 1.5rem;   line-height: 1.25; font-weight: 700; }
+.text-3xl { font-size: 1.875rem; line-height: 1.15; font-weight: 700; }
+
+/* ---------- Contrast-safe text colors (WCAG AA on #ffffff) ---------- */
+/* dark-slate passes 4.5:1 on white for normal text */
+.text-primary   { color: #111827; } /* headings, primary text   (~15.9:1 on white) */
+.text-secondary { color: #374151; } /* labels, captions         (~7.4:1 on white)  */
+.text-muted     { color: #4b5563; } /* helper text only         (~5.8:1 on white)  */
+
+/* Do not use #999/#aaa/#bbb/#ccc or rgba(0,0,0,0.3-0.6) for readable text. */
+
+/* ---------- Responsive breakpoint ---------- */
+/* Base = single-column phone layout. Desktop changes go inside this block. */
+@media (min-width: 768px) {
+  .container { max-width: 960px; margin-left: auto; margin-right: auto; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+}
+
+/* Phone-safe prose width */
+.prose { max-width: 60ch; }
+
+/* Minimum touch target on phones */
+button, a[role="button"], [type="button"] {
+  min-height: 44px;
+  min-width: 44px;
+}

@@ -1,0 +1,98 @@
+/* readable-pages — contrast-safe palette and type scale.
+   Copy this into your page (or import it) and reference the tokens.
+   Do not add one-off font sizes or colors outside this file. */
+
+/* ---------- Contrast-safe palette (verified WCAG AA ratios) ---------- */
+/* Light mode */
+--rp-bg: #ffffff;            /* page background */
+--rp-bg-subtle: #f3f4f6;   /* subtle panel background */
+--rp-text-primary: #111827; /* 17.74:1 on white — primary text */
+--rp-text-secondary: #4b5563; /* 7.56:1 on white — secondary body text (darkest grey for normal text) */
+--rp-text-muted: #666666;  /* 5.74:1 on white — muted, large text only on white */
+--rp-text-inverse: #ffffff; /* on dark surfaces */
+--rp-border: #e5e7eb;
+
+/* Dark mode (prefers-color-scheme: dark) */
+@media (prefers-color-scheme: dark) {
+  --rp-bg: #0f172a;
+  --rp-bg-subtle: #1e293b;
+  --rp-text-primary: #f8fafc;   /* 17.85:1 on #0f172a */
+  --rp-text-secondary: #ffffff;   /* 17.40:1 on #1a1a1a */
+  --rp-text-muted: #cbd5e1;
+  --rp-text-inverse: #0f172a;
+  --rp-border: #334155;
+}
+
+/* ---------- Deliberate type scale (only sizes allowed on a page) ---------- */
+--rp-text-caption: 0.75rem;   /* 12px — labels, captions, timestamps */
+--rp-text-body: 1rem;         /* 16px — body, inputs, buttons */
+--rp-text-lead: 1.125rem;     /* 18px — intro paragraphs */
+--rp-text-heading-sm: 1.25rem; /* 20px — section subheadings */
+--rp-text-heading-md: 1.5rem;  /* 24px — page/section headings */
+--rp-text-heading-lg: 2rem;    /* 32px — major headings */
+--rp-text-heading-xl: 2.5rem;  /* 40px — hero headings */
+
+/* ---------- Mobile-first responsive layout tokens ---------- */
+/* Breakpoints — use only these, always with min-width media queries */
+--rp-break-sm: 640px;
+--rp-break-md: 768px;
+--rp-break-lg: 1024px;
+
+/* Container: centered, fluid, never edge-to-edge on desktop */
+.rp-container {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0 1rem;
+  overflow-x: hidden;
+}
+
+/* Base = single-column phone layout. Desktop enhancements only inside min-width queries. */
+
+/* ---------- Typography helpers (use these classes, not inline font sizes) ---------- */
+.rp-caption { font-size: var(--rp-text-caption); color: var(--rp-text-muted); }
+.rp-body { font-size: var(--rp-text-body); color: var(--rp-text-primary); line-height: 1.5; max-width: 65ch; }
+.rp-lead { font-size: var(--rp-text-lead); color: var(--rp-text-primary); line-height: 1.5; max-width: 65ch; }
+.rp-heading-sm { font-size: var(--rp-text-heading-sm); color: var(--rp-text-primary); }
+.rp-heading-md { font-size: var(--rp-text-heading-md); color: var(--rp-text-primary); }
+.rp-heading-lg { font-size: var(--rp-text-heading-lg); color: var(--rp-text-primary); }
+.rp-heading-xl { font-size: var(--rp-text-heading-xl); color: var(--rp-text-primary); }
+
+/* ---------- Layout helpers ---------- */
+.rp-grid {
+  display: grid;
+  grid-template-columns: 1fr;            /* phone: single column */
+  gap: 1rem;
+}
+@media (min-width: 640px) {
+  .rp-grid { grid-template-columns: repeat(2, 1fr); }   /* sm: two columns */
+}
+@media (min-width: 1024px) {
+  .rp-grid { grid-template-columns: repeat(3, 1fr); }   /* lg: three columns */
+}
+
+/* Touch targets: every interactive element at least 44x44 CSS px */
+button, a, [role="button"], input[type="button"], input[type="submit"] {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* ---------- Page reset (apply to the root element) ---------- */
+html {
+  box-sizing: border-box;
+  overflow-x: hidden;
+  font-size: var(--rp-text-body);
+  color: var(--rp-text-primary);
+  background: var(--rp-bg);
+}
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+*, *::before, *::after { box-sizing: inherit; }
+
+img, video, canvas, svg { max-width: 100%; height: auto; display: block; }
+
+/* Viewport meta tag (required in HTML head): */
+/* <meta name="viewport" content="width=device-width, initial-scale=1"> */

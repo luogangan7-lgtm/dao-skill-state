@@ -1,0 +1,39 @@
+{
+  "skill_name": "web-pages",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Build a simple product landing page with a hero heading, a short paragraph, a secondary call-to-action line, and a two-column feature grid. It needs to look good on phones and desktops.",
+      "expected_output": "HTML/CSS page with a small type scale, readable contrast (WCAG AA), and a responsive mobile-first layout that works at ~375px and ~1200px+.",
+      "files": [],
+      "expectations": [
+        "Font sizes come from a small fixed set (CSS custom properties), no one-off pixel sizes",
+        "All text passes WCAG AA contrast (4.5:1 normal, 3:1 large) against its background",
+        "Layout is single-column at phone width and expands to multiple columns at desktop",
+        "No horizontal scroll at ~375px width"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Create an HTML email template for a weekly newsletter with a title, body text, a muted footer line, and a button. The grey secondary text keeps coming out too faint to read.",
+      "expected_output": "HTML email template with a deliberate type scale, dark enough grey secondary text, and a responsive single-column layout.",
+      "files": [],
+      "expectations": [
+        "Grey secondary text is readable (passes contrast check), not faint",
+        "Uses a small set of font sizes rather than ad-hoc sizes",
+        "Responsive layout works on narrow phone screens"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Add a navigation bar and a card section to an existing page. The current page uses random font sizes like 13px, 17px, and 19px everywhere.",
+      "expected_output": "Updated page with navigation and cards, using a consistent type scale, readable contrast, and a responsive layout.",
+      "files": [],
+      "expectations": [
+        "Replaces ad-hoc font sizes with the defined type scale tokens",
+        "All text meets WCAG AA contrast against its background",
+        "Navigation and cards stack sensibly on phone width and expand on desktop"
+      ]
+    }
+  ]
+}
