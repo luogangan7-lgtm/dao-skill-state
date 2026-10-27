@@ -5,13 +5,13 @@
             [--use-arms skills,hook]
 
 1. Create: Claude Code gets the task's request.md (team rules to capture) and must write the skill
-   into ./new-skill/. Arm none has no meta-skill; skill-creator gets anthropics/skills'
+   into its own folder under ./out/. Arm none has no meta-skill; skill-creator gets anthropics/skills'
    skill-creator (pinned, from $SKILL_SOURCES); dao gets this repository's dao-skill-state.
 2. Use: the created skill is installed in a fresh workspace and each usage task (whose prompt never
    restates the rules) runs with it (arms from --use-arms), checked by the usage task's check.py.
    A baseline runs every usage task once with no skill, to show the rules cannot be guessed.
 
-Also records whether new-skill/ is a structurally valid skill (dao-skill-state's check_skill.py).
+Also records whether the created skill is structurally valid (dao-skill-state's check_skill.py).
 Writes OUT_DIR/create.jsonl and prints a summary. CI only (.github/workflows/agent-eval.yml).
 
 Depends on: run.py (same directory) for running the agent and checkers.
@@ -28,10 +28,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUTPUT_RULE = ("\n\nWrite the skill into the directory ./new-skill/ (its SKILL.md and any files it needs). "
+# the creator names the folder: a fixed staging name (./new-skill/) made dao's lint force that name
+# onto the skill, and hosts choose skills by name and description (eval H, run 40445025600)
+OUTPUT_RULE = ("\n\nWrite the skill into its own folder under ./out/, named after the skill "
+               "(./out/<skill-name>/SKILL.md and any files it needs). "
                "Do not do the task the skill is about; only make the skill.")
 CHECK_CREATED = '''import os, sys
-sys.exit(0 if os.path.isfile(os.path.join(sys.argv[1], "new-skill", "SKILL.md")) else 1)
+out = os.path.join(sys.argv[1], "out")
+dirs = os.listdir(out) if os.path.isdir(out) else []
+sys.exit(0 if not os.path.islink(out) and len(dirs) == 1 and not os.path.islink(os.path.join(out, dirs[0]))
+         and os.path.isfile(os.path.join(out, dirs[0], "SKILL.md")) else 1)
 '''
 
 
@@ -57,9 +63,17 @@ def meta_skill(arm, dest):
                         ignore=shutil.ignore_patterns("tests", "__pycache__"))
 
 
+def created_dir(ws):
+    """The one skill folder the creator wrote under ws/out/ (what CHECK_CREATED accepted), or None."""
+    out = os.path.join(ws, "out")
+    dirs = os.listdir(out) if os.path.isdir(out) and not os.path.islink(out) else []
+    d = os.path.join(out, dirs[0]) if len(dirs) == 1 else None
+    return d if d and os.path.isdir(d) and not os.path.islink(d) else None
+
+
 def structure_ok(skill_dir):
     """dao-skill-state's format lint, on a copy named after the skill (the lint requires the folder
-    name to equal the frontmatter name; ./new-skill/ is only our staging name)."""
+    name to equal the frontmatter name; the creator may have chosen another folder name)."""
     import re
     md = os.path.join(skill_dir, "SKILL.md")
     m = re.search(r"^name:\s*['\"]?([^'\"\n]+)", open(md, encoding="utf-8").read(), re.M) if os.path.exists(md) else None
@@ -129,11 +143,11 @@ def main():
                 meta_skill(arm, tdir)
                 c = run.run_one(tdir, ("hook" if a.meta == "hook" else "skills") if arm != "none" else "none",
                                 a.max_turns, a.timeout)
-                created = os.path.join(c.get("ws", ""), "new-skill")
-                valid = bool(c["pass"]) and structure_ok(created)
+                created = created_dir(c.get("ws", ""))
+                valid = bool(c["pass"]) and created is not None and structure_ok(created)
                 emit({"task": name, "arm": arm, "rep": rep, "phase": "create", "valid": valid, **c})
                 # keep the created skill, redacted, so a reviewer can see why a use run did or did not load it
-                for d, _, fs in os.walk(created):
+                for d, _, fs in os.walk(created) if created else ():
                     for f in fs:
                         src = os.path.join(d, f)
                         if os.path.islink(src) or os.path.getsize(src) > 1 << 20:
@@ -142,13 +156,14 @@ def main():
                         os.makedirs(os.path.dirname(dst), exist_ok=True)
                         with open(src, errors="replace") as fi, open(dst, "w") as fo:
                             fo.write(run.redact(fi.read()))
-                if not c["pass"]:
+                if not c["pass"] or created is None:
                     continue
                 # phase 2: use the created skill on every usage task
                 for u in usage:
                     udir = tempfile.mkdtemp(prefix="use-")
                     shutil.copytree(os.path.join(root, name, "usage", u), udir, dirs_exist_ok=True)
-                    shutil.copytree(created, os.path.join(udir, "skills", "created-skill"))
+                    shutil.copytree(created, os.path.join(udir, "skills", os.path.basename(created)),  # links stay out
+                                    ignore=lambda d, names: [n for n in names if os.path.islink(os.path.join(d, n))])
                     for use_arm in a.use_arms.split(","):
                         r = run.run_one(udir, use_arm, a.max_turns, a.timeout)
                         run.keep_files(udir, r["ws"], os.path.join(a.out_dir, "kept", f"{name}-{arm}-{rep}-{u}-{use_arm}"))

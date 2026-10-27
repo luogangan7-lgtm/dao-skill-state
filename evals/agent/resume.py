@@ -98,8 +98,8 @@ def make_skill(troot, creator, keep, a):
     open(os.path.join(t, "check.py"), "w").write(create.CHECK_CREATED)
     create.meta_skill(creator, t)
     c = run.run_one(t, "none" if creator == "none" else "skills", a.max_turns, a.timeout)
-    d = os.path.join(c.get("ws", ""), "new-skill")
-    if not c["pass"]:
+    d = create.created_dir(c.get("ws", ""))
+    if not c["pass"] or d is None:
         return None, None, c
     evolve.keep_candidate(d, keep)
     m = re.search(r"^name:\s*['\"]?([a-z0-9-]{1,64})['\"]?\s*$", open(os.path.join(d, "SKILL.md")).read(), re.M)
