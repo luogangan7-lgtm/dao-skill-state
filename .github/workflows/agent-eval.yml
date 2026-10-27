@@ -45,6 +45,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install openpyxl==3.1.5 python-docx==1.1.2 pypdf==5.1.0 python-pptx==1.0.2 reportlab==4.2.5 pytest==8.3.4 pyyaml==6.0.2
+      - run: python3 evals/agent/test_isolation.py
       - run: |
           for t in evals/agent/tasks/*/ evals/agent/create-tasks/*/usage/*/ evals/agent/evolve-tasks/*/usage/*/ evals/agent/resume-tasks/*/; do
             test -f "$t/prompt.md" || test -f "$t/first.md"
