@@ -745,6 +745,28 @@ of its 3 skills ships a script, named as optional. One baseline, failed.
 - Over the last four follow-ups the dao arm passed 5, 4, 3 and 5 of 6 use runs, and skill-creator
   5, 4, 5 and 5. At 3 skills per arm the run-to-run spread is comparable to any change measured here.
 
+Larger sample: 10 skills per arm on main 99f19df (warnings from #112 and #118, `checks` from
+#115), unaided, run 40520810808. Rows were counted before reading results: 10 creations and 20
+use runs per arm, one baseline.
+
+| Creator arm | Skill list: loaded, passing | Hook: loaded, passing | All use runs passing (95% Wilson interval) |
+|---|---|---|---|
+| dao | 10 of 10, 7 of 10 | 10 of 10, 7 of 10 | 14 of 20 (0.48–0.85) |
+| skill-creator | 10 of 10, 7 of 10 | 10 of 10, 7 of 10 | 14 of 20 (0.48–0.85) |
+
+- The two creators tie. Every earlier follow-up result (3 to 5 of 6 per arm) lies inside this
+  interval, so the differences reported above between creators and between checker changes are
+  consistent with noise.
+- Loading no longer separates them: all 40 use runs loaded the skill.
+- The warnings rarely fire. Across 10 dao creations `unchecked-values` appeared once (dao-7,
+  then cleared) and `unnamed-script` never. `check_skill` errors were followed by a clean
+  re-check in 4 of the 5 creations whose first recorded check was invalid.
+- Failures are still mostly contrast (10 of 12), usually 1 to 3 elements, and running a
+  shipped script did not prevent them: dao use runs with a `.py` command passed 10 of 15, those
+  without passed 4 of 5. A script checks the colour pairs the agent chooses to give it, not the
+  rendered page.
+- The baseline failed (contrast, type scale). One model; 10 skills per arm.
+
 ### Limits
 
 - Third-party models only; results can differ with Claude models.
