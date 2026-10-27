@@ -130,6 +130,7 @@ def main():
     for name in names:
         usage = sorted(os.listdir(os.path.join(root, name, "usage")))
         for u in usage:  # baseline: the rules are not guessable
+            run.sweep()
             r = run.run_one(os.path.join(root, name, "usage", u), "none", a.max_turns, a.timeout)
             run.keep_files(os.path.join(root, name, "usage", u), r["ws"], os.path.join(a.out_dir, "kept", f"{name}-baseline-{u}"))
             emit({"task": name, "phase": "baseline", "usage": u, **r})
